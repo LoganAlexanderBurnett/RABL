@@ -37,47 +37,34 @@ package MicroreactorPK
   //
   // ------------------------------------------------------------
   block DrumProfileFromFile
-
-    // Absolute path to the .mat file containing the drum profile data.
-    parameter String fileName =
-      "C:/Users/Logan/Desktop/mit_coursework/eVinci/drum_profile_matern52_ell5_velGP_draw0.mat";
-
-    // Name of the variable (table) inside the MAT-file.
-    // The variable should be an Nx2 matrix: [time, angleDeg]
+    // Path to the MAT-file containing the table (Matlab v4 recommended).
+    // Leave empty by default and set from Python.
+    parameter String fileName = "" "Path to .mat file containing profile table";
+  
+    // Name of the matrix variable inside the MAT-file (e.g., "profile").
     parameter String tableName = "profile";
-
-    // Output signal: the interpolated drum angle in degrees.
+  
+    // Which column contains the drum angle. Column 1 is time.
+    // For a [time, angle] table this should be 2.
+    parameter Integer angleColumn(min=2) = 2 "Column index for angle (time is column 1)";
+  
+    // Output signal: interpolated drum angle in degrees.
     output Real angleDeg "Drum angle [deg]";
-
+  
   protected
-    /*
-      CombiTimeTable is a standard Modelica block that outputs columns of a table
-      as a function of time.
-
-      Key settings here:
-      - tableOnFile=true: table is read from an external file (MAT-file).
-      - columns={2}: we output column 2, which is the angle.
-                   Column 1 is implicitly the time column.
-      - smoothness=LinearSegments: piecewise linear interpolation.
-      - extrapolation=HoldLastPoint: after the last time, hold the last value.
-    */
     Modelica.Blocks.Sources.CombiTimeTable tab(
       tableOnFile=true,
       fileName=fileName,
       tableName=tableName,
-      columns={2}, // column 2 = angle_deg, column 1 = time
+      columns={angleColumn},
       smoothness=Modelica.Blocks.Types.Smoothness.LinearSegments,
       extrapolation=Modelica.Blocks.Types.Extrapolation.HoldLastPoint);
-
+  
   equation
-    /*
-      Safety/physical constraint:
-      - The control drum is only meaningful in [0, 180] degrees in this model.
-      - Clip the interpolated value to keep the rest of the model sane.
-        (This avoids weird file issues like negative angles or >180 degrees.)
-    */
-    angleDeg = max(0.0, min(180.0, tab.y[1]));
+  // No angle clipping; assume the profile is already valid
+    angleDeg = tab.y[1];
   end DrumProfileFromFile;
+
   // ------------------------------------------------------------
   // Point-kinetics + 5-node thermal network + 12 drums (same angle)
   //
@@ -438,25 +425,88 @@ package MicroreactorPK
   //   HPMicroPK uses that profile as its drum input
   // ------------------------------------------------------------
   model RunOneProfile
-
-    // Pass-through parameters to pick the file/table at the top level
-    parameter String profileFile =
-      "C:/Users/Logan/Desktop/mit_coursework/eVinci/drum_profile_matern52_ell5_velGP_draw0.mat";
-    parameter String tableName = "profile";
-
+    import SI = Modelica.Units.SI;
+  
+    // Set these from Python for each run
+    parameter String profileFile = "" "Path to MAT-file containing the profile matrix";
+    parameter String tableName   = "profile" "Matrix variable name in MAT-file";
+    parameter Integer angleColumn(min=2) = 2 "Angle column in table (time is column 1)";
+  
     // Instantiate the profile reader
-    DrumProfileFromFile prof(fileName=profileFile, tableName=tableName);
-
+    DrumProfileFromFile prof(
+      fileName=profileFile,
+      tableName=tableName,
+      angleColumn=angleColumn);
+  
     // Instantiate the reactor model
     HPMicroPK reactor;
-
+  
+    // -------------------------
+    // Convenience outputs
+    // -------------------------
+    output SI.Time t "Time [s]";
+  
+    output SI.Temperature TN2 "Reactor N2 node temperature [K]";
+    output SI.Temperature Tm  "Moderator/graphite temperature [K]";
+    output SI.Temperature Thp "Heat-pipe node temperature [K]";
+    output SI.Temperature Tf  "Fuel temperature [K]";
+  
+    output SI.TemperatureRate dTN2 "d(TN2)/dt [K/s]";
+    output SI.TemperatureRate dTm  "d(Tm)/dt [K/s]";
+    output SI.TemperatureRate dThp "d(Thp)/dt [K/s]";
+    output SI.TemperatureRate dTf  "d(Tf)/dt [K/s]";
+  
+    output Real c[6]   "Delayed neutron precursor states c[1..6]";
+    output Real dc[6]  "d(c[i])/dt [1/s]";
+  
+    output Real n   "Normalized power";
+    output Real dn  "d(n)/dt [1/s]";
+  
+    output Real P_MW "Thermal power [MW]";
+    output Real drumAngleDeg "Applied drum angle [deg]";
+    output Real rho "Reactivity [Δk/k]";
+    output Real rho_dollars "Reactivity [$]";
+  
+    output SI.MassFlowRate m_dot_steam "Steam production rate [kg/s]";
+    output SI.Power Q_to_steam "Heat available to steam [W]";
+  
   equation
     // Wire the profile output into the reactor input
     reactor.drumAngleDeg = prof.angleDeg;
-
-    // Simulation settings
-    // - StopTime: end of simulation in seconds
-    // - Tolerance: solver error tolerance (smaller = more accurate, slower)
+  
+    // Time
+    t = time;
+  
+    // Alias “nice” outputs for easy extraction / column naming
+    drumAngleDeg = reactor.drumAngleDeg;
+  
+    TN2 = reactor.TN2;
+    Tm  = reactor.Tm;
+    Thp = reactor.Thp;
+    Tf  = reactor.Tf;
+  
+    dTN2 = der(reactor.TN2);
+    dTm  = der(reactor.Tm);
+    dThp = der(reactor.Thp);
+    dTf  = der(reactor.Tf);
+  
+    c  = reactor.c;
+    for i in 1:6 loop
+      dc[i] = der(reactor.c[i]);
+    end for;
+  
+    n  = reactor.n;
+    dn = der(reactor.n);
+  
+    P_MW = reactor.P_MW;
+    rho = reactor.rho;
+    rho_dollars = reactor.rho_dollars;
+  
+    m_dot_steam = reactor.m_dot_steam;
+    Q_to_steam  = reactor.Q_to_steam;
+  
+    // Simulation settings (you can override stopTime in simulateModel from Python anyway)
     annotation(experiment(StopTime=200.0, Tolerance=1e-8));
   end RunOneProfile;
 end MicroreactorPK;
+
