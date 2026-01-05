@@ -5,7 +5,7 @@ model RunOneProfile
   import MicroreactorPK.Models.HPMicroPK;
 
   // Set these from Python for each run
-  parameter String profileFile = "" "Path to MAT-file containing the profile matrix";
+  parameter String profileFile = "";
   parameter String tableName   = "profile" "Matrix variable name in MAT-file";
   parameter Integer angleColumn(min=2) = 2 "Angle column in table (time is column 1)";
 
@@ -15,8 +15,8 @@ model RunOneProfile
     tableName=tableName,
     angleColumn=angleColumn);
 
-  // Instantiate the reactor model
-  HPMicroPK reactor;
+  // Instantiate the reactor model and bind the drum input to the profile
+  HPMicroPK reactor(drumAngleDeg = prof.angleDeg);
 
   // -------------------------
   // Convenience outputs
@@ -28,10 +28,10 @@ model RunOneProfile
   output SI.Temperature Thp "Heat-pipe node temperature [K]";
   output SI.Temperature Tf  "Fuel temperature [K]";
 
-  output SI.TemperatureRate dTN2 "d(TN2)/dt [K/s]";
-  output SI.TemperatureRate dTm  "d(Tm)/dt [K/s]";
-  output SI.TemperatureRate dThp "d(Thp)/dt [K/s]";
-  output SI.TemperatureRate dTf  "d(Tf)/dt [K/s]";
+  output SI.TemperatureSlope dTN2 "d(TN2)/dt [K/s]";
+  output SI.TemperatureSlope dTm  "d(Tm)/dt [K/s]";
+  output SI.TemperatureSlope dThp "d(Thp)/dt [K/s]";
+  output SI.TemperatureSlope dTf  "d(Tf)/dt [K/s]";
 
   output Real c[6]   "Delayed neutron precursor states c[1..6]";
   output Real dc[6]  "d(c[i])/dt [1/s]";
@@ -48,13 +48,10 @@ model RunOneProfile
   output SI.Power Q_to_steam "Heat available to steam [W]";
 
 equation
-  // Wire the profile output into the reactor input
-  reactor.drumAngleDeg = prof.angleDeg;
-
   // Time
   t = time;
 
-  // Alias “nice” outputs for easy extraction / column naming
+  // Alias outputs for easy extraction / column naming
   drumAngleDeg = reactor.drumAngleDeg;
 
   TN2 = reactor.TN2;
@@ -82,6 +79,6 @@ equation
   m_dot_steam = reactor.m_dot_steam;
   Q_to_steam  = reactor.Q_to_steam;
 
-  // Simulation settings (you can override stopTime in simulateModel from Python anyway)
+  // Simulation settings (can override stopTime in simulateModel from Python)
   annotation(experiment(StopTime=200.0, Tolerance=1e-8));
 end RunOneProfile;
