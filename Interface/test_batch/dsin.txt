@@ -1,0 +1,723 @@
+#1
+char Aclass(3,24)
+Adymosim
+1.4
+Modelica experiment file
+
+
+#    Experiment parameters
+double experiment(7,1)
+       0                   # StartTime    Time at which integration starts
+                           #              (and linearization and trimming time)
+     200                   # StopTime     Time at which integration stops
+  1.0000000000000001E-01   # Increment    Communication step size, if > 0
+       0                   # nInterval    Number of communication intervals, if > 0
+  1.0000000000000000E-04   # Tolerance    Relative precision of signals for
+                           #              simulation, linearization and trimming
+       0                   # MaxFixedStep Maximum step size of fixed step size
+                           #              integrators, if > 0.0
+       8                   # Algorithm    Integration algorithm as integer (1...28)
+                           #
+                           #             | model|       |        | dense | state |
+                           # Algorithm   | typ  | stiff | order  | output| event |
+                           # ------------+------+-------+--------+-------+-------+
+                           #  1 | deabm  |  ode |   no  |  1-12  |  yes  |   no  |
+                           #  2 | lsode1 |  ode |   no  |  1-12  |  yes  |   no  |
+                           #  3 | lsode2 |  ode |  yes  |  1-5   |  yes  |   no  |
+                           #  4 | lsodar |  ode |  both |1-12,1-5|  yes  |  yes  |
+                           #  5 | dopri5 |  ode |   no  |   5    |   no  |   no  |
+                           #  6 | dopri8 |  ode |   no  |   8    |   no  |   no  |
+                           #  7 | grk4t  |  ode |  yes  |   4    |   no  |   no  |
+                           #  8 | dassl  |  dae |  yes  |  1-5   |  yes  |  yes  |
+                           #  9 | odassl | hdae |  yes  |  1-5   |  yes  |  yes  |
+                           # 10 | mexx   | hdae |   no  |  2-24  |   no  |   no  |
+                           # 11 | euler  |  ode |   no  |   1    |   no  |  yes  |
+                           # 12 | rkfix2 |  ode |   no  |   2    |   no  |  yes  |
+                           # 13 | rkfix3 |  ode |   no  |   3    |   no  |  yes  |
+                           # 14 | rkfix4 |  ode |   no  |   4    |   no  |  yes  |
+                           #>=14| others |  ode |yes/no |  2-5   |   yes |  yes  |
+                           # ---+--------+------+-------+--------+-------+-------+
+                           # euler and rkfix have fixed stepsize.
+
+
+#    Method tuning parameters
+double method(27,1)
+       1                   # grid     type of communication time grid, defined by
+                           #          = 1: equidistant points ("Increment/nInterval")
+                           #          = 2: vector of grid points ("tgrid")
+                           #          = 3: variable step integrator (automatically)
+                           #          = 4: model (call of "increment" in Dymola, e.g.
+                           #                      incr=Time > 2 then 0 else 0.1
+                           #                      dummy=increment(incr))
+                           #          grid = 1,3 is stopped by "StopTime"
+                           #          grid = 2   is stopped by "tgrid(last)"
+                           #          grid = 4   runs forever (stopped by model)
+       1                   # nt       Use every NT time instant, if grid = 3
+       3                   # dense    1/2/3 restart/step/interpolate GRID points
+       1                   # evgrid   0/1 do not/save event points in comm. time grid
+       1                   # evu      0/1 U-discontinuity does not/trigger events
+       0                   # evuord       U-discontinuity order to consider (0,1,...)
+       0                   # error    0/1/2 One message/warning/error messages
+       0                   # jac      0/1 Compute jacobian numerically/by BLOCKJ
+       0                   # xd0c     0/1 Compute/set XD0
+       0                   # f3       0/1 Ignore/use F3 of HDAE (= index 1)
+       0                   # f4       0/1 Ignore/use F4 of HDAE (= index 2)
+       0                   # f5       0/1 Ignore/use F5 of HDAE (= invar.)
+       0                   # debug    flags for debug information (1<<0 uses pdebug) 
+     100                   # pdebug       priority of debug information (1...100)
+       0                   # fmax     Maximum number of evaluations of BLOCKF, if > 0
+       0                   # ordmax   Maximum allowed integration order, if > 0
+       0                   # hmax     Maximum absolute stepsize, if > 0
+       0                   # hmin     Minimum absolute stepsize, if > 0 (use with care!)
+       0                   # h0       Stepsize to be attempted on first step, if > 0
+  2.0000000000000000E-14   # teps     Bound to check, if 2 equal time instants
+  1.0000000000000000E-10   # eveps    Hysteresis epsilon at event points
+      20                   # eviter   Maximum number of event iterations
+  9.9999999999999995E-07   # delaym   Minimum time increment in delay buffers
+       1                   # fexcep   0/1 floating exception crashes/stops dymosim
+       1                   # tscale   clock-time = tscale*simulation-time, if grid = 5
+                           #          > 1: simulation too slow
+                           #          = 1: simulation-time = real-time
+                           #          < 1: simulation too fast
+       1                   # shared   (not used)
+    2473                   # memkey   (not used)
+
+
+#    Output parameters
+int settings(13,1)
+ 0                         # lprec    0/1 do not/store result data in double
+ 1                         # lx       0/1 do not/store x  (state variables)
+ 1                         # lxd      0/1 do not/store xd (derivative of states)
+ 1                         # lu       0/1 do not/store u  (input     signals)
+ 1                         # ly       0/1 do not/store y  (output    signals)
+ 0                         # lz       0/1 do not/store z  (indicator signals)
+ 1                         # lw       0/1 do not/store w  (auxiliary signals)
+ 1                         # la       0/1 do not/store a  (alias     signals)
+ 0                         # lperf    0/1 do not/store performance indicators
+ 0                         # levent   0/1 do not/store event point
+ 1                         # lres     0/1 do not/store results on result file
+ 0                         # lshare   0/1 do not/store info data for shared memory on dsshare.txt
+ 1                         # lform    0/1 ASCII/Matlab-binary storage format of results
+                           #              (for simulation/linearization; not for trimming)
+
+
+#    Names of initial variables
+char initialName(142,29)
+angleColumn
+velColumn
+accColumn
+prof.angleColumn
+prof.velColumn
+prof.accColumn
+prof.tab.nout
+prof.tab.tableOnFile
+prof.tab.verboseRead
+prof.tab.columns[1]
+prof.tab.columns[2]
+prof.tab.columns[3]
+prof.tab.smoothness
+prof.tab.extrapolation
+prof.tab.timeScale
+prof.tab.offset[1]
+prof.tab.startTime
+prof.tab.shiftTime
+prof.tab.timeEvents
+prof.tab.verboseExtrapolation
+prof.tab.t_min
+prof.tab.t_max
+prof.tab.t_minScaled
+prof.tab.t_maxScaled
+prof.tab.p_offset[1]
+prof.tab.p_offset[2]
+prof.tab.p_offset[3]
+prof.tab.tableID.id
+prof.tab.nextTimeEvent
+prof.tab.nextTimeEventScaled
+prof.tab.timeScaled
+reactor.Lambda
+reactor.nGroups
+reactor.lambdas[1]
+reactor.lambdas[2]
+reactor.lambdas[3]
+reactor.lambdas[4]
+reactor.lambdas[5]
+reactor.lambdas[6]
+reactor.betas[1]
+reactor.betas[2]
+reactor.betas[3]
+reactor.betas[4]
+reactor.betas[5]
+reactor.betas[6]
+reactor.beta
+reactor.P_r
+reactor.heat_f
+reactor.Tf0
+reactor.Tm0
+reactor.Thp0
+reactor.TN_in
+reactor.TN_out
+reactor.TN0
+reactor.Tsg0
+reactor.T_fw_in
+reactor.T_steam_out
+reactor.M_f
+reactor.cp_f
+reactor.M_g
+reactor.cp_g
+reactor.M_hp
+reactor.cp_hp
+reactor.cp_N2
+reactor.tau_N
+reactor.m_dot_N
+reactor.M_N2
+reactor.delta_h
+reactor.G_f_g
+reactor.G_g_hp
+reactor.G_hp_N2
+reactor.G_N2_sg
+reactor.tau_f_g
+reactor.tau_g_f
+reactor.tau_g_hp
+reactor.tau_hp_g
+reactor.tau_hp_N2
+reactor.tau_N2_hp
+reactor.tau_N2_sg
+reactor.inv_Mf_cp_f
+reactor.alpha_f
+reactor.alpha_m
+reactor.n_drums
+reactor.rho_max_total_pcm
+reactor.rho_max_per_drum
+reactor.u0
+reactor.rho_ss_single
+reactor.rho_ss_total
+reactor.n
+reactor.der(n)
+reactor.c[1]
+reactor.der(c[1])
+reactor.c[2]
+reactor.der(c[2])
+reactor.c[3]
+reactor.der(c[3])
+reactor.c[4]
+reactor.der(c[4])
+reactor.c[5]
+reactor.der(c[5])
+reactor.c[6]
+reactor.der(c[6])
+reactor.Tf
+reactor.der(Tf)
+reactor.Tm
+reactor.der(Tm)
+reactor.Thp
+reactor.der(Thp)
+reactor.TN2
+reactor.der(TN2)
+reactor.P
+t
+TN2
+Tm
+Thp
+Tf
+dTN2
+dTm
+dThp
+dTf
+c[1]
+c[2]
+c[3]
+c[4]
+c[5]
+c[6]
+dc[1]
+dc[2]
+dc[3]
+dc[4]
+dc[5]
+dc[6]
+n
+dn
+P_MW
+drumAngleDeg
+drumVelDeg_s
+drumAccDeg_s2
+rho
+rho_dollars
+m_dot_steam
+Q_to_steam
+
+double initialValue(142,6)
+ -1       2                       2                 1.7976931348623157E+308
+  1   282   # angleColumn
+ -1       3                       2                 1.7976931348623157E+308
+  1   282   # velColumn
+ -1       4                       2                 1.7976931348623157E+308
+  1   282   # accColumn
+  0       2                       2                 1.7976931348623157E+308
+  6   258   # prof.angleColumn
+  0       2                       2                 1.7976931348623157E+308
+  6   258   # prof.velColumn
+  0       2                       2                 1.7976931348623157E+308
+  6   258   # prof.accColumn
+  0       3                       1                 1.7976931348623157E+308
+  6  1282   # prof.tab.nout
+  0       1                       0                       0                
+  6  1281   # prof.tab.tableOnFile
+ -1       1                       0                       0                
+  1  1305   # prof.tab.verboseRead
+  0       0                       0                       0                
+  6  1282   # prof.tab.columns[1]
+  0       0                       0                       0                
+  6  1282   # prof.tab.columns[2]
+  0       0                       0                       0                
+  6  1282   # prof.tab.columns[3]
+  0       1                       1                       6                
+  6  1282   # prof.tab.smoothness
+  0       1                       1                       4                
+  6  1282   # prof.tab.extrapolation
+  0       1                  1.0000000000000001E-15 1.7976931348623157E+308
+  6  1280   # prof.tab.timeScale
+ -1       0                       0                       0                
+  1  1304   # prof.tab.offset[1]
+ -1       0                       0                       0                
+  1  1304   # prof.tab.startTime
+  0       0                       0                       0                
+  6  1280   # prof.tab.shiftTime
+ -1       1                       1                       3                
+  1  1306   # prof.tab.timeEvents
+  0       0                       0                       0                
+  6  1281   # prof.tab.verboseExtrapolation
+  0       0                       0                       0                
+  6  1280   # prof.tab.t_min
+  0       0                       0                       0                
+  6  1280   # prof.tab.t_max
+  0       0                       0                       0                
+  6  1280   # prof.tab.t_minScaled
+  0       0                       0                       0                
+  6  1280   # prof.tab.t_maxScaled
+  0       0                       0                       0                
+  6  1280   # prof.tab.p_offset[1]
+  0       0                       0                       0                
+  6  1280   # prof.tab.p_offset[2]
+  0       0                       0                       0                
+  6  1280   # prof.tab.p_offset[3]
+  0       0                       0                       0                
+  6  1282   # prof.tab.tableID.id
+  0       0                       0                       0                
+  6  1352   # prof.tab.nextTimeEvent
+  0       0                       0                       0                
+  6  1352   # prof.tab.nextTimeEventScaled
+  0       0                       0                       0                
+  6  1280   # prof.tab.timeScaled
+ -1  1.9573400000000001E-04       0                       0                
+  1   280   # reactor.Lambda
+  0       6                       0                       0                
+  6   258   # reactor.nGroups
+ -1  1.3339999999999999E-02       0                       0                
+  1   280   # reactor.lambdas[1]
+ -1  3.2739999999999998E-02       0                       0                
+  1   280   # reactor.lambdas[2]
+ -1  1.2080000000000000E-01       0                       0                
+  1   280   # reactor.lambdas[3]
+ -1  3.0280000000000001E-01       0                       0                
+  1   280   # reactor.lambdas[4]
+ -1  8.4950000000000003E-01       0                       0                
+  1   280   # reactor.lambdas[5]
+ -1  2.8530000000000002E+00       0                       0                
+  1   280   # reactor.lambdas[6]
+ -1  2.9059099999999998E-04       0                       0                
+  1   280   # reactor.betas[1]
+ -1  1.1286899999999999E-03       0                       0                
+  1   280   # reactor.betas[2]
+ -1  1.1640200000000000E-03       0                       0                
+  1   280   # reactor.betas[3]
+ -1  2.6945400000000000E-03       0                       0                
+  1   280   # reactor.betas[4]
+ -1  9.2004299999999995E-04       0                       0                
+  1   280   # reactor.betas[5]
+ -1  4.4118500000000003E-04       0                       0                
+  1   280   # reactor.betas[6]
+  0       0                       0                       0                
+  6   256   # reactor.beta
+ -1  6.0000000000000000E+06       0                       0                
+  1   280   # reactor.P_r
+ -1  9.0000000000000002E-01       0                       0                
+  1   280   # reactor.heat_f
+ -1  1.1731500000000001E+03       0                 1.7976931348623157E+308
+  1   280   # reactor.Tf0
+ -1  1.1501500000000001E+03       0                 1.7976931348623157E+308
+  1   280   # reactor.Tm0
+ -1  1.0731500000000001E+03       0                 1.7976931348623157E+308
+  1   280   # reactor.Thp0
+ -1  6.8314999999999998E+02       0                 1.7976931348623157E+308
+  1   280   # reactor.TN_in
+ -1  1.0731500000000001E+03       0                 1.7976931348623157E+308
+  1   280   # reactor.TN_out
+  0  2.8814999999999998E+02       0                 1.7976931348623157E+308
+  6   256   # reactor.TN0
+ -1  5.0514999999999998E+02       0                 1.7976931348623157E+308
+  1   280   # reactor.Tsg0
+ -1  4.7144999999999999E+02       0                 1.7976931348623157E+308
+  1   280   # reactor.T_fw_in
+ -1  5.0514999999999998E+02       0                 1.7976931348623157E+308
+  1   280   # reactor.T_steam_out
+ -1  4.3552590000000000E+03       0                 1.7976931348623157E+308
+  1   280   # reactor.M_f
+ -1  7.4872000000000003E+02       0                       0                
+  1   280   # reactor.cp_f
+ -1  6.7392100000000005E+02       0                 1.7976931348623157E+308
+  1   280   # reactor.M_g
+ -1    1850                       0                       0                
+  1   280   # reactor.cp_g
+ -1  1.1967800000000000E+02       0                 1.7976931348623157E+308
+  1   280   # reactor.M_hp
+ -1  7.7129999999999995E+02       0                       0                
+  1   280   # reactor.cp_hp
+ -1    1182                       0                       0                
+  1   280   # reactor.cp_N2
+ -1       5                       0                       0                
+  1   280   # reactor.tau_N
+  0       0                       0                       0                
+  6   256   # reactor.m_dot_N
+  0       0                       0                 1.7976931348623157E+308
+  6   256   # reactor.M_N2
+ -1  2.0358700000000000E+06       0                       0                
+  1   280   # reactor.delta_h
+  0       0                       0                       0                
+  6   256   # reactor.G_f_g
+  0       0                       0                       0                
+  6   256   # reactor.G_g_hp
+  0       0                       0                       0                
+  6   256   # reactor.G_hp_N2
+  0       0                       0                       0                
+  6   256   # reactor.G_N2_sg
+  0       0                       0                       0                
+  6   256   # reactor.tau_f_g
+  0       0                       0                       0                
+  6   256   # reactor.tau_g_f
+  0       0                       0                       0                
+  6   256   # reactor.tau_g_hp
+  0       0                       0                       0                
+  6   256   # reactor.tau_hp_g
+  0       0                       0                       0                
+  6   256   # reactor.tau_hp_N2
+  0       0                       0                       0                
+  6   256   # reactor.tau_N2_hp
+  0       0                       0                       0                
+  6   256   # reactor.tau_N2_sg
+  0       0                       0                       0                
+  6   256   # reactor.inv_Mf_cp_f
+ -1 -4.5899999999999998E-05       0                       0                
+  1   280   # reactor.alpha_f
+ -1 -2.2099999999999998E-05       0                       0                
+  1   280   # reactor.alpha_m
+ -1      12                       0                       0                
+  1   282   # reactor.n_drums
+ -1  -13174                       0                       0                
+  1   280   # reactor.rho_max_total_pcm
+  0       0                       0                       0                
+  6   256   # reactor.rho_max_per_drum
+ -1      45                       0                       0                
+  1   280   # reactor.u0
+  0       0                       0                       0                
+  6   256   # reactor.rho_ss_single
+  0       0                       0                       0                
+  6   256   # reactor.rho_ss_total
+ -1       1                       0                       0                
+  2   280   # reactor.n
+  0       0                       0                       0                
+  3   256   # reactor.der(n)
+ -1       1                       0                       0                
+  2   280   # reactor.c[1]
+  0       0                       0                       0                
+  3   256   # reactor.der(c[1])
+ -1       1                       0                       0                
+  2   280   # reactor.c[2]
+  0       0                       0                       0                
+  3   256   # reactor.der(c[2])
+ -1       1                       0                       0                
+  2   280   # reactor.c[3]
+  0       0                       0                       0                
+  3   256   # reactor.der(c[3])
+ -1       1                       0                       0                
+  2   280   # reactor.c[4]
+  0       0                       0                       0                
+  3   256   # reactor.der(c[4])
+ -1       1                       0                       0                
+  2   280   # reactor.c[5]
+  0       0                       0                       0                
+  3   256   # reactor.der(c[5])
+ -1       1                       0                       0                
+  2   280   # reactor.c[6]
+  0       0                       0                       0                
+  3   256   # reactor.der(c[6])
+ -1       0                       0                 1.7976931348623157E+308
+  2   272   # reactor.Tf
+  0       0                       0                       0                
+  3   256   # reactor.der(Tf)
+ -1       0                       0                 1.7976931348623157E+308
+  2   272   # reactor.Tm
+  0       0                       0                       0                
+  3   256   # reactor.der(Tm)
+ -1       0                       0                 1.7976931348623157E+308
+  2   272   # reactor.Thp
+  0       0                       0                       0                
+  3   256   # reactor.der(Thp)
+ -1       0                       0                 1.7976931348623157E+308
+  2   272   # reactor.TN2
+  0       0                       0                       0                
+  3   256   # reactor.der(TN2)
+  0       0                       0                       0                
+  6   256   # reactor.P
+  0       0                       0                       0                
+  4   256   # t
+  0       0                       0                 1.7976931348623157E+308
+  4   256   # TN2
+  0       0                       0                 1.7976931348623157E+308
+  4   256   # Tm
+  0       0                       0                 1.7976931348623157E+308
+  4   256   # Thp
+  0       0                       0                 1.7976931348623157E+308
+  4   256   # Tf
+  0       0                       0                       0                
+  4   256   # dTN2
+  0       0                       0                       0                
+  4   256   # dTm
+  0       0                       0                       0                
+  4   256   # dThp
+  0       0                       0                       0                
+  4   256   # dTf
+  0       1                       0                       0                
+  4   256   # c[1]
+  0       1                       0                       0                
+  4   256   # c[2]
+  0       1                       0                       0                
+  4   256   # c[3]
+  0       1                       0                       0                
+  4   256   # c[4]
+  0       1                       0                       0                
+  4   256   # c[5]
+  0       1                       0                       0                
+  4   256   # c[6]
+  0       0                       0                       0                
+  4   256   # dc[1]
+  0       0                       0                       0                
+  4   256   # dc[2]
+  0       0                       0                       0                
+  4   256   # dc[3]
+  0       0                       0                       0                
+  4   256   # dc[4]
+  0       0                       0                       0                
+  4   256   # dc[5]
+  0       0                       0                       0                
+  4   256   # dc[6]
+  0       1                       0                       0                
+  4   256   # n
+  0       0                       0                       0                
+  4   256   # dn
+  0       0                       0                       0                
+  4   256   # P_MW
+  0       0                       0                       0                
+  4   256   # drumAngleDeg
+  0       0                       0                       0                
+  4   256   # drumVelDeg_s
+  0       0                       0                       0                
+  4   256   # drumAccDeg_s2
+  0       0                       0                       0                
+  4   256   # rho
+  0       0                       0                       0                
+  4   256   # rho_dollars
+  0       0                       0                       0                
+  4   256   # m_dot_steam
+  0       0                       0                       0                
+  4   256   # Q_to_steam
+
+
+# Matrix with 6 columns defining the initial value calculation
+# (columns 5 and 6 are not utilized for the calculation but are
+#  reported by dymosim via dymosim -i for user convenience):
+#
+# column 1: Type of initial value
+#           = -2: special case: for continuing simulation (column 2 = value)
+#           = -1: fixed value (column 2 = fixed value)
+#           =  0: free value, i.e., no restriction (column 2 = initial value)
+#           >  0: desired value (column 1 = weight for optimization
+#                                column 2 = desired value)
+#                 use weight=1, since automatic scaling usually
+#                 leads to equally weighted terms
+# column 2: fixed, free or desired value according to column 1.
+# column 3: Minimum value (ignored, if Minimum >= Maximum).
+# column 4: Maximum value (ignored, if Minimum >= Maximum).
+#           Minimum and maximum restrict the search range in initial
+#           value calculation. They might also be used for scaling.
+# column 5: Category of variable.
+#           = 1: parameter.
+#           = 2: state.
+#           = 3: state derivative.
+#           = 4: output.
+#           = 5: input.
+#           = 6: auxiliary variable.
+# column 6: Data type of variable and flags according to dsBaseType
+#  <value>&3= 0: real.
+#  <value>&3= 1: boolean.
+#  <value>&3= 2: integer.
+#
+# Initial values are calculated according to the following procedure:
+#
+# Initial values are calculated according to the following procedure:
+#
+# - If parameters, states and inputs are FIXED, and other variables
+#   are FREE, the initialization is performed in the normal way.
+#
+# - If parameters and inputs are FIXED, and all other variables
+#   have special case for continue (-2 in 1st column), or FREE
+#   the initialization is ignored and variables are set to these values.
+#   This is intended to continue the simulation.
+#
+#   Which variables will be important for initialization and continue
+#   is indicated by value in column 6 & dsStartMasks.
+#
+char initialDescription(142,110)
+[:#(type=Integer)]
+[:#(type=Integer)]
+[:#(type=Integer)]
+Column index for angle [:#(type=Integer)]
+[:#(type=Integer)]
+[:#(type=Integer)]
+Number of outputs [:#(type=Integer)]
+= true, if table is defined on file or in function usertab [:#(type=Boolean)]
+= true, if info message that file is loading is to be printed [:#(type=Boolean)]
+Columns of table to be interpolated [:#(type=Integer)]
+Columns of table to be interpolated [:#(type=Integer)]
+Columns of table to be interpolated [:#(type=Integer)]
+Smoothness of table interpolation [:#(type=Modelica.Blocks.Types.Smoothness)]
+Extrapolation of data outside the definition range [:#(type=Modelica.Blocks.Types.Extrapolation)]
+Time scale of first table column [s]
+Offsets of output signals
+Output = offset for time < startTime [s]
+Shift time of first table column [s]
+Time event handling of table interpolation [:#(type=Modelica.Blocks.Types.TimeEvents)]
+= true, if warning messages are to be printed if time is outside the table definition range [:#(type=Boolean)]
+Minimum abscissa value defined in table [s]
+Maximum abscissa value defined in table [s]
+Minimum (scaled) abscissa value defined in table [1]
+Maximum (scaled) abscissa value defined in table [1]
+Offsets of output signals
+Offsets of output signals
+Offsets of output signals
+[:#(type=Integer)]
+Next time event instant [s]
+Next scaled time event instant [1]
+Scaled time [1]
+Prompt neutron generation time [s] []
+[:#(type=Integer)]
+Delayed group decay constants [1/s] []
+Delayed group decay constants [1/s] []
+Delayed group decay constants [1/s] []
+Delayed group decay constants [1/s] []
+Delayed group decay constants [1/s] []
+Delayed group decay constants [1/s] []
+Delayed group fractions
+Delayed group fractions
+Delayed group fractions
+Delayed group fractions
+Delayed group fractions
+Delayed group fractions
+Total delayed neutron fraction
+Rated thermal power [W] [W]
+Fraction of power deposited in fuel [1]
+[K|degC]
+[K|degC]
+[K|degC]
+[K|degC]
+[K|degC]
+[K|degC]
+[K|degC]
+[K|degC]
+[K|degC]
+[kg]
+[J/(kg.K)]
+[kg]
+[J/(kg.K)]
+[kg]
+[J/(kg.K)]
+[J/(kg.K)]
+[s]
+[kg/s]
+[kg]
+J/kg [m2/s2]
+[W/K]
+[W/K]
+[W/K]
+[W/K]
+[s]
+[s]
+[s]
+[s]
+[s]
+[s]
+[s]
+[m-2.kg-1.s2.K]
+Fuel feedback [Δk/k per K] []
+Moderator feedback [Δk/k per K] []
+[:#(type=Integer)]
+
+
+Steady-state drum angle [deg] []
+
+
+Normalized power [1]
+der(Normalized power) [s-1]
+Normalized precursors
+der(Normalized precursors)
+Normalized precursors
+der(Normalized precursors)
+Normalized precursors
+der(Normalized precursors)
+Normalized precursors
+der(Normalized precursors)
+Normalized precursors
+der(Normalized precursors)
+Normalized precursors
+der(Normalized precursors)
+[K|degC]
+[K/s]
+[K|degC]
+[K/s]
+[K|degC]
+[K/s]
+[K|degC]
+[K/s]
+Thermal power [W] [W]
+Time [s] [s]
+Reactor N2 node temperature [K] [K|degC]
+Moderator/graphite temperature [K] [K|degC]
+Heat-pipe node temperature [K] [K|degC]
+Fuel temperature [K] [K|degC]
+d(TN2)/dt [K/s] [K/s]
+d(Tm)/dt [K/s] [K/s]
+d(Thp)/dt [K/s] [K/s]
+d(Tf)/dt [K/s] [K/s]
+Delayed neutron precursor states c[1..6] []
+Delayed neutron precursor states c[1..6] []
+Delayed neutron precursor states c[1..6] []
+Delayed neutron precursor states c[1..6] []
+Delayed neutron precursor states c[1..6] []
+Delayed neutron precursor states c[1..6] []
+d(c[i])/dt [1/s] []
+d(c[i])/dt [1/s] []
+d(c[i])/dt [1/s] []
+d(c[i])/dt [1/s] []
+d(c[i])/dt [1/s] []
+d(c[i])/dt [1/s] []
+Normalized power [1]
+d(n)/dt [1/s] [s-1]
+Thermal power [MW] []
+Applied drum angle [deg] []
+Drum velocity [deg/s] []
+Drum acceleration [deg/s2] []
+Reactivity [Δk/k] []
+Reactivity [$] []
+Steam production rate [kg/s] [kg/s]
+Heat available to steam [W] [W]
+
