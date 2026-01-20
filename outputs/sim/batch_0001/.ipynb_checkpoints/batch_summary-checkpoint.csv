@@ -1,0 +1,11 @@
+profile_mat,csv_out,status,stop_time_s,matread_s,simulate_s,extract_s,write_s,total_run_s,result_base
+drum_profile_00001.mat,results_drum_profile_00001.csv,OK,200.000000,0.007000,2.396849,0.709287,0.039058,3.162194,run_00001
+drum_profile_00002.mat,results_drum_profile_00002.csv,OK,200.000000,0.007072,1.958876,0.700797,0.041000,2.713746,run_00002
+drum_profile_00003.mat,results_drum_profile_00003.csv,OK,200.000000,0.006136,1.949972,0.707352,0.040098,2.709521,run_00003
+drum_profile_00004.mat,results_drum_profile_00004.csv,OK,200.000000,0.007000,1.974997,0.701484,0.039111,2.728595,run_00004
+drum_profile_00005.mat,results_drum_profile_00005.csv,OK,200.000000,0.006059,1.955709,0.704163,0.039046,2.711059,run_00005
+drum_profile_00006.mat,results_drum_profile_00006.csv,OK,200.000000,0.007000,1.962332,0.703193,0.040528,2.718140,run_00006
+drum_profile_00007.mat,results_drum_profile_00007.csv,OK,200.000000,0.007000,1.940674,0.689857,0.040098,2.682630,run_00007
+drum_profile_00008.mat,results_drum_profile_00008.csv,OK,200.000000,0.007000,1.967199,0.702846,0.040101,2.722145,run_00008
+drum_profile_00009.mat,results_drum_profile_00009.csv,OK,200.000000,0.006998,1.827642,0.705076,0.039651,2.584444,run_00009
+drum_profile_00010.mat,results_drum_profile_00010.csv,OK,200.000000,0.006999,1.958058,0.693806,0.039048,2.702912,run_00010
