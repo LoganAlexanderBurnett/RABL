@@ -1,8 +1,10 @@
-import numpy as np
 import csv
-import matplotlib.pyplot as plt
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
+
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.io import savemat
 
 
 # =============================================================================
@@ -39,6 +41,19 @@ class DrumProfile:
             w.writerow(header)
             for ti, th, vi, ai in zip(self.t, self.theta_deg, self.v_deg_s, self.a_deg_s2):
                 w.writerow([float(ti), float(th), float(vi), float(ai)])
+
+    def save_mat(self, path: str) -> None:
+        t = np.asarray(self.t).squeeze()
+        theta = np.asarray(self.theta_deg).squeeze()
+        v = np.asarray(self.v_deg_s).squeeze()
+        a = np.asarray(self.a_deg_s2).squeeze()
+
+        table = np.column_stack([t, theta, v, a])
+        savemat(
+            path,
+            {"profile": table},
+            format="4",
+        )
 
 
 # =============================================================================
