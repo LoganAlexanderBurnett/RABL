@@ -4,43 +4,9 @@ from pathlib import Path
 from time import time
 
 import numpy as np
-import matplotlib.pyplot as plt
-
 from microreactor_dynamics.interface import BatchConfig, DymolaBatchRunner
 from microreactor_dynamics.variography.DrumVariography import DrumProfileGenerator
 
-
-NUM_PROFILES = 1000
-
-PLOT_VARS = [
-    "drumAngleDeg",
-    "TN2",
-    "dTN2",
-    "Tm",
-    "dTm",
-    "Thp",
-    "dThp",
-    "Tf",
-    "dTf",
-    "c[1]",
-    "c[2]",
-    "c[3]",
-    "c[4]",
-    "c[5]",
-    "c[6]",
-    "dc[1]",
-    "dc[2]",
-    "dc[3]",
-    "dc[4]",
-    "dc[5]",
-    "dc[6]",
-    "P_MW",
-    "n",
-    "dn",
-    "rho_dollars",
-    "m_dot_steam",
-    "Q_to_steam",
-]
 
 
 def _load_config(config_path: Path) -> dict:
@@ -63,6 +29,7 @@ def _load_config(config_path: Path) -> dict:
         "sill_v_deg2_s2": getattr(config_module, "SILL_V_DEG2_S2", None),
         "nugget_v_deg2_s2": getattr(config_module, "NUGGET_V_DEG2_S2", None),
         "batch_number": getattr(config_module, "BATCH_NUMBER", None),
+        "num_profiles": getattr(config_module, "NUM_PROFILES", None),
         "seed": getattr(config_module, "SEED", None),
     }
 
@@ -82,6 +49,8 @@ def _validate_config(config: dict) -> dict:
         raise SystemExit("NUGGET_V_DEG2_S2 must be a non-negative number in config.py.")
     if not isinstance(config["batch_number"], int) or config["batch_number"] < 0:
         raise SystemExit("BATCH_NUMBER must be a non-negative integer in config.py.")
+    if not isinstance(config["num_profiles"], int) or config["num_profiles"] <= 0:
+        raise SystemExit("NUM_PROFILES must be a positive integer in config.py.")
     if not isinstance(config["baseline_angle_deg"], (int, float)):
         raise SystemExit("BASELINE_ANGLE_DEG must be a number in config.py.")
     if not (0.0 < float(config["baseline_angle_deg"]) < 180.0):
@@ -112,33 +81,6 @@ def _find_latest_profile_index(variography_root: Path) -> int:
                 indices.add(int(match.group(1)))
 
     return max(indices, default=0)
-
-
-def _plot_results(results_csv: Path, output_path: Path) -> None:
-    data = np.genfromtxt(results_csv, delimiter=",", names=True, dtype=float)
-    if "t" not in data.dtype.names:
-        raise SystemExit(f"Missing 't' column in {results_csv}")
-
-    missing = [var for var in PLOT_VARS if var not in data.dtype.names]
-    if missing:
-        raise SystemExit(f"Missing variables in {results_csv.name}: {missing}")
-
-    t = data["t"]
-
-    fig, axes = plt.subplots(9, 3, figsize=(18, 24), sharex=True)
-    axes = axes.flatten()
-
-    for ax, var in zip(axes, PLOT_VARS, strict=True):
-        ax.plot(t, data[var])
-        ax.set_title(var)
-        ax.set_ylabel(var)
-
-    for ax in axes[-3:]:
-        ax.set_xlabel("t (s)")
-
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
 
 
 def main() -> None:
@@ -178,18 +120,19 @@ def main() -> None:
         cond_jitter=1e-10,
     )
 
-    print(f"Generating {NUM_PROFILES} profiles...")
+    num_profiles = config["num_profiles"]
+    print(f"Generating {num_profiles} profiles...")
     start_gen = time()
     profiles = generator.generate(
         t_grid,
-        n_realizations=NUM_PROFILES,
+        n_realizations=num_profiles,
         baseline_angle_deg=config["baseline_angle_deg"],
         seed=config["seed"],
     )
     end_gen = time()
-    avg_gen_time = (end_gen - start_gen) / NUM_PROFILES
+    avg_gen_time = (end_gen - start_gen) / num_profiles
     print(
-        f"Generated {NUM_PROFILES} in {end_gen - start_gen:.3f} seconds "
+        f"Generated {num_profiles} in {end_gen - start_gen:.3f} seconds "
         f"(Average {avg_gen_time:.3f} sec/profile)"
     )
 
@@ -212,15 +155,6 @@ def main() -> None:
         runner.run_all()
     finally:
         runner.close()
-
-    results_csvs = sorted(sim_dir.glob("results_drum_profile_*.csv"))
-    if not results_csvs:
-        raise SystemExit(f"No results_drum_profile_*.csv found in {sim_dir}")
-
-    plot_path = sim_dir / f"timeseries_{batch_name}.png"
-    _plot_results(results_csvs[0], plot_path)
-    print(f"Saved plot to {plot_path}")
-
 
 if __name__ == "__main__":
     main()
