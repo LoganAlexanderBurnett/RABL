@@ -1,3 +1,0 @@
-profile_mat,csv_out,status,stop_time_s,matread_s,simulate_s,extract_s,write_s,total_run_s,result_base
-drum_profile_00001.mat,results_drum_profile_00001.csv,OK,200.000000,0.000000,3.269439,0.891677,0.038993,4.208182,run_00001
-drum_profile_00002.mat,results_drum_profile_00002.csv,OK,200.000000,0.001001,1.943878,0.690100,0.040089,2.680145,run_00002
