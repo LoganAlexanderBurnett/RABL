@@ -2,8 +2,6 @@ import importlib.util
 from pathlib import Path
 from time import time
 
-from scipy.io import savemat
-
 
 def _load_config(config_path: Path) -> dict:
     if not config_path.exists():
@@ -100,20 +98,7 @@ def main() -> None:
         profile.save_csv(csv_path)
 
         # MAT (Dymola CombiTimeTable style)
-        # Ensure 1D vectors (no Nx1 arrays)
-        t = np.asarray(profile.t).squeeze()
-        theta = np.asarray(profile.theta_deg).squeeze()
-        v = np.asarray(profile.v_deg_s).squeeze()
-        a = np.asarray(profile.a_deg_s2).squeeze()
-
-        # Col 1 time, col 2 angle, etc.
-        table = np.column_stack([t, theta, v, a])
-
-        savemat(
-            mat_path,
-            {"profile": table},
-            format="4",  # MATLAB v4: most compatible with Dymola tables
-        )
+        profile.save_mat(mat_path)
 
     print(f"Saved generated profiles as .CSV and .MAT in {output_dir}")
 
