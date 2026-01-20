@@ -15,8 +15,8 @@ class BatchConfig:
     # Paths RELATIVE to this script file for portability
     package_mo: str = r"../../modelica/MicroreactorPK/package.mo"
     model_name: str = "MicroreactorPK.Experiments.RunOneProfile"
-    profiles_dir: str = r"../variography/generated_profiles/test_batch"
-    out_dir: str = r"test_batch"
+    profiles_dir: str = r"../../../outputs/variography/batch_0000"
+    out_dir: str = r"../../../outputs/sim"
 
     table_name: str = "profile"
     angle_col: int = 2
@@ -77,6 +77,14 @@ class DymolaBatchRunner:
     @staticmethod
     def _to_dymola_path(p: Path | str) -> str:
         return str(p).replace("\\", "/")
+
+    def _cleanup_out_dir(self) -> None:
+        allowed = {".csv", ".mat", ".log"}
+        for entry in self.out_dir_abs.iterdir():
+            if entry.is_dir():
+                continue
+            if entry.suffix.lower() not in allowed:
+                entry.unlink()
 
     def infer_stop_time(self, profile_mat_path: Path) -> tuple[float, float]:
         """
@@ -152,98 +160,101 @@ class DymolaBatchRunner:
 
         run_t0 = time()
 
-        csv_name = self.results_csv_name(profile_path)
-        csv_out = self.out_dir_abs / csv_name
+        try:
+            csv_name = self.results_csv_name(profile_path)
+            csv_out = self.out_dir_abs / csv_name
 
-        # Skip existing
-        if self.cfg.skip_existing and csv_out.exists():
-            self._append_summary(profile_path, csv_out, "SKIP", None, 0.0, 0.0, 0.0, 0.0, time()-run_t0, "")
-            return True, f"SKIP (exists): {csv_out.name}"
+            # Skip existing
+            if self.cfg.skip_existing and csv_out.exists():
+                self._append_summary(profile_path, csv_out, "SKIP", None, 0.0, 0.0, 0.0, 0.0, time()-run_t0, "")
+                return True, f"SKIP (exists): {csv_out.name}"
 
-        idx = self._profile_index_from_name(profile_path)
-        if idx is None:
-            idx = 0
+            idx = self._profile_index_from_name(profile_path)
+            if idx is None:
+                idx = 0
 
-        result_base = f"run_{idx:05d}" if idx > 0 else f"run_{profile_path.stem}"
+            result_base = f"run_{idx:05d}" if idx > 0 else f"run_{profile_path.stem}"
 
-        # profileFile must be relative to OUT_DIR (Dymola cwd)
-        profile_rel = os.path.relpath(profile_path, self.out_dir_abs).replace("\\", "/")
+            # profileFile must be relative to OUT_DIR (Dymola cwd)
+            profile_rel = os.path.relpath(profile_path, self.out_dir_abs).replace("\\", "/")
 
-        # Stop time from MAT
-        stop_time, t_matread = self.infer_stop_time(profile_path)
-        self._matread_times.append(t_matread)
+            # Stop time from MAT
+            stop_time, t_matread = self.infer_stop_time(profile_path)
+            self._matread_times.append(t_matread)
 
-        model_call = (
-            f'{self.cfg.model_name}('
-            f'profileFile="{profile_rel}", '
-            f'tableName="{self.cfg.table_name}", '
-            f'angleColumn={self.cfg.angle_col}, '
-            f'velColumn={self.cfg.vel_col}, '
-            f'accColumn={self.cfg.acc_col}'
-            f')'
-        )
+            model_call = (
+                f'{self.cfg.model_name}('
+                f'profileFile="{profile_rel}", '
+                f'tableName="{self.cfg.table_name}", '
+                f'angleColumn={self.cfg.angle_col}, '
+                f'velColumn={self.cfg.vel_col}, '
+                f'accColumn={self.cfg.acc_col}'
+                f')'
+            )
 
-        # Simulate
-        t_sim0 = time()
-        ok = self.dymola.simulateModel(
-            model_call,
-            startTime=0.0,
-            stopTime=stop_time,
-            resultFile=result_base,
-            outputInterval=self.cfg.output_interval
-        )
-        t_sim = time() - t_sim0
-        self._sim_times.append(t_sim)
+            # Simulate
+            t_sim0 = time()
+            ok = self.dymola.simulateModel(
+                model_call,
+                startTime=0.0,
+                stopTime=stop_time,
+                resultFile=result_base,
+                outputInterval=self.cfg.output_interval
+            )
+            t_sim = time() - t_sim0
+            self._sim_times.append(t_sim)
 
-        if not ok:
-            log = self.dymola.getLastErrorLog()
-            err_path = self.out_dir_abs / f"{result_base}_dymola_error.log"
-            err_path.write_text(str(log), encoding="utf-8")
-            total = time() - run_t0
-            self._total_run_times.append(total)
-            self._append_summary(profile_path, csv_out, "FAIL", stop_time, t_matread, t_sim, 0.0, 0.0, total, result_base)
-            return False, f"FAILED: wrote {err_path.name}"
-
-        res = self.dymola.getLastResultFileName()
-        rows = self.dymola.readTrajectorySize(res)
-
-        # Verify variables once
-        if not self._vars_verified:
-            available = set(self.dymola.readTrajectoryNames(res))
-            missing = [v for v in self.cfg.vars_to_pull if v not in available]
-            if missing:
+            if not ok:
+                log = self.dymola.getLastErrorLog()
+                err_path = self.out_dir_abs / f"{result_base}_dymola_error.log"
+                err_path.write_text(str(log), encoding="utf-8")
                 total = time() - run_t0
                 self._total_run_times.append(total)
-                self._append_summary(profile_path, csv_out, "FAIL_MISSING_VARS", stop_time, t_matread, t_sim, 0.0, 0.0, total, result_base)
-                return False, f"FAILED: Missing variables in result: {missing}"
-            self._vars_verified = True
+                self._append_summary(profile_path, csv_out, "FAIL", stop_time, t_matread, t_sim, 0.0, 0.0, total, result_base)
+                return False, f"FAILED: wrote {err_path.name}"
 
-        # Extract
-        t_ext0 = time()
-        data = self.dymola.readTrajectory(res, list(self.cfg.vars_to_pull), rows)
-        cols = [np.asarray(col, dtype=float) for col in data]
+            res = self.dymola.getLastResultFileName()
+            rows = self.dymola.readTrajectorySize(res)
 
-        if self.cfg.keep_last_duplicate_time:
-            cols = self._dedupe_time_keep_last(cols)
+            # Verify variables once
+            if not self._vars_verified:
+                available = set(self.dymola.readTrajectoryNames(res))
+                missing = [v for v in self.cfg.vars_to_pull if v not in available]
+                if missing:
+                    total = time() - run_t0
+                    self._total_run_times.append(total)
+                    self._append_summary(profile_path, csv_out, "FAIL_MISSING_VARS", stop_time, t_matread, t_sim, 0.0, 0.0, total, result_base)
+                    return False, f"FAILED: Missing variables in result: {missing}"
+                self._vars_verified = True
 
-        t_extract = time() - t_ext0
-        self._extract_times.append(t_extract)
+            # Extract
+            t_ext0 = time()
+            data = self.dymola.readTrajectory(res, list(self.cfg.vars_to_pull), rows)
+            cols = [np.asarray(col, dtype=float) for col in data]
 
-        # Write
-        t_write0 = time()
-        with open(csv_out, "w", newline="") as fp:
-            w = csv.writer(fp)
-            w.writerow(self.cfg.vars_to_pull)
-            w.writerows(zip(*cols))
-        t_write = time() - t_write0
-        self._write_times.append(t_write)
+            if self.cfg.keep_last_duplicate_time:
+                cols = self._dedupe_time_keep_last(cols)
 
-        total = time() - run_t0
-        self._total_run_times.append(total)
+            t_extract = time() - t_ext0
+            self._extract_times.append(t_extract)
 
-        self._append_summary(profile_path, csv_out, "OK", stop_time, t_matread, t_sim, t_extract, t_write, total, result_base)
+            # Write
+            t_write0 = time()
+            with open(csv_out, "w", newline="") as fp:
+                w = csv.writer(fp)
+                w.writerow(self.cfg.vars_to_pull)
+                w.writerows(zip(*cols))
+            t_write = time() - t_write0
+            self._write_times.append(t_write)
 
-        return True, str(csv_out)
+            total = time() - run_t0
+            self._total_run_times.append(total)
+
+            self._append_summary(profile_path, csv_out, "OK", stop_time, t_matread, t_sim, t_extract, t_write, total, result_base)
+
+            return True, str(csv_out)
+        finally:
+            self._cleanup_out_dir()
 
     def _append_summary(self, profile_path, csv_out, status, stop_time, t_matread, t_sim, t_extract, t_write, total, result_base):
         with open(self.summary_csv, "a", newline="") as fp:
@@ -336,8 +347,8 @@ class DymolaBatchRunner:
 # -----------------------------
 if __name__ == "__main__":
     cfg = BatchConfig(
-        profiles_dir=r"../variography/generated_profiles/test_batch/",
-        out_dir=r"test_batch",
+        profiles_dir=r"../../../outputs/variography/batch_0000/",
+        out_dir=r"../../../outputs/sim",
         output_interval=0.1,
         skip_existing=True,
     )
