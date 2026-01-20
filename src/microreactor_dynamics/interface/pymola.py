@@ -13,10 +13,10 @@ from dymola.dymola_interface import DymolaInterface
 @dataclass(frozen=True)
 class BatchConfig:
     # Paths RELATIVE to this script file for portability
-    package_mo: str = r"../MicroreactorPK/package.mo"
+    package_mo: str = r"../../../MicroreactorPK/package.mo"
     model_name: str = "MicroreactorPK.Experiments.RunOneProfile"
-    profiles_dir: str = r"../Variography/generated_profiles/test_batch"
-    out_dir: str = r"../Interface/test_batch"
+    profiles_dir: str = r"../variography/generated_profiles/test_batch"
+    out_dir: str = r"test_batch"
 
     table_name: str = "profile"
     angle_col: int = 2
@@ -336,8 +336,8 @@ class DymolaBatchRunner:
 # -----------------------------
 if __name__ == "__main__":
     cfg = BatchConfig(
-        profiles_dir=r"../Variography/generated_profiles/test_batch/",
-        out_dir=r"../Interface/test_batch",
+        profiles_dir=r"../variography/generated_profiles/test_batch/",
+        out_dir=r"test_batch",
         output_interval=0.1,
         skip_existing=True,
     )

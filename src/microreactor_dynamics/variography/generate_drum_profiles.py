@@ -1,7 +1,9 @@
 import argparse
+import importlib.util
 import re
 from pathlib import Path
 from time import time
+
 from scipy.io import savemat
 
 
@@ -9,8 +11,11 @@ def _load_config(config_path: Path) -> dict:
     if not config_path.exists():
         raise SystemExit(f"Missing config file: {config_path}")
 
-    config_module_name = config_path.stem
-    config_module = __import__(config_module_name)
+    spec = importlib.util.spec_from_file_location("variography_config", config_path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"Unable to load config file: {config_path}")
+    config_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config_module)
     return {
         "baseline_angle_deg": getattr(config_module, "BASELINE_ANGLE_DEG", None),
         "ell": getattr(config_module, "ELL", None),
@@ -73,7 +78,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     import numpy as np
 
-    from DrumVariography import DrumProfileGenerator
+    from microreactor_dynamics.variography.DrumVariography import DrumProfileGenerator
 
     args = _parse_args()
 
