@@ -1,6 +1,4 @@
-import argparse
 import importlib.util
-import re
 from pathlib import Path
 from time import time
 
@@ -14,8 +12,10 @@ def _load_config(config_path: Path) -> dict:
     spec = importlib.util.spec_from_file_location("variography_config", config_path)
     if spec is None or spec.loader is None:
         raise SystemExit(f"Unable to load config file: {config_path}")
+
     config_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(config_module)
+
     return {
         "baseline_angle_deg": getattr(config_module, "BASELINE_ANGLE_DEG", None),
         "ell": getattr(config_module, "ELL", None),
@@ -23,6 +23,7 @@ def _load_config(config_path: Path) -> dict:
         "grid_length": getattr(config_module, "GRID_LENGTH", None),
         "kernel": getattr(config_module, "KERNEL", None),
         "nugget_v_deg2_s2": getattr(config_module, "NUGGET_V_DEG2_S2", None),
+        "sill_v_deg2_s2": getattr(config_module, "SILL_V_DEG2_S2", None),
         "num_profiles": getattr(config_module, "NUM_PROFILES", None),
         "seed": getattr(config_module, "SEED", None),
     }
@@ -35,6 +36,8 @@ def _validate_config(config: dict) -> dict:
         raise SystemExit("KERNEL must be a string in config.py.")
     if not isinstance(config["ell"], (int, float)) or config["ell"] <= 0:
         raise SystemExit("ELL must be a positive number in config.py.")
+    if not isinstance(config["sill_v_deg2_s2"], (int, float)) or config["sill_v_deg2_s2"] < 0:
+        raise SystemExit("SILL_V_DEG2_S2 must be a non-negative number in config.py.")
     if not isinstance(config["nugget_v_deg2_s2"], (int, float)) or config["nugget_v_deg2_s2"] < 0:
         raise SystemExit("NUGGET_V_DEG2_S2 must be a non-negative number in config.py.")
     if not isinstance(config["baseline_angle_deg"], (int, float)):
@@ -50,57 +53,25 @@ def _validate_config(config: dict) -> dict:
     return config
 
 
-def _next_batch_dir(output_root: Path) -> Path:
-    batch_pattern = re.compile(r"batch_(\d{4})$")
-    batch_indices = []
-    for entry in output_root.iterdir():
-        if not entry.is_dir():
-            continue
-        match = batch_pattern.match(entry.name)
-        if match:
-            batch_indices.append(int(match.group(1)))
-
-    next_index = max(batch_indices, default=-1) + 1
-    return output_root / f"batch_{next_index:04d}"
-
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate drum profiles and save CSV/MAT output.")
-    parser.add_argument(
-        "--num-profiles",
-        type=int,
-        default=None,
-        help="Override NUM_PROFILES from config.py.",
-    )
-    return parser.parse_args()
-
-
 def main() -> None:
     import numpy as np
-
     from microreactor_dynamics.variography.DrumVariography import DrumProfileGenerator
-
-    args = _parse_args()
 
     config_path = Path(__file__).resolve().parent / "config.py"
     config = _validate_config(_load_config(config_path))
-    num_profiles = args.num_profiles if args.num_profiles is not None else config["num_profiles"]
-    if not isinstance(num_profiles, int) or num_profiles <= 0:
-        raise SystemExit("--num-profiles must be a positive integer.")
 
+    num_profiles = config["num_profiles"]
     t_grid = np.linspace(0.0, config["grid_length"], config["grid_intervals"] + 1)
 
-    repo_root = Path(__file__).resolve().parent.parent
-    output_root = repo_root / "outputs" / "variography"
-    output_root.mkdir(parents=True, exist_ok=True)
-    output_dir = _next_batch_dir(output_root)
-    output_dir.mkdir(parents=True, exist_ok=False)
+    # Save directly into ./test_batch/ (relative to this script's directory)
+    output_dir = Path(__file__).resolve().parent / "test_batch"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     print("Defining variogram...")
     generator = DrumProfileGenerator(
         kernel=config["kernel"],
         ell=config["ell"],
-        sill_v_deg2_s2=0.1,
+        sill_v_deg2_s2=config["sill_v_deg2_s2"],
         nugget_v_deg2_s2=config["nugget_v_deg2_s2"],
         jitter_frac=1e-10,
         cond_jitter=1e-10,
@@ -115,30 +86,35 @@ def main() -> None:
         seed=config["seed"],
     )
     end_gen = time()
-    avg_gen_time = (end_gen-start_gen)/num_profiles
-    print(f"Generated {num_profiles} in {end_gen-start_gen:.3f} seconds (Average {avg_gen_time:.3f} sec/profile)")
+    avg_gen_time = (end_gen - start_gen) / num_profiles
+    print(
+        f"Generated {num_profiles} in {end_gen - start_gen:.3f} seconds "
+        f"(Average {avg_gen_time:.3f} sec/profile)"
+    )
 
     for idx, profile in enumerate(profiles, start=1):
         csv_path = output_dir / f"drum_profile_{idx:05d}.csv"
         mat_path = output_dir / f"drum_profile_{idx:05d}.mat"
+
+        # CSV
         profile.save_csv(csv_path)
-    
+
+        # MAT (Dymola CombiTimeTable style)
         # Ensure 1D vectors (no Nx1 arrays)
-        t     = np.asarray(profile.t).squeeze()
+        t = np.asarray(profile.t).squeeze()
         theta = np.asarray(profile.theta_deg).squeeze()
-        v     = np.asarray(profile.v_deg_s).squeeze()
-        a     = np.asarray(profile.a_deg_s2).squeeze()
-    
-        # Dymola CombiTimeTable expects: col 1 time, col 2 angle, etc.
+        v = np.asarray(profile.v_deg_s).squeeze()
+        a = np.asarray(profile.a_deg_s2).squeeze()
+
+        # Col 1 time, col 2 angle, etc.
         table = np.column_stack([t, theta, v, a])
-    
+
         savemat(
             mat_path,
-            {
-                "profile": table
-            },
-            format="4"  # <-- MATLAB v4 most compatible with Dymola tables
+            {"profile": table},
+            format="4",  # MATLAB v4: most compatible with Dymola tables
         )
+
     print(f"Saved generated profiles as .CSV and .MAT in {output_dir}")
 
 
