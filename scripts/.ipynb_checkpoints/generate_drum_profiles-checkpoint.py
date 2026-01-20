@@ -90,7 +90,8 @@ def main() -> None:
 
     t_grid = np.linspace(0.0, config["grid_length"], config["grid_intervals"] + 1)
 
-    output_root = Path(__file__).resolve().parent / "generated_profiles"
+    repo_root = Path(__file__).resolve().parent.parent
+    output_root = repo_root / "outputs" / "variography"
     output_root.mkdir(parents=True, exist_ok=True)
     output_dir = _next_batch_dir(output_root)
     output_dir.mkdir(parents=True, exist_ok=False)
