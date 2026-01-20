@@ -15,8 +15,8 @@ class BatchConfig:
     # Paths RELATIVE to this script file for portability
     package_mo: str = r"../../modelica/MicroreactorPK/package.mo"
     model_name: str = "MicroreactorPK.Experiments.RunOneProfile"
-    profiles_dir: str = r"../../../outputs/variography/batch_0000"
-    out_dir: str = r"../../../outputs/sim"
+    profiles_dir: str = r"../../../outputs/variography/test_batch"
+    out_dir: str = r"../../../outputs/sim/test_batch"
 
     table_name: str = "profile"
     angle_col: int = 2
@@ -348,7 +348,7 @@ class DymolaBatchRunner:
 if __name__ == "__main__":
     cfg = BatchConfig(
         profiles_dir=r"../../../outputs/variography/batch_0000/",
-        out_dir=r"../../../outputs/sim",
+        out_dir=r"../../../outputs/sim/test_batch",
         output_interval=0.1,
         skip_existing=True,
     )
