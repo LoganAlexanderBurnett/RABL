@@ -13,7 +13,7 @@ from dymola.dymola_interface import DymolaInterface
 @dataclass(frozen=True)
 class BatchConfig:
     # Paths RELATIVE to this script file for portability
-    package_mo: str = r"../../../MicroreactorPK/package.mo"
+    package_mo: str = r"../../modelica/microreactor_physics/package.mo"
     model_name: str = "MicroreactorPK.Experiments.RunOneProfile"
     profiles_dir: str = r"../variography/generated_profiles/test_batch"
     out_dir: str = r"test_batch"
