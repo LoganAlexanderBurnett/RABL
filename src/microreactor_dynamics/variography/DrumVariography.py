@@ -60,7 +60,7 @@ class DrumProfileGenerator:
         self,
         kernel: str = "matern52",
         ell: float = 5.0,
-        sill_v_deg2_s2: float = 25.0,
+        sill_v_deg2_s2: float = 0.1,
         nugget_v_deg2_s2: float = 0.0,
         jitter_frac: float = 1e-10,
         cond_jitter: float = 1e-10,
