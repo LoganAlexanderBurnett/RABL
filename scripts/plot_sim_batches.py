@@ -151,7 +151,7 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
                 df[var].to_numpy(),
                 color=color,
                 linewidth=1.0,
-                alpha=0.35,  # helps when you have lots of profiles
+                alpha=0.10,
             )
 
         ax.set_title(var)
