@@ -3,7 +3,7 @@ import re
 import csv
 from dataclasses import dataclass
 from pathlib import Path
-from time import time
+from time import sleep, time
 
 import numpy as np
 from scipy.io import loadmat
@@ -254,7 +254,14 @@ class DymolaBatchRunner:
 
             return True, str(csv_out)
         finally:
-            self._cleanup_out_dir()
+            for attempt in range(3):
+                try:
+                    self._cleanup_out_dir()
+                    break
+                except PermissionError:
+                    if attempt == 2:
+                        break
+                    sleep(10)
 
     def _append_summary(self, profile_path, csv_out, status, stop_time, t_matread, t_sim, t_extract, t_write, total, result_base):
         with open(self.summary_csv, "a", newline="") as fp:
