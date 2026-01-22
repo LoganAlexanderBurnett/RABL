@@ -38,12 +38,15 @@ def _load_config(config_path: Path) -> dict:
 
     return {
         "k_lookback": getattr(config_module, "K_LOOKBACK", None),
+        "steady_state": getattr(config_module, "STEADY_STATE", None),
     }
 
 
 def _validate_config(config: dict) -> dict:
     if not isinstance(config["k_lookback"], int) or config["k_lookback"] < 1:
         raise SystemExit("K_LOOKBACK must be a positive integer in config.py.")
+    if not isinstance(config["steady_state"], dict):
+        raise SystemExit("STEADY_STATE must be a dictionary in config.py.")
     return config
 
 
@@ -89,6 +92,18 @@ def _build_sequences(states: np.ndarray, control: np.ndarray, k: int) -> tuple[n
     return np.asarray(x_list, dtype=float), np.asarray(y_list, dtype=float)
 
 
+def _steady_state_rows(steady_state: dict, k: int) -> tuple[np.ndarray, np.ndarray]:
+    missing = [key for key in STATE_COLUMNS + (CONTROL_COLUMN,) if key not in steady_state]
+    if missing:
+        raise SystemExit(f"STEADY_STATE is missing keys: {missing}")
+
+    state_row = np.asarray([steady_state[key] for key in STATE_COLUMNS], dtype=float)
+    control_row = np.asarray([steady_state[CONTROL_COLUMN]], dtype=float)
+    state_pad = np.repeat(state_row[None, :], k + 1, axis=0)
+    control_pad = np.repeat(control_row[None, :], k + 1, axis=0)
+    return state_pad, control_pad
+
+
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     sim_root = repo_root / "outputs" / "sim"
@@ -97,6 +112,7 @@ def main() -> None:
 
     config = _validate_config(_load_config(config_path))
     k = config["k_lookback"]
+    steady_state = config["steady_state"]
 
     csv_files = _collect_csv_files(sim_root)
     if not csv_files:
@@ -119,10 +135,13 @@ def main() -> None:
         files_group = h5f.create_group("files")
 
         total_samples = 0
+        state_pad, control_pad = _steady_state_rows(steady_state, k)
         for csv_path in csv_files:
             state_data = _read_csv_columns(csv_path, STATE_COLUMNS)
             control_data = _read_csv_columns(csv_path, (CONTROL_COLUMN,))
-            x_seq, y_seq = _build_sequences(state_data, control_data, k)
+            padded_states = np.vstack([state_pad, state_data])
+            padded_control = np.vstack([control_pad, control_data])
+            x_seq, y_seq = _build_sequences(padded_states, padded_control, k)
             if not x_seq.size:
                 continue
 
