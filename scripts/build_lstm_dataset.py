@@ -136,7 +136,11 @@ def main() -> None:
         h5f.attrs["k_lookback"] = k
         h5f.attrs["state_feature_names"] = np.asarray(state_cols, dtype="S")
         h5f.attrs["control_feature_name"] = control_col
-        h5f.attrs["source_files"] = np.asarray([str(p) for p in csv_files], dtype="S")
+        h5f.create_dataset(
+            "source_files",
+            data=np.asarray([str(p) for p in csv_files], dtype="S"),
+            compression="gzip",
+        )
 
     print(f"Found {len(csv_files)} CSV files under {sim_root}.")
     print(f"Generated {x.shape[0]} samples.")
