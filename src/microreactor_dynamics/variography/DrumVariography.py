@@ -226,10 +226,11 @@ class DrumProfileGenerator:
         rng = np.random.default_rng(seed)
 
         profiles: List[DrumProfile] = []
-        for _ in range(n_realizations):
+        for i in range(n_realizations):
             theta = self.sample_theta(t, baseline_angle_deg, rng)
             v, a = self.velocity_and_accel_from_theta(t, theta)
             profiles.append(DrumProfile(t=t, theta_deg=theta, v_deg_s=v, a_deg_s2=a))
+            print(f"Profiles generated: [{i+1}/{n_realizations}]")
         return profiles
 
     # -----------------------------
@@ -373,6 +374,7 @@ class DrumProfileGenerator:
             theta_full[S:] = theta_fut_draws[k]
             v_full, a_full = self.velocity_and_accel_from_theta(t, theta_full)
             branched.append(DrumProfile(t=t, theta_deg=theta_full, v_deg_s=v_full, a_deg_s2=a_full))
+            print(f"Branches generated: [{k+1}/{n_branches}]")
 
         return branched
 

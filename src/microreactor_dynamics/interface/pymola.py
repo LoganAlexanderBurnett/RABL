@@ -354,8 +354,8 @@ class DymolaBatchRunner:
 # -----------------------------
 if __name__ == "__main__":
     cfg = BatchConfig(
-        profiles_dir=r"../../../outputs/variography/batch_0000/",
-        out_dir=r"../../../outputs/sim/test_batch",
+        profiles_dir=r"../../../tests/test_batch",
+        out_dir=r"../../../tests/test_results",
         output_interval=0.1,
         skip_existing=True,
     )
