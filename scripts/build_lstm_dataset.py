@@ -109,42 +109,36 @@ def main() -> None:
     batch_i = min(batch_numbers)
     batch_f = max(batch_numbers)
 
-    state_cols = STATE_COLUMNS
-    control_col = CONTROL_COLUMN
-    all_x = []
-    all_y = []
-    for csv_path in csv_files:
-        state_data = _read_csv_columns(csv_path, state_cols)
-        control_data = _read_csv_columns(csv_path, (control_col,))
-        x_seq, y_seq = _build_sequences(state_data, control_data, k)
-        if x_seq.size:
-            all_x.append(x_seq)
-            all_y.append(y_seq)
-
-    if not all_x:
-        raise SystemExit("No samples generated; check lookback size or input CSV lengths.")
-
-    x = np.concatenate(all_x, axis=0)
-    y = np.concatenate(all_y, axis=0)
-
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"lstm_merged_batch_{batch_i:04d}-batch_{batch_f:04d}_k{k}.h5"
 
     with h5py.File(output_path, "w") as h5f:
-        h5f.create_dataset("X", data=x, compression="gzip")
-        h5f.create_dataset("Y", data=y, compression="gzip")
         h5f.attrs["k_lookback"] = k
-        h5f.attrs["state_feature_names"] = np.asarray(state_cols, dtype="S")
-        h5f.attrs["control_feature_name"] = control_col
-        h5f.create_dataset(
-            "source_files",
-            data=np.asarray([str(p) for p in csv_files], dtype="S"),
-            compression="gzip",
-        )
+        h5f.attrs["state_feature_names"] = np.asarray(STATE_COLUMNS, dtype="S")
+        h5f.attrs["control_feature_name"] = CONTROL_COLUMN
+        files_group = h5f.create_group("files")
+
+        total_samples = 0
+        for csv_path in csv_files:
+            state_data = _read_csv_columns(csv_path, STATE_COLUMNS)
+            control_data = _read_csv_columns(csv_path, (CONTROL_COLUMN,))
+            x_seq, y_seq = _build_sequences(state_data, control_data, k)
+            if not x_seq.size:
+                continue
+
+            file_group = files_group.create_group(csv_path.stem)
+            file_group.create_dataset("X", data=x_seq, compression="gzip")
+            file_group.create_dataset("Y", data=y_seq, compression="gzip")
+            file_group.attrs["source_file"] = str(csv_path)
+            file_group.attrs["num_samples"] = x_seq.shape[0]
+            total_samples += x_seq.shape[0]
+            print(f"{csv_path.name}: {x_seq.shape[0]} samples")
+
+    if total_samples == 0:
+        raise SystemExit("No samples generated; check lookback size or input CSV lengths.")
 
     print(f"Found {len(csv_files)} CSV files under {sim_root}.")
-    print(f"Generated {x.shape[0]} samples.")
-    print(f"X shape: {x.shape}, Y shape: {y.shape}")
+    print(f"Generated {total_samples} samples across {len(csv_files)} files.")
     print(f"Saved dataset to {output_path}")
 
 
