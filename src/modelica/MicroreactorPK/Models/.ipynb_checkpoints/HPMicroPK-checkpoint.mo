@@ -130,7 +130,7 @@ model HPMicroPK
   //
   // abs() is used so G is positive regardless of temperature ordering.
 
-  parameter SI.ThermalConductance G_f_g  = P_r / abs(Tf0  - Tm0);
+  parameter SI.ThermalConductance G_f_g  = heat_f * P_r / abs(Tf0  - Tm0);
   parameter SI.ThermalConductance G_g_hp = P_r / abs(Tm0  - Thp0);
   parameter SI.ThermalConductance G_hp_N2= P_r / abs(Thp0 - TN0);
   parameter SI.ThermalConductance G_N2_sg= P_r / abs(TN0  - Tsg0);

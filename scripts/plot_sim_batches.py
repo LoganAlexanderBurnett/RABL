@@ -123,7 +123,7 @@ def _read_results_csv(results_csv: Path) -> pd.DataFrame:
             f"Columns found: {df.columns.tolist()}"
         )
 
-    # Convert to numeric (bad cells -> NaN)
+    # Convert to numeric
     df = df.apply(pd.to_numeric, errors="coerce")
 
     # Drop rows where time is missing
