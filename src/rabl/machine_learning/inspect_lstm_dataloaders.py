@@ -146,7 +146,7 @@ def rolling_forecast(model: tf.keras.Model, x_profile: np.ndarray) -> np.ndarray
     return np.asarray(preds)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Inspect LSTM HDF5 datasets and build model.")
     parser.add_argument(
         "--h5",
@@ -183,7 +183,7 @@ def main() -> None:
         action="store_true",
         help="Run a rolling forecast on the first validation profile and print the output shape.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     datasets = build_datasets(args.h5, args.batch_size, args.seed)
 
