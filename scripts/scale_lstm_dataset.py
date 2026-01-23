@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from machine_learning import LSTMDatasetScalerSplitter
+from rabl.machine_learning import LSTMDatasetScalerSplitter
 
 
 def main() -> None:

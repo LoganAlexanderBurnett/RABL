@@ -4,8 +4,8 @@ from pathlib import Path
 from time import time
 
 import numpy as np
-from microreactor_dynamics.interface import BatchConfig, DymolaBatchRunner
-from microreactor_dynamics.variography.DrumVariography import DrumProfileGenerator
+from rabl.interface import BatchConfig, DymolaBatchRunner
+from rabl.variography.DrumVariography import DrumProfileGenerator
 
 
 

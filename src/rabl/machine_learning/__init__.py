@@ -1,4 +1,4 @@
-"""Machine learning utilities for microreactor dynamics."""
+"""Machine learning utilities for RABL."""
 
 from .dataset_scaling import LSTMDatasetScalerSplitter
 from .plot_feature_correlations import plot_feature_correlations

@@ -53,7 +53,7 @@ def _validate_config(config: dict) -> dict:
 
 def main() -> None:
     import numpy as np
-    from microreactor_dynamics.variography.DrumVariography import DrumProfileGenerator
+    from rabl.variography.DrumVariography import DrumProfileGenerator
 
     config_path = Path(__file__).resolve().parent / "config.py"
     config = _validate_config(_load_config(config_path))
