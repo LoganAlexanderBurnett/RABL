@@ -4,6 +4,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+import inspect
+import sys
+
 from rabl.machine_learning.inspect_lstm_dataloaders import main as inspect_main
 
 
@@ -31,7 +34,16 @@ def run(
     if demo_rolling:
         argv.append("--demo-rolling")
 
-    inspect_main(argv)
+    if inspect.signature(inspect_main).parameters:
+        inspect_main(argv)
+        return
+
+    original_argv = sys.argv
+    try:
+        sys.argv = ["inspect_lstm_dataloaders.py", *argv]
+        inspect_main()
+    finally:
+        sys.argv = original_argv
 
 
 if __name__ == "__main__":
