@@ -1,5 +1,3 @@
-# RABL
-
 ![RABL_LOGO](misc/rabl_logo.png)
 
 RABL is a Python and Modelica toolbox for microreactor dynamics studies. It brings together:
