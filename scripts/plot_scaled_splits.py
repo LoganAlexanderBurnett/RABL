@@ -9,9 +9,8 @@ def main() -> None:
         "lstm_merged_batch_0001-batch_0001_k10_none_train0.70_val0.15_test0.15.h5"
     )
 
-    for split in ("train", "val", "test"):
-        output_path = plot_scaled_features(input_path, split=split)
-        print(f"Saved {split} plot to {output_path}")
+    output_path = plot_scaled_features(input_path)
+    print(f"Saved combined split plot to {output_path}")
 
 
 if __name__ == "__main__":
