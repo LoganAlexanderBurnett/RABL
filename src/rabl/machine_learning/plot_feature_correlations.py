@@ -41,7 +41,7 @@ def _load_features(
 def plot_feature_correlations(
     input_path: Path,
     output_path: Path | None = None,
-    split: str = "train",
+    splits: tuple[str, str, str] = ("train", "val", "test"),
     max_samples: int = 200_000,
     seed: int = 123,
 ) -> Path:
@@ -57,9 +57,12 @@ def plot_feature_correlations(
         feature_labels = [name.decode() if isinstance(name, bytes) else name for name in feature_names]
         feature_labels.append(control_name.decode() if isinstance(control_name, bytes) else control_name)
 
-        data = _load_features(h5f, split=split, max_samples=max_samples, seed=seed)
+        data_by_split = [
+            _load_features(h5f, split=split, max_samples=max_samples, seed=seed)
+            for split in splits
+        ]
 
-    corr = np.corrcoef(data, rowvar=False)
+    corr = np.corrcoef(np.concatenate(data_by_split, axis=0), rowvar=False)
 
     fig, ax = plt.subplots(figsize=(10, 8))
     cax = ax.imshow(corr, cmap="coolwarm", vmin=-1, vmax=1)
@@ -68,17 +71,16 @@ def plot_feature_correlations(
     ax.set_xticklabels(feature_labels, rotation=45, ha="right")
     ax.set_yticklabels(feature_labels)
     fig.colorbar(cax, ax=ax, fraction=0.046, pad=0.04)
-    ax.set_title(f"Feature correlation matrix ({split} split)")
+    ax.set_title("Feature correlation matrix (train/val/test splits)")
     fig.tight_layout()
 
     if output_path is None:
-        output_dir = input_path.parents[2] / "outputs" / "datasets"
+        output_dir = input_path.parents[3] / "outputs" / "datasets"
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{input_path.stem}_{split}_correlations.png"
+        output_path = output_dir / f"{input_path.stem}_all_splits_correlations.png"
     else:
         output_path = Path(output_path)
 
     fig.savefig(output_path, dpi=200)
     plt.close(fig)
     return output_path
-    
