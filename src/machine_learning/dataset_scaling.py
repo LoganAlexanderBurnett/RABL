@@ -8,7 +8,7 @@ import h5py
 import numpy as np
 
 
-ScalingType = Literal["standard", "minmax"]
+ScalingType = Literal["standard", "minmax", "none"]
 
 
 @dataclass(frozen=True)
@@ -47,8 +47,8 @@ class LSTMDatasetScalerSplitter:
     def run(self) -> Path:
         if not self.input_path.exists():
             raise FileNotFoundError(f"Input dataset not found: {self.input_path}")
-        if self.scaling_type not in ("standard", "minmax"):
-            raise ValueError("scaling_type must be 'standard' or 'minmax'.")
+        if self.scaling_type not in ("standard", "minmax", "none"):
+            raise ValueError("scaling_type must be 'standard', 'minmax', or 'none'.")
         self.splits.validate()
 
         output_path = self._resolve_output_path()
@@ -126,7 +126,7 @@ class LSTMDatasetScalerSplitter:
             dst_h5f.attrs["x_std"] = stats["x"]["std"]
             dst_h5f.attrs["y_mean"] = stats["y"]["mean"]
             dst_h5f.attrs["y_std"] = stats["y"]["std"]
-        else:
+        elif self.scaling_type == "minmax":
             dst_h5f.attrs["x_min"] = stats["x"]["min"]
             dst_h5f.attrs["x_max"] = stats["x"]["max"]
             dst_h5f.attrs["y_min"] = stats["y"]["min"]
@@ -158,12 +158,16 @@ class LSTMDatasetScalerSplitter:
 
 
 def _init_stats(scaling_type: ScalingType, features: int) -> dict:
+    if scaling_type == "none":
+        return {}
     if scaling_type == "standard":
         return {"count": 0, "mean": np.zeros(features), "M2": np.zeros(features)}
     return {"min": np.full(features, np.inf), "max": np.full(features, -np.inf)}
 
 
 def _update_stats(scaling_type: ScalingType, stats: dict, batch: np.ndarray) -> dict:
+    if scaling_type == "none":
+        return stats
     if scaling_type == "standard":
         return _update_running_stats(stats, batch)
     stats["min"] = np.minimum(stats["min"], batch.min(axis=0))
@@ -172,6 +176,8 @@ def _update_stats(scaling_type: ScalingType, stats: dict, batch: np.ndarray) -> 
 
 
 def _finalize_stats(scaling_type: ScalingType, stats: dict) -> dict:
+    if scaling_type == "none":
+        return {}
     if scaling_type == "standard":
         count = max(stats["count"], 1)
         variance = stats["M2"] / count
@@ -202,6 +208,8 @@ def _update_running_stats(stats: dict, batch: np.ndarray) -> dict:
 
 
 def _apply_scaling(scaling_type: ScalingType, data: np.ndarray, stats: dict) -> np.ndarray:
+    if scaling_type == "none":
+        return data
     if scaling_type == "standard":
         return (data - stats["mean"]) / stats["std"]
     return (data - stats["min"]) / stats["span"]
