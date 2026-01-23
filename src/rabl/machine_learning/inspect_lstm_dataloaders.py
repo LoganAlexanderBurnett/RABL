@@ -1,4 +1,3 @@
-import argparse
 from pathlib import Path
 
 import h5py
@@ -10,6 +9,17 @@ import tensorflow as tf
 STATE_DIM = 13
 DEFAULT_BATCH_SIZE = 64
 DEFAULT_EPOCHS = 100
+
+
+def detect_training_device() -> str:
+    gpus = tf.config.list_physical_devices("GPU")
+    if gpus:
+        gpu_name = gpus[0].name
+        print(f"Using GPU: {gpu_name}")
+        return "/GPU:0"
+
+    print("No GPU detected; training on CPU.")
+    return "/CPU:0"
 
 
 def _get_profile_names(h5_path: Path, split: str) -> list[str]:
@@ -146,56 +156,7 @@ def rolling_forecast(model: tf.keras.Model, x_profile: np.ndarray) -> np.ndarray
     return np.asarray(preds)
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Inspect LSTM HDF5 datasets and build model.")
-    parser.add_argument(
-        "--h5",
-        type=Path,
-        required=True,
-        help="Path to the merged LSTM HDF5 dataset.",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=DEFAULT_BATCH_SIZE,
-        help="Batch size for the training dataloader.",
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=DEFAULT_EPOCHS,
-        help="Number of training epochs.",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=7,
-        help="Random seed for shuffling training samples within each profile.",
-    )
-    parser.add_argument(
-        "--plot-path",
-        type=Path,
-        default=None,
-        help="Optional path to save the training/validation curve plot.",
-    )
-    parser.add_argument(
-        "--demo-rolling",
-        action="store_true",
-        help="Run a rolling forecast on the first validation profile and print the output shape.",
-    )
-    args = parser.parse_args(argv)
-
-    datasets = build_datasets(args.h5, args.batch_size, args.seed)
-
-    gpus = tf.config.list_physical_devices("GPU")
-    if gpus:
-        gpu_name = gpus[0].name
-        print(f"Using GPU: {gpu_name}")
-        training_device = "/GPU:0"
-    else:
-        print("No GPU detected; training on CPU.")
-        training_device = "/CPU:0"
-
+def inspect_dataset_shapes(datasets: dict[str, tf.data.Dataset]) -> None:
     print("Dataset summary:")
     print(f"  Train profiles: {len(datasets['train_profile_names'])}")
     print(f"  Val profiles:   {len(datasets['val_profile_names'])}")
@@ -213,9 +174,21 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  X profile shape: {x_profile.shape}")
         print(f"  Y profile shape: {y_profile.shape}")
 
+
+def train_model(
+    datasets: dict[str, tf.data.Dataset],
+    *,
+    epochs: int = DEFAULT_EPOCHS,
+    plot_path: str | Path | None = None,
+    training_device: str | None = None,
+) -> tuple[tf.keras.Model, tf.keras.callbacks.History, Path]:
     timesteps = datasets["sample_shape"][1]
     num_features = datasets["sample_shape"][2]
     num_targets = datasets["target_shape"][1]
+
+    if training_device is None:
+        training_device = detect_training_device()
+
     with tf.device(training_device):
         model = build_model(timesteps, num_features, num_targets)
         model.summary()
@@ -223,13 +196,13 @@ def main(argv: list[str] | None = None) -> None:
         history = model.fit(
             datasets["train"],
             validation_data=datasets["val_samples"],
-            epochs=args.epochs,
+            epochs=epochs,
         )
 
-    plot_path = args.plot_path
-    if plot_path is None:
-        plot_path = Path(__file__).resolve().parents[3] / "outputs" / "plots" / "lstm_training_curves.png"
-    plot_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_plot_path = Path(plot_path) if plot_path is not None else None
+    if resolved_plot_path is None:
+        resolved_plot_path = Path(__file__).resolve().parents[3] / "outputs" / "plots" / "lstm_training_curves.png"
+    resolved_plot_path.parent.mkdir(parents=True, exist_ok=True)
 
     epochs_range = range(1, len(history.history["loss"]) + 1)
     plt.figure(figsize=(10, 6))
@@ -240,14 +213,7 @@ def main(argv: list[str] | None = None) -> None:
     plt.title("Training and Validation Loss")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(plot_path, dpi=150)
-    print(f"Saved training curves to {plot_path}")
+    plt.savefig(resolved_plot_path, dpi=150)
+    print(f"Saved training curves to {resolved_plot_path}")
 
-    if args.demo_rolling:
-        _, x_profile, _ = next(iter(datasets["val_profile_ds"]))
-        preds = rolling_forecast(model, x_profile.numpy())
-        print(f"Rolling forecast output shape: {preds.shape}")
-
-
-if __name__ == "__main__":
-    main()
+    return model, history, resolved_plot_path
