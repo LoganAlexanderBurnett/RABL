@@ -75,7 +75,7 @@ def plot_feature_correlations(
     fig.tight_layout()
 
     if output_path is None:
-        output_dir = input_path.parents[3] / "outputs" / "datasets"
+        output_dir = input_path.parents[2] / "outputs" / "datasets"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{input_path.stem}_all_splits_correlations.png"
     else:
