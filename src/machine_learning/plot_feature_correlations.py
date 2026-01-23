@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def _collect_samples(
+def _load_features(
     h5f: h5py.File,
     split: str,
     max_samples: int,
@@ -34,11 +34,11 @@ def _collect_samples(
             remaining = 0
 
     if not samples:
-        raise ValueError("No samples found to plot.")
+        raise ValueError("No samples found to compute correlations.")
     return np.concatenate(samples, axis=0)
 
 
-def plot_scaled_features(
+def plot_feature_correlations(
     input_path: Path,
     output_path: Path | None = None,
     split: str = "train",
@@ -57,40 +57,28 @@ def plot_scaled_features(
         feature_labels = [name.decode() if isinstance(name, bytes) else name for name in feature_names]
         feature_labels.append(control_name.decode() if isinstance(control_name, bytes) else control_name)
 
-        data = _collect_samples(h5f, split=split, max_samples=max_samples, seed=seed)
+        data = _load_features(h5f, split=split, max_samples=max_samples, seed=seed)
 
-    fig, axes = plt.subplots(7, 2, figsize=(12, 18), sharex=False)
-    axes = axes.flatten()
+    corr = np.corrcoef(data, rowvar=False)
 
-    for idx, ax in enumerate(axes):
-        ax.hist(data[:, idx], bins=50, color="steelblue", alpha=0.8)
-        ax.set_title(feature_labels[idx])
-        ax.grid(True, alpha=0.2)
-
-    fig.suptitle(f"Scaled feature distributions ({split} split)", fontsize=14)
-    fig.tight_layout(rect=[0, 0.03, 1, 0.98])
+    fig, ax = plt.subplots(figsize=(10, 8))
+    cax = ax.imshow(corr, cmap="coolwarm", vmin=-1, vmax=1)
+    ax.set_xticks(range(len(feature_labels)))
+    ax.set_yticks(range(len(feature_labels)))
+    ax.set_xticklabels(feature_labels, rotation=45, ha="right")
+    ax.set_yticklabels(feature_labels)
+    fig.colorbar(cax, ax=ax, fraction=0.046, pad=0.04)
+    ax.set_title(f"Feature correlation matrix ({split} split)")
+    fig.tight_layout()
 
     if output_path is None:
-        repo_root = Path(__file__).resolve().parents[2]
-        output_dir = repo_root / "outputs" / "datasets"
+        output_dir = input_path.parents[2] / "outputs" / "datasets"
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{input_path.stem}_{split}_feature_distributions.png"
+        output_path = output_dir / f"{input_path.stem}_{split}_correlations.png"
     else:
         output_path = Path(output_path)
 
     fig.savefig(output_path, dpi=200)
     plt.close(fig)
     return output_path
-
-
-def main() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    input_path = repo_root / "outputs" / "datasets" / (
-        "lstm_merged_batch_0001-batch_0001_k10_standard_train0.70_val0.15_test0.15.h5"
-    )
-    output_path = plot_scaled_features(input_path)
-    print(f"Saved plot to {output_path}")
-
-
-if __name__ == "__main__":
-    main()
+    
