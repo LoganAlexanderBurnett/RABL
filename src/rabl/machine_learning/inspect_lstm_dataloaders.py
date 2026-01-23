@@ -187,6 +187,15 @@ def main() -> None:
 
     datasets = build_datasets(args.h5, args.batch_size, args.seed)
 
+    gpus = tf.config.list_physical_devices("GPU")
+    if gpus:
+        gpu_name = gpus[0].name
+        print(f"Using GPU: {gpu_name}")
+        training_device = "/GPU:0"
+    else:
+        print("No GPU detected; training on CPU.")
+        training_device = "/CPU:0"
+
     print("Dataset summary:")
     print(f"  Train profiles: {len(datasets['train_profile_names'])}")
     print(f"  Val profiles:   {len(datasets['val_profile_names'])}")
@@ -207,14 +216,15 @@ def main() -> None:
     timesteps = datasets["sample_shape"][1]
     num_features = datasets["sample_shape"][2]
     num_targets = datasets["target_shape"][1]
-    model = build_model(timesteps, num_features, num_targets)
-    model.summary()
+    with tf.device(training_device):
+        model = build_model(timesteps, num_features, num_targets)
+        model.summary()
 
-    history = model.fit(
-        datasets["train"],
-        validation_data=datasets["val_samples"],
-        epochs=args.epochs,
-    )
+        history = model.fit(
+            datasets["train"],
+            validation_data=datasets["val_samples"],
+            epochs=args.epochs,
+        )
 
     plot_path = args.plot_path
     if plot_path is None:
