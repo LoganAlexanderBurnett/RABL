@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from machine_learning import plot_feature_correlations
+from rabl.machine_learning import plot_feature_correlations
 
 
 def main() -> None:

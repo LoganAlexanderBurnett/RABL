@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from machine_learning import plot_scaled_features
+from rabl.machine_learning import plot_scaled_features
 
 
 def main() -> None:
