@@ -218,7 +218,7 @@ def main() -> None:
 
     plot_path = args.plot_path
     if plot_path is None:
-        plot_path = Path(__file__).resolve().parents[1] / "outputs" / "plots" / "lstm_training_curves.png"
+        plot_path = Path(__file__).resolve().parents[3] / "outputs" / "plots" / "lstm_training_curves.png"
     plot_path.parent.mkdir(parents=True, exist_ok=True)
 
     epochs_range = range(1, len(history.history["loss"]) + 1)
