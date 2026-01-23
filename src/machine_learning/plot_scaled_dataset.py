@@ -71,7 +71,7 @@ def plot_scaled_features(
     fig.tight_layout(rect=[0, 0.03, 1, 0.98])
 
     if output_path is None:
-        output_dir = input_path.parents[1] / "outputs" / "datasets"
+        output_dir = input_path.parents[2] / "outputs" / "datasets"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{input_path.stem}_{split}_feature_distributions.png"
     else:
@@ -81,15 +81,3 @@ def plot_scaled_features(
     plt.close(fig)
     return output_path
 
-
-def main() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    input_path = repo_root / "outputs" / "datasets" / (
-        "lstm_merged_batch_0001-batch_0001_k10_standard_train0.70_val0.15_test0.15.h5"
-    )
-    output_path = plot_scaled_features(input_path)
-    print(f"Saved plot to {output_path}")
-
-
-if __name__ == "__main__":
-    main()

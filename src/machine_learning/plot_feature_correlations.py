@@ -72,7 +72,7 @@ def plot_feature_correlations(
     fig.tight_layout()
 
     if output_path is None:
-        output_dir = input_path.parents[1] / "outputs" / "datasets"
+        output_dir = input_path.parents[2] / "outputs" / "datasets"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{input_path.stem}_{split}_correlations.png"
     else:
@@ -82,15 +82,3 @@ def plot_feature_correlations(
     plt.close(fig)
     return output_path
 
-
-def main() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    input_path = repo_root / "outputs" / "datasets" / (
-        "lstm_merged_batch_0001-batch_0001_k10_standard_train0.70_val0.15_test0.15.h5"
-    )
-    output_path = plot_feature_correlations(input_path)
-    print(f"Saved correlation plot to {output_path}")
-
-
-if __name__ == "__main__":
-    main()
