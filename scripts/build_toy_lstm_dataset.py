@@ -4,7 +4,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from scripts import build_lstm_dataset
+from rabl.machine_learning import build_lstm_dataset
 
 TOY_SCALE_FACTORS = (
     2.0,

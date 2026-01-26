@@ -105,10 +105,10 @@ def _steady_state_rows(steady_state: dict, k: int) -> tuple[np.ndarray, np.ndarr
 
 
 def main() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[3]
     sim_root = repo_root / "outputs" / "sim"
     output_dir = repo_root / "outputs" / "datasets"
-    config_path = Path(__file__).resolve().parent / "config.py"
+    config_path = repo_root / "scripts" / "config.py"
 
     config = _validate_config(_load_config(config_path))
     k = config["k_lookback"]
