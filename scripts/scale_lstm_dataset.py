@@ -9,7 +9,7 @@ def main() -> None:
 
     splitter = LSTMDatasetScalerSplitter(
         input_path=input_path,
-        scaling_type="none",
+        scaling_type="standard",
     )
     output_path = splitter.run()
     print(f"Saved scaled dataset to {output_path}")
