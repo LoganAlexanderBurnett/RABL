@@ -121,16 +121,19 @@ class LSTMDatasetScalerSplitter:
         dst_h5f.attrs["val_fraction"] = self.splits.val
         dst_h5f.attrs["test_fraction"] = self.splits.test
 
+        scaling_group = dst_h5f.create_group("scaling")
         if self.scaling_type == "standard":
-            dst_h5f.attrs["x_mean"] = stats["x"]["mean"]
-            dst_h5f.attrs["x_std"] = stats["x"]["std"]
-            dst_h5f.attrs["y_mean"] = stats["y"]["mean"]
-            dst_h5f.attrs["y_std"] = stats["y"]["std"]
+            scaling_group.create_dataset("x_mean", data=stats["x"]["mean"])
+            scaling_group.create_dataset("x_std", data=stats["x"]["std"])
+            scaling_group.create_dataset("y_mean", data=stats["y"]["mean"])
+            scaling_group.create_dataset("y_std", data=stats["y"]["std"])
         elif self.scaling_type == "minmax":
-            dst_h5f.attrs["x_min"] = stats["x"]["min"]
-            dst_h5f.attrs["x_max"] = stats["x"]["max"]
-            dst_h5f.attrs["y_min"] = stats["y"]["min"]
-            dst_h5f.attrs["y_max"] = stats["y"]["max"]
+            scaling_group.create_dataset("x_min", data=stats["x"]["min"])
+            scaling_group.create_dataset("x_max", data=stats["x"]["max"])
+            scaling_group.create_dataset("x_span", data=stats["x"]["span"])
+            scaling_group.create_dataset("y_min", data=stats["y"]["min"])
+            scaling_group.create_dataset("y_max", data=stats["y"]["max"])
+            scaling_group.create_dataset("y_span", data=stats["y"]["span"])
 
     def _write_split(
         self,
