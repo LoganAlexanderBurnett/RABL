@@ -105,7 +105,7 @@ Example command-line workflows live in `scripts/`. A common flow is:
 
 ```bash
 python scripts/scale_lstm_dataset.py --help
-python scripts/build_lstm_dataset.py --help
+python -m rabl.machine_learning.build_lstm_dataset --help
 ```
 
 Use the `--help` flag on each script to see required inputs/outputs and configuration options.
