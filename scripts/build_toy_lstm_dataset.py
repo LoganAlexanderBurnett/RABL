@@ -1,4 +1,5 @@
 import csv
+import importlib.util
 from pathlib import Path
 
 import h5py
@@ -26,6 +27,18 @@ DRUM_PROFILE_PATTERN = "drum_profile_*.csv"
 DRUM_ANGLE_COLUMN = "Drum_Angle(deg)"
 TIME_COLUMN = "Time(s)"
 RESULTS_PATTERN = "results_drum_profile_*.csv"
+
+
+def _load_baseline_angle(config_path: Path) -> float:
+    spec = importlib.util.spec_from_file_location("toy_dataset_config", config_path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"Unable to load config file: {config_path}")
+    config_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config_module)
+    baseline_angle_deg = getattr(config_module, "BASELINE_ANGLE_DEG", None)
+    if not isinstance(baseline_angle_deg, (int, float)):
+        raise SystemExit("BASELINE_ANGLE_DEG must be a number in config.py.")
+    return float(baseline_angle_deg)
 
 
 def _read_drum_profile(csv_path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -86,7 +99,8 @@ def _build_h5_dataset(sim_root: Path, output_dir: Path) -> Path:
         build_lstm_dataset._load_config(Path(__file__).resolve().parent / "config.py")
     )
     k = config["k_lookback"]
-    steady_state = config["steady_state"]
+    config_path = Path(__file__).resolve().parent / "config.py"
+    baseline_angle_deg = _load_baseline_angle(config_path)
 
     csv_files = build_lstm_dataset._collect_csv_files(sim_root)
     if not csv_files:
@@ -109,7 +123,14 @@ def _build_h5_dataset(sim_root: Path, output_dir: Path) -> Path:
         files_group = h5f.create_group("files")
 
         total_samples = 0
-        state_pad, control_pad = build_lstm_dataset._steady_state_rows(steady_state, k)
+        toy_steady_state = {
+            build_lstm_dataset.CONTROL_COLUMN: float(baseline_angle_deg),
+            **{
+                col: float(baseline_angle_deg) * factor
+                for col, factor in zip(build_lstm_dataset.STATE_COLUMNS, TOY_SCALE_FACTORS, strict=True)
+            },
+        }
+        state_pad, control_pad = build_lstm_dataset._steady_state_rows(toy_steady_state, k)
         for csv_path in csv_files:
             state_data = build_lstm_dataset._read_csv_columns(csv_path, build_lstm_dataset.STATE_COLUMNS)
             control_data = build_lstm_dataset._read_csv_columns(csv_path, (build_lstm_dataset.CONTROL_COLUMN,))
