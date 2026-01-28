@@ -5,14 +5,14 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import tensorflow as tf
-
 from rabl.machine_learning.lstm_pipeline import LSTMPipeline, LSTMPipelineConfig
 
+import tensorflow as tf
 
-DEFAULT_H5_PATH = Path(
-    "/outputs/datasets/lstm_toy_batch_0001-batch_0001_k10_standard_train0.70_val0.15_test0.15.h5"
-)
+
+repo_root = Path(__file_).resolve().parents[1]
+DEFAULT_H5_PATH = repo_root / "outputs" / "datasets" / "lstm_toy_batch_0001-batch_0001_k10_standard_train0.70_val0.15_test0.15.h5"
+DEFAULT_OUT_DIR = repo_root / "outputs" / "ml_results" / "toy_results"
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("outputs") / "lstm_forecasts",
+        default=DEFAULT_OUT_DIR,
         help="Directory to save forecast plots.",
     )
     parser.add_argument(
