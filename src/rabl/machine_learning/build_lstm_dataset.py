@@ -1,3 +1,4 @@
+import argparse
 import csv
 import importlib.util
 from pathlib import Path
@@ -37,14 +38,11 @@ def _load_config(config_path: Path) -> dict:
     spec.loader.exec_module(config_module)
 
     return {
-        "k_lookback": getattr(config_module, "K_LOOKBACK", None),
         "steady_state": getattr(config_module, "STEADY_STATE", None),
     }
 
 
 def _validate_config(config: dict) -> dict:
-    if not isinstance(config["k_lookback"], int) or config["k_lookback"] < 1:
-        raise SystemExit("K_LOOKBACK must be a positive integer in config.py.")
     if not isinstance(config["steady_state"], dict):
         raise SystemExit("STEADY_STATE must be a dictionary in config.py.")
     return config
@@ -104,15 +102,14 @@ def _steady_state_rows(steady_state: dict, k: int) -> tuple[np.ndarray, np.ndarr
     return state_pad, control_pad
 
 
-def main() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    sim_root = repo_root / "outputs" / "sim"
-    output_dir = repo_root / "outputs" / "datasets"
-    config_path = repo_root / "scripts" / "config.py"
+def _validate_lookback(k: int) -> int:
+    if not isinstance(k, int) or k < 1:
+        raise SystemExit("Lookback must be a positive integer.")
+    return k
 
-    config = _validate_config(_load_config(config_path))
-    k = config["k_lookback"]
-    steady_state = config["steady_state"]
+
+def build_dataset(sim_root: Path, output_dir: Path, steady_state: dict, k: int) -> Path:
+    k = _validate_lookback(k)
 
     csv_files = _collect_csv_files(sim_root)
     if not csv_files:
@@ -159,6 +156,21 @@ def main() -> None:
     print(f"Found {len(csv_files)} CSV files under {sim_root}.")
     print(f"Generated {total_samples} samples across {len(csv_files)} files.")
     print(f"Saved dataset to {output_path}")
+    return output_path
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Build an LSTM-ready dataset from simulation outputs.")
+    parser.add_argument("--lookback", type=int, required=True, help="Number of past timesteps to include.")
+    args = parser.parse_args()
+
+    repo_root = Path(__file__).resolve().parents[3]
+    sim_root = repo_root / "outputs" / "sim_profiles"
+    output_dir = repo_root / "outputs" / "datasets"
+    config_path = repo_root / "scripts" / "config.py"
+
+    config = _validate_config(_load_config(config_path))
+    build_dataset(sim_root, output_dir, config["steady_state"], args.lookback)
 
 
 if __name__ == "__main__":

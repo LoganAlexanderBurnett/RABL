@@ -15,8 +15,8 @@ class BatchConfig:
     # Paths RELATIVE to this script file for portability
     package_mo: str = r"../../modelica/MicroreactorPK/package.mo"
     model_name: str = "MicroreactorPK.Experiments.RunOneProfile"
-    profiles_dir: str = r"../../../outputs/variography/test_batch"
-    out_dir: str = r"../../../outputs/sim/test_batch"
+    profiles_dir: str = r"../../../outputs/variography_profiles/test_batch"
+    out_dir: str = r"../../../outputs/sim_profiles/test_batch"
 
     table_name: str = "profile"
     angle_col: int = 2

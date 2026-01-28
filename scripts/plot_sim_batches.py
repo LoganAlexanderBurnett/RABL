@@ -172,7 +172,7 @@ def main() -> None:
     config = _validate_config(_load_config(config_path))
 
     repo_root = script_dir.parent
-    sim_root = repo_root / "outputs" / "sim"
+    sim_root = repo_root / "outputs" / "sim_profiles"
 
     for batch_number in config["batch_numbers"]:
         batch_name = f"batch_{batch_number:04d}"

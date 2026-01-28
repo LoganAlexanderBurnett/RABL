@@ -86,8 +86,8 @@ time_s = np.linspace(0.0, 100.0, 501)
 profile = profile_gen.generate(time_s, n_realizations=1, baseline_angle_deg=0.0)[0]
 
 # Save for downstream tools
-profile.save_csv("outputs/variography/drum_profile_00001.csv")
-profile.save_mat("outputs/variography/drum_profile_00001.mat")
+profile.save_csv("outputs/variography_profiles/drum_profile_00001.csv")
+profile.save_mat("outputs/variography_profiles/drum_profile_00001.mat")
 ```
 
 ### Run a Dymola batch
@@ -96,8 +96,8 @@ profile.save_mat("outputs/variography/drum_profile_00001.mat")
 from rabl.interface import BatchConfig, DymolaBatchRunner
 
 config = BatchConfig(
-    profiles_dir="../../../outputs/variography/test_batch",
-    out_dir="../../../outputs/sim/test_batch",
+    profiles_dir="../../../outputs/variography_profiles/test_batch",
+    out_dir="../../../outputs/sim_profiles/test_batch",
 )
 
 runner = DymolaBatchRunner(config)
@@ -115,7 +115,7 @@ Example command-line workflows live in `scripts/`. A common flow is:
 
 ```bash
 python scripts/scale_lstm_dataset.py --help
-python -m rabl.machine_learning.build_lstm_dataset --help
+python scripts/build_lstm_dataset.py --help
 ```
 
 Use the `--help` flag on each script to see required inputs/outputs and configuration options.

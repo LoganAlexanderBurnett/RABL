@@ -97,9 +97,6 @@ def _generate_toy_results(variography_dir: Path, toy_dir: Path) -> list[Path]:
 
 
 def _build_h5_dataset(sim_root: Path, output_dir: Path) -> Path:
-    config = build_lstm_dataset._validate_config(
-        build_lstm_dataset._load_config(Path(__file__).resolve().parent / "config.py")
-    )
     k = K
     config_path = Path(__file__).resolve().parent / "config.py"
     baseline_angle_deg = _load_baseline_angle(config_path)
@@ -161,7 +158,7 @@ def _build_h5_dataset(sim_root: Path, output_dir: Path) -> Path:
 
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    variography_dir = repo_root / "outputs" / "variography" / "batch_0001"
+    variography_dir = repo_root / "outputs" / "variography_profiles" / "batch_0001"
     toy_root = repo_root / "outputs" / "toy_profiles"
     toy_batch_dir = toy_root / "batch_0001"
     output_dir = repo_root / "outputs" / "datasets"

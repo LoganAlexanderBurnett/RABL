@@ -89,8 +89,8 @@ def main() -> None:
     config = _validate_config(_load_config(config_path))
 
     repo_root = script_dir.parent
-    variography_root = repo_root / "outputs" / "variography"
-    sim_root = repo_root / "outputs" / "sim"
+    variography_root = repo_root / "outputs" / "variography_profiles"
+    sim_root = repo_root / "outputs" / "sim_profiles"
 
     batch_name = f"batch_{config['batch_number']:04d}"
     variography_dir = variography_root / batch_name
