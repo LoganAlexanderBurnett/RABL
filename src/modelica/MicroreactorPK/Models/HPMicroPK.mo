@@ -18,6 +18,12 @@ model HPMicroPK
   //   rho_dollars(t): reactivity in $
   //   P(t)          : thermal power in W
   //   P_MW(t)       : thermal power in MW
+  type ProcessType = enumeration(
+    Desal "RO Desalination (m3/s freshwater)",
+    HTSE "High-Temperature Steam Electrolysis (kg/s H2)",
+    MOE "Molten oxide electrolysis (kg/s steel)",
+    Amine "Amine CO2 capture (kg/s CO2 captured)"
+  );
   import SI = Modelica.Units.SI;
 
   // ---------- KINETIC PARAMETERS ----------
@@ -194,11 +200,21 @@ model HPMicroPK
   // at (Tf0, Tm0, u0) the net reactivity is ~0.
   parameter Real rho_ss_total = n_drums * rho_ss_single;
 
+  // ----------- PROCESS DIVERSION PARAMETERS ----------
+  // These only affect outputs when f_divert is nonzero.
+  parameter ProcessType processtype = ProcessType.HTSE "Diverted process type";
+  parameter Real eta = 0.4 "Thermal-to-electric efficiency (used for electric-driven processes)";
+  parameter SI.EnergyDensity e_desal = 3.0 * 3.6e6 "J/m3 freshwater (3 kWh/m3)";
+  parameter SI.SpecificEnergy e_htse = 45.0 * 3.6e6 "J/kg H2 (45 kWh/kg)";
+  parameter SI.SpecificEnergy e_moe = 4.0e3 * 3.6e6 / 1000.0 "J/kg steel (4 MWh/ton)";
+  parameter SI.SpecificEnergy e_amine = 4.0e9 / 1000.0 "J/kg CO2 (4 GJ/ton)";
+
 
   // ---------- INPUT ----------
   // External signal: the angle applied to all drums [deg].
   // RunOneProfile connects this from DrumProfileFromFile.
   input Real drumAngleDeg "Angle applied to all drums [deg]";
+  input Real f_divert(min=0,max=1) "Diversion fraction to industrial process (0..1)";
 
 
   // ---------- STATES ----------
@@ -224,6 +240,9 @@ model HPMicroPK
   Real P_MW "Thermal power [MW]";
 
   SI.Power Q_to_steam "Heat available to generate 232C steam [W]";
+  SI.Power Q_process "Heat diverted to industrial process [W]";
+  SI.Power Q_total "Total heat exchanged at the steam boundary [W]";
+  Real production_rate "Process production rate (units depend on processtype)";
   SI.MassFlowRate m_dot_steam "Steam production rate [kg/s]";
 
 equation
@@ -309,14 +328,33 @@ equation
     + (TN2 - Thp)/tau_hp_N2;
 
   // Heat transferred to steam boundary at T_steam_out
-  Q_to_steam = G_N2_sg*(TN2 - T_steam_out);
+  Q_total    = G_N2_sg*(TN2 - T_steam_out);
+  Q_to_steam = (1 - f_divert) * Q_total;
+  Q_process  = f_divert * Q_total;
+  assert(f_divert >= 0 and f_divert <= 1,
+         "HPMicroPK: f_divert must be in [0,1].");
 
   // Steam rate, heat available / enthalpy needed per kg
   m_dot_steam = Q_to_steam / delta_h;
-
   // Nitrogen loop average node:
   //   - Exchanges with heat pipe and steam boundary
   der(TN2) =
     (Thp - TN2)/tau_N2_hp
-    - Q_to_steam/(M_N2*cp_N2);
+    - (Q_to_steam + Q_process)/(M_N2*cp_N2);
+  // Process production rate.
+  // Note: we do NOT clamp/clip; negative values indicate inconsistent inputs/conditions.
+  if processtype == ProcessType.Amine then
+    production_rate = Q_process / e_amine;
+  else
+    if processtype == ProcessType.Desal then
+      production_rate = (eta * Q_process) / e_desal;
+    else
+      if processtype == ProcessType.HTSE then
+        production_rate = (eta * Q_process) / e_htse;
+      else
+        production_rate = (eta * Q_process) / e_moe;
+      end if;
+    end if;
+  end if;
+
 end HPMicroPK;

@@ -10,6 +10,7 @@ model RunOneProfile
   parameter Integer angleColumn(min=2) = 2;
   parameter Integer velColumn(min=2) = 3;
   parameter Integer accColumn(min=2) = 4;
+  parameter Integer divertColumn(min=2) = 5 "Diversion fraction column in table (time is column 1)";
 
   // Instantiate the profile reader
   DrumProfileFromFile prof(
@@ -17,11 +18,12 @@ model RunOneProfile
     tableName=tableName,
     angleColumn=angleColumn,
     velColumn=velColumn,
-    accColumn=accColumn);
+    accColumn=accColumn,
+    divertColumn=divertColumn);
 
 
   // Instantiate the reactor model and bind the drum input to the profile
-  HPMicroPK reactor(drumAngleDeg = prof.angleDeg);
+  HPMicroPK reactor(drumAngleDeg = prof.angleDeg, f_divert = prof.f_divert);
 
   // -------------------------
   // Convenience outputs
@@ -48,11 +50,14 @@ model RunOneProfile
   output Real drumAngleDeg "Applied drum angle [deg]";
   output Real drumVelDeg_s "Drum velocity [deg/s]";
   output Real drumAccDeg_s2 "Drum acceleration [deg/s2]";
+  output Real f_divert "Diversion fraction (0..1)";
   output Real rho "Reactivity [Δk/k]";
   output Real rho_dollars "Reactivity [$]";
 
   output SI.MassFlowRate m_dot_steam "Steam production rate [kg/s]";
   output SI.Power Q_to_steam "Heat available to steam [W]";
+  output SI.Power Q_process "Heat diverted to industrial process [W]";
+  output Real production_rate "Process production rate (units depend on process type)";
 
 equation
   // Time
@@ -62,6 +67,7 @@ equation
   drumAngleDeg = reactor.drumAngleDeg;
   drumVelDeg_s  = prof.velDeg_s;
   drumAccDeg_s2 = prof.accDeg_s2;
+  f_divert      = prof.f_divert;
 
 
   TN2 = reactor.TN2;
@@ -88,6 +94,8 @@ equation
 
   m_dot_steam = reactor.m_dot_steam;
   Q_to_steam  = reactor.Q_to_steam;
+  Q_process   = reactor.Q_process;
+  production_rate = reactor.production_rate;
 
   // Simulation settings (can override stopTime in simulateModel from Python)
   annotation(experiment(StopTime=200.0, Tolerance=1e-8));

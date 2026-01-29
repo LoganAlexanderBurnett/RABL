@@ -1,0 +1,8 @@
+loadFile("../package.mo");
+getErrorString();
+
+system("mkdir -p .build");
+cd(".build");
+
+buildModel(MicroreactorPK.Blocks.DrumProfileFromFile);
+getErrorString();

@@ -1,0 +1,15 @@
+loadFile("../package.mo");
+getErrorString();
+
+loadFile("package.mo");
+getErrorString();
+
+loadFile("RunOneProfile.mo");
+getErrorString();
+
+setCommandLineOptions("--fmuRuntimeDepends=modelica");
+setCommandLineOptions("--simCodeTarget=Cpp");
+setCommandLineOptions("-d=initialization");
+
+buildModelFMU(MicroreactorPK.Experiments.RunOneProfile, version="2.0", fmuType="me");
+getErrorString();
