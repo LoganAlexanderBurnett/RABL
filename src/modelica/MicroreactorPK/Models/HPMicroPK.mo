@@ -222,7 +222,13 @@ model HPMicroPK
 
   // ---------- OUTPUTS ----------
   Real rho "Reactivity [Δk/k]";
+  Real rho_drums "Drum reactivity contribution [Δk/k]";
+  Real rho_fuel "Fuel temperature reactivity contribution [Δk/k]";
+  Real rho_moderator "Moderator temperature reactivity contribution [Δk/k]";
   Real rho_dollars "Reactivity [$]"; // rho/beta
+  Real rho_drums_dollars "Drum reactivity contribution [$]";
+  Real rho_fuel_dollars "Fuel reactivity contribution [$]";
+  Real rho_moderator_dollars "Moderator reactivity contribution [$]";
   SI.Power P "Thermal power [W]";
   Real P_MW "Thermal power [MW]";
 
@@ -250,16 +256,20 @@ equation
   // Temperature feedback:
   //   alpha_f*(Tf - Tf0) + alpha_m*(Tm - Tm0)
   // Negative alphas mean hotter temps reduce reactivity (stabilizing feedback).
-  rho =
-    ( n_drums * rho_max_per_drum *
-      (1.0 - Modelica.Math.cos(Modelica.Constants.pi/180*drumAngleDeg)) / 2.0
-      - rho_ss_total)
-    + alpha_f*(Tf - Tf0)
-    + alpha_m*(Tm - Tm0);
+  rho_drums =
+    n_drums * rho_max_per_drum *
+    (1.0 - Modelica.Math.cos(Modelica.Constants.pi/180*drumAngleDeg)) / 2.0
+    - rho_ss_total;
+  rho_fuel = alpha_f*(Tf - Tf0);
+  rho_moderator = alpha_m*(Tm - Tm0);
+  rho = rho_drums + rho_fuel + rho_moderator;
 
   // Convert reactivity to dollars ($) by dividing by β.
   // 1$ = β in Δk/k units.
   rho_dollars = rho / beta;
+  rho_drums_dollars = rho_drums / beta;
+  rho_fuel_dollars = rho_fuel / beta;
+  rho_moderator_dollars = rho_moderator / beta;
 
   // -------------------------
   // Point kinetics equations

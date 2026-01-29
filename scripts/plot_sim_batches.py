@@ -7,31 +7,22 @@ import pandas as pd
 
 PLOT_VARS = [
     "drumAngleDeg",
+    "drumVelDeg_s",
     "TN2",
-    "dTN2",
     "Tm",
-    "dTm",
     "Thp",
-    "dThp",
     "Tf",
-    "dTf",
     "c[1]",
     "c[2]",
     "c[3]",
     "c[4]",
     "c[5]",
     "c[6]",
-    "dc[1]",
-    "dc[2]",
-    "dc[3]",
-    "dc[4]",
-    "dc[5]",
-    "dc[6]",
     "P_MW",
-    "n",
-    "dn",
     "rho_dollars",
-    "m_dot_steam",
+    "rho_drums_dollars",
+    "rho_fuel_dollars",
+    "rho_moderator_dollars",
     "Q_to_steam",
 ]
 
@@ -41,18 +32,13 @@ PLOT_VARS = [
 # -------------------------------------------------------------------------
 COLOR_MAP = {
     "drumAngleDeg": "black",
+    "drumVelDeg_s": "black",
 
     # Temperatures (red)
     "TN2": "#d62728",
     "Tm": "#d62728",
     "Thp": "#d62728",
     "Tf": "#d62728",
-
-    # Temperature derivatives (orange)
-    "dTN2": "#ff7f0e",
-    "dTm": "#ff7f0e",
-    "dThp": "#ff7f0e",
-    "dTf": "#ff7f0e",
 
     # c[i] dark green
     "c[1]": "#006400",
@@ -62,24 +48,16 @@ COLOR_MAP = {
     "c[5]": "#006400",
     "c[6]": "#006400",
 
-    # dc[i] medium green
-    "dc[1]": "#2ca02c",
-    "dc[2]": "#2ca02c",
-    "dc[3]": "#2ca02c",
-    "dc[4]": "#2ca02c",
-    "dc[5]": "#2ca02c",
-    "dc[6]": "#2ca02c",
-
-    # P_MW, n, dn in pink
+    # P_MW in pink
     "P_MW": "#e377c2",
-    "n": "#e377c2",
-    "dn": "#e377c2",
 
     # rho dollars in dark blue
     "rho_dollars": "#1f3a93",
+    "rho_drums_dollars": "#1f3a93",
+    "rho_fuel_dollars": "#1f3a93",
+    "rho_moderator_dollars": "#1f3a93",
 
-    # m_dot_steam, Q_to_steam in gray
-    "m_dot_steam": "#7f7f7f",
+    # Q_to_steam in gray
     "Q_to_steam": "#7f7f7f",
 }
 
@@ -138,32 +116,45 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
     for p in results_csvs:
         dfs.append((p.stem, _read_results_csv(p)))
 
-    fig, axes = plt.subplots(9, 3, figsize=(18, 24), sharex=True)
-    axes = axes.flatten()
+    rows = 2
+    cols = 6
+    per_page = rows * cols
+    chunks = [PLOT_VARS[i : i + per_page] for i in range(0, len(PLOT_VARS), per_page)]
 
-    for ax, var in zip(axes, PLOT_VARS, strict=True):
-        color = COLOR_MAP.get(var, "black")
+    for i, chunk in enumerate(chunks, start=1):
+        fig, axes = plt.subplots(rows, cols, figsize=(18, 8), sharex=True)
+        axes = axes.flatten()
 
-        # Overlay every profile on this subplot
-        for _, df in dfs:
-            ax.plot(
-                df["t"].to_numpy(),
-                df[var].to_numpy(),
-                color=color,
-                linewidth=1.0,
-                alpha=0.10,
-            )
+        for ax, var in zip(axes, chunk, strict=False):
+            color = COLOR_MAP.get(var, "black")
 
-        ax.set_title(var)
-        ax.set_ylabel(var)
-        ax.grid(True, which="both", alpha=0.35)
+            # Overlay every profile on this subplot
+            for _, df in dfs:
+                ax.plot(
+                    df["t"].to_numpy(),
+                    df[var].to_numpy(),
+                    color=color,
+                    linewidth=1.0,
+                    alpha=0.10,
+                )
 
-    for ax in axes[-3:]:
-        ax.set_xlabel("t (s)")
+            ax.set_title(var)
+            ax.set_ylabel(var)
+            ax.grid(True, which="both", alpha=0.35)
 
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
+        for ax in axes[len(chunk):]:
+            ax.set_axis_off()
+
+        for ax in axes[-cols:]:
+            ax.set_xlabel("t (s)")
+
+        fig.tight_layout()
+        if len(chunks) == 1:
+            page_output = output_path
+        else:
+            page_output = output_path.with_name(f"{output_path.stem}_part{i}{output_path.suffix}")
+        fig.savefig(page_output, dpi=150)
+        plt.close(fig)
 
 
 def main() -> None:

@@ -32,8 +32,8 @@ class BatchConfig:
         "t", "drumAngleDeg", "drumVelDeg_s", "drumAccDeg_s2",
         "TN2", "dTN2", "Tm", "dTm", "Thp", "dThp", "Tf", "dTf",
         "c[1]", "c[2]", "c[3]", "c[4]", "c[5]", "c[6]",
-        "dc[1]", "dc[2]", "dc[3]", "dc[4]", "dc[5]", "dc[6]",
-        "P_MW", "n", "dn", "rho", "rho_dollars",
+        "P_MW", "n", "dn", "rho_dollars",
+        "rho_drums_dollars", "rho_fuel_dollars", "rho_moderator_dollars",
         "m_dot_steam", "Q_to_steam",
     )
 

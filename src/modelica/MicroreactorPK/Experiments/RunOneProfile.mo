@@ -39,7 +39,6 @@ model RunOneProfile
   output SI.TemperatureSlope dTf  "d(Tf)/dt [K/s]";
 
   output Real c[6]   "Delayed neutron precursor states c[1..6]";
-  output Real dc[6]  "d(c[i])/dt [1/s]";
 
   output Real n   "Normalized power";
   output Real dn  "d(n)/dt [1/s]";
@@ -48,8 +47,10 @@ model RunOneProfile
   output Real drumAngleDeg "Applied drum angle [deg]";
   output Real drumVelDeg_s "Drum velocity [deg/s]";
   output Real drumAccDeg_s2 "Drum acceleration [deg/s2]";
-  output Real rho "Reactivity [Δk/k]";
   output Real rho_dollars "Reactivity [$]";
+  output Real rho_drums_dollars "Drum reactivity contribution [$]";
+  output Real rho_fuel_dollars "Fuel reactivity contribution [$]";
+  output Real rho_moderator_dollars "Moderator reactivity contribution [$]";
 
   output SI.MassFlowRate m_dot_steam "Steam production rate [kg/s]";
   output SI.Power Q_to_steam "Heat available to steam [W]";
@@ -75,16 +76,15 @@ equation
   dTf  = der(reactor.Tf);
 
   c  = reactor.c;
-  for i in 1:6 loop
-    dc[i] = der(reactor.c[i]);
-  end for;
 
   n  = reactor.n;
   dn = der(reactor.n);
 
   P_MW = reactor.P_MW;
-  rho = reactor.rho;
   rho_dollars = reactor.rho_dollars;
+  rho_drums_dollars = reactor.rho_drums_dollars;
+  rho_fuel_dollars = reactor.rho_fuel_dollars;
+  rho_moderator_dollars = reactor.rho_moderator_dollars;
 
   m_dot_steam = reactor.m_dot_steam;
   Q_to_steam  = reactor.Q_to_steam;
