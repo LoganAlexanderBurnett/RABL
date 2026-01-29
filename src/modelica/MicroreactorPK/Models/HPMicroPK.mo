@@ -4,7 +4,7 @@ model HPMicroPK
   //
   // State summary:
   //   n(t)      : normalized reactor power (n=1 -> P = P_r)
-  //   c[i](t)   : normalized delayed precursor concentrations (6 groups)
+  //   c[i](t)   : delayed neutron precursor concentrations (6 groups)
   //   Tf(t)     : fuel temperature
   //   Tm(t)     : moderator / graphite / structure temperature
   //   Thp(t)    : heat pipe effective temperature node
@@ -53,6 +53,10 @@ model HPMicroPK
 
   // Total delayed fraction β = Σβ_i.
   parameter Real beta = sum(betas) "Total delayed neutron fraction";
+
+  // Steady-state precursor concentrations at n=1 and ρ=0:
+  //   0 = (β_i/Λ)*n - λ_i*C_i  =>  C_i = β_i/(Λ*λ_i)
+  parameter Real C_ss[nGroups] = { betas[i] / (Lambda * lambdas[i]) for i in 1:nGroups };
 
 
   // ---------- THERMAL POWER SCALE ----------
@@ -206,9 +210,8 @@ model HPMicroPK
   // initial conditions rather than trying to solve them from other equations.
   Real n(start=1.0, fixed=true) "Normalized power";
 
-  // Delayed neutron precursor states, normalized so that at steady power n=1,
-  // the steady precursor values are c[i]=1.
-  Real c[nGroups](each start=1.0, each fixed=true) "Normalized precursors";
+  // Delayed neutron precursors (6 groups), initialized to steady state for n=1 and ρ=0.
+  Real c[nGroups](start=C_ss, each fixed=true) "Delayed precursors";
 
   // Thermal node temperatures [K], initialized at design temps.
   SI.Temperature Tf(start=Tf0, fixed=true);
@@ -261,20 +264,14 @@ equation
   // -------------------------
   // Point kinetics equations
   // -------------------------
-  // Normalized form (n and c are normalized so that steady n=1 implies steady c=1)
-  //
-  // dn/dt = [ (rho - beta)*n + Σ(beta_i*c_i) ] / Lambda
-  //
-  // dc_i/dt = λ_i * (n - c_i)
-  //
-  // Interpretation:
-  // - Power rises quickly with positive reactivity
-  // - Precursors lag behind changes in n with their decay constants
+  // dn/dt = ((rho - beta)/Lambda)*n + Σ(lambda_i*c_i)
+  // dc_i/dt = (beta_i/Lambda)*n - lambda_i*c_i
   der(n) =
-    ( ((rho - beta)*n) + sum(betas[i]*c[i] for i in 1:nGroups)) / Lambda;
+    ((rho - beta) / Lambda) * n
+    + sum(lambdas[i] * c[i] for i in 1:nGroups);
 
   for i in 1:nGroups loop
-    der(c[i]) = lambdas[i] * (n - c[i]);
+    der(c[i]) = (betas[i] / Lambda) * n - lambdas[i] * c[i];
   end for;
 
   // -------------------------
