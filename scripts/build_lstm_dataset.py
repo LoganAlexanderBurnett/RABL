@@ -37,6 +37,13 @@ def main() -> None:
         default=default_output_dir,
         help=f"Directory to write the merged dataset (default: {default_output_dir}).",
     )
+    parser.add_argument(
+        "--batches",
+        type=str,
+        nargs="+",
+        required=True,
+        help="Batch IDs to include (e.g., --batches 0001 0002 0004).",
+    )
 
     args = parser.parse_args()
     config_path: Path = args.config
@@ -46,7 +53,13 @@ def main() -> None:
 
 
     config = build_lstm_dataset._validate_config(build_lstm_dataset._load_config(config_path))
-    build_lstm_dataset.build_dataset(sim_root, output_dir, config["steady_state"], args.lookback)
+    build_lstm_dataset.build_dataset(
+        sim_root,
+        output_dir,
+        config["steady_state"],
+        args.lookback,
+        args.batches,
+    )
 
 
 if __name__ == "__main__":

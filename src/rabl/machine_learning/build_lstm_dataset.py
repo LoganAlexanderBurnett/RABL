@@ -48,10 +48,31 @@ def _validate_config(config: dict) -> dict:
     return config
 
 
-def _collect_csv_files(sim_root: Path) -> list[Path]:
+def _collect_csv_files(batch_dirs: list[Path]) -> list[Path]:
+    csv_files: list[Path] = []
+    for batch_dir in batch_dirs:
+        csv_files.extend(batch_dir.rglob(CSV_PATTERN))
+    return sorted(csv_files)
+
+
+def _resolve_batch_dirs(sim_root: Path, batch_ids: list[str]) -> list[Path]:
     if not sim_root.exists():
         raise SystemExit(f"Simulation directory not found: {sim_root}")
-    return sorted(sim_root.rglob(CSV_PATTERN))
+    if not batch_ids:
+        raise SystemExit("At least one batch id must be provided.")
+
+    batch_dirs = []
+    for batch_id in batch_ids:
+        if not isinstance(batch_id, str):
+            raise SystemExit(f"Invalid batch id: {batch_id}")
+        batch_id = batch_id.strip()
+        if not (batch_id.isdigit() and len(batch_id) == 4):
+            raise SystemExit(f"Invalid batch id: {batch_id}")
+        batch_dir = sim_root / f"batch_{batch_id}"
+        if not batch_dir.is_dir():
+            raise SystemExit(f"Batch directory not found: {batch_dir}")
+        batch_dirs.append(batch_dir)
+    return batch_dirs
 
 
 def _read_csv_columns(csv_path: Path, columns: tuple[str, ...]) -> np.ndarray:
@@ -108,22 +129,25 @@ def _validate_lookback(k: int) -> int:
     return k
 
 
-def build_dataset(sim_root: Path, output_dir: Path, steady_state: dict, k: int) -> Path:
+def build_dataset(
+    sim_root: Path,
+    output_dir: Path,
+    steady_state: dict,
+    k: int,
+    batch_ids: list[str],
+) -> Path:
     k = _validate_lookback(k)
 
-    csv_files = _collect_csv_files(sim_root)
+    batch_dirs = _resolve_batch_dirs(sim_root, batch_ids)
+    csv_files = _collect_csv_files(batch_dirs)
     if not csv_files:
-        raise SystemExit(f"No CSV files found in {sim_root} matching {CSV_PATTERN}.")
-
-    batch_dirs = sorted(p for p in sim_root.iterdir() if p.is_dir() and p.name.startswith("batch_"))
-    if not batch_dirs:
-        raise SystemExit(f"No batch directories found in {sim_root}.")
-    batch_numbers = [int(path.name.split("_", maxsplit=1)[1]) for path in batch_dirs]
-    batch_i = min(batch_numbers)
-    batch_f = max(batch_numbers)
+        raise SystemExit(
+            f"No CSV files found in requested batches under {sim_root} matching {CSV_PATTERN}."
+        )
+    formatted_batches = "-".join(batch_ids)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"lstm_merged_batch_{batch_i:04d}-batch_{batch_f:04d}_k{k}.h5"
+    output_path = output_dir / f"lstm_merged_batches_{formatted_batches}_k{k}.h5"
 
     with h5py.File(output_path, "w") as h5f:
         h5f.attrs["k_lookback"] = k
@@ -153,7 +177,7 @@ def build_dataset(sim_root: Path, output_dir: Path, steady_state: dict, k: int) 
     if total_samples == 0:
         raise SystemExit("No samples generated; check lookback size or input CSV lengths.")
 
-    print(f"Found {len(csv_files)} CSV files under {sim_root}.")
+    print(f"Found {len(csv_files)} CSV files in batches {formatted_batches}.")
     print(f"Generated {total_samples} samples across {len(csv_files)} files.")
     print(f"Saved dataset to {output_path}")
     return output_path
@@ -162,6 +186,13 @@ def build_dataset(sim_root: Path, output_dir: Path, steady_state: dict, k: int) 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build an LSTM-ready dataset from simulation outputs.")
     parser.add_argument("--lookback", type=int, required=True, help="Number of past timesteps to include.")
+    parser.add_argument(
+        "--batches",
+        type=str,
+        nargs="+",
+        required=True,
+        help="Batch IDs to include (e.g., --batches 0001 0002 0004).",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[3]
@@ -170,7 +201,7 @@ def main() -> None:
     config_path = repo_root / "scripts" / "config.py"
 
     config = _validate_config(_load_config(config_path))
-    build_dataset(sim_root, output_dir, config["steady_state"], args.lookback)
+    build_dataset(sim_root, output_dir, config["steady_state"], args.lookback, args.batches)
 
 
 if __name__ == "__main__":
