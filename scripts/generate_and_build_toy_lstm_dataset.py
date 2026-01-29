@@ -101,16 +101,17 @@ def _build_h5_dataset(sim_root: Path, output_dir: Path) -> Path:
     config_path = Path(__file__).resolve().parent / "config.py"
     baseline_angle_deg = _load_baseline_angle(config_path)
 
-    csv_files = build_lstm_dataset._collect_csv_files(sim_root)
-    if not csv_files:
-        raise SystemExit(f"No CSV files found in {sim_root} matching {build_lstm_dataset.CSV_PATTERN}.")
-
     batch_dirs = sorted(p for p in sim_root.iterdir() if p.is_dir() and p.name.startswith("batch_"))
     if not batch_dirs:
         raise SystemExit(f"No batch directories found in {sim_root}.")
     batch_numbers = [int(path.name.split("_", maxsplit=1)[1]) for path in batch_dirs]
     batch_i = min(batch_numbers)
     batch_f = max(batch_numbers)
+    csv_files = build_lstm_dataset._collect_csv_files(batch_dirs)
+    if not csv_files:
+        raise SystemExit(
+            f"No CSV files found in {sim_root} matching {build_lstm_dataset.CSV_PATTERN}."
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"lstm_toy_batch_{batch_i:04d}-batch_{batch_f:04d}_k{k}.h5"
