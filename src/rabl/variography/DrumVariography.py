@@ -1,6 +1,7 @@
 import csv
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
+import argparse
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -417,23 +418,67 @@ class DrumProfileGenerator:
         plt.tight_layout()
         plt.show()
 
+    # -----------------------------
+    # Plot: multiple generated profiles (stacked panels)
+    # -----------------------------
+    @staticmethod
+    def plot_profiles(profiles: List[DrumProfile], title: str = "Generated Drum Profiles"):
+        if not profiles:
+            raise ValueError("profiles list is empty")
+
+        t = profiles[0].t
+        fig, axes = plt.subplots(3, 1, figsize=(11, 8), sharex=True)
+
+        for profile in profiles:
+            axes[0].plot(t, profile.theta_deg, alpha=0.5)
+        axes[0].set_ylabel("Angle [deg]")
+        axes[0].set_title(title)
+        axes[0].grid(True)
+
+        for profile in profiles:
+            axes[1].plot(t, profile.v_deg_s, alpha=0.5)
+        axes[1].set_ylabel("Velocity [deg/s]")
+        axes[1].grid(True)
+
+        for profile in profiles:
+            axes[2].plot(t, profile.a_deg_s2, alpha=0.5)
+        axes[2].set_ylabel("Acceleration [deg/s²]")
+        axes[2].set_xlabel("Time [s]")
+        axes[2].grid(True)
+
+        plt.tight_layout()
+        plt.show()
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Generate and plot drum profile variography samples.")
+    parser.add_argument("--kernel", default="matern52", choices=("matern32", "matern52"))
+    parser.add_argument("--ell", type=float, default=5.0)
+    parser.add_argument("--sill", type=float, default=0.1)
+    parser.add_argument("--nug", type=float, default=0.0)
+    return parser
+
 
 # -----------------------------------------------------------------------------
 # Example usage
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+
     t_grid = np.linspace(0.0, 200.0, 2001)
 
     gen = DrumProfileGenerator(
-        kernel="matern52",
-        ell=5.0,
-        sill_v_deg2_s2=0.1,
-        nugget_v_deg2_s2=0.0,
+        kernel=args.kernel,
+        ell=args.ell,
+        sill_v_deg2_s2=args.sill,
+        nugget_v_deg2_s2=args.nug,
         jitter_frac=1e-10,
         cond_jitter=1e-10,
     )
 
-    base = gen.generate(t_grid, n_realizations=1, baseline_angle_deg=45.0, seed=999)[0]
+    profiles = gen.generate(t_grid, n_realizations=10, baseline_angle_deg=45.0, seed=999)
+    base = profiles[0]
 
     branched_profiles = gen.branch_N_times(
         base,
@@ -442,4 +487,5 @@ if __name__ == "__main__":
         seed=123,
     )
 
+    gen.plot_profiles(profiles, title="Generated Drum Profiles")
     gen.plot_base_vs_branched(base, branched_profiles, t_branch=80.0)
