@@ -5,34 +5,45 @@ from rabl.machine_learning import build_lstm_dataset
 
 
 def main() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    default_config = repo_root / "scripts" / "config.py"
+    default_sim_root = repo_root / "outputs" / "sim_profiles"
+    default_output_dir = repo_root / "outputs" / "datasets"
+
     parser = argparse.ArgumentParser(
         description="Build an LSTM-ready dataset from simulation outputs."
     )
-    parser.add_argument("--lookback", type=int, required=True, help="Number of past timesteps to include.")
+    parser.add_argument(
+        "--lookback",
+        type=int,
+        required=True,
+        help="Number of past timesteps to include."
+    )
     parser.add_argument(
         "--config",
         type=Path,
-        default=None,
-        help="Path to scripts/config.py (defaults to repo scripts/config.py).",
+        default=default_config,
+        help=f"Path to scripts/config.py (default: {default_config}).",
     )
     parser.add_argument(
         "--sim-root",
         type=Path,
-        default=None,
-        help="Directory containing batch simulation outputs.",
+        default=default_sim_root,
+        help=f"Directory containing batch simulation outputs (default: {default_sim_root}).",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=None,
-        help="Directory to write the merged dataset.",
+        default=default_output_dir,
+        help=f"Directory to write the merged dataset (default: {default_output_dir}).",
     )
-    args = parser.parse_args()
 
-    repo_root = Path(__file__).resolve().parents[1]
-    config_path = args.config or (repo_root / "scripts" / "config.py")
-    sim_root = args.sim_root or (repo_root / "outputs" / "sim_profiles")
-    output_dir = args.output_dir or (repo_root / "outputs" / "datasets")
+    args = parser.parse_args()
+    config_path: Path = args.config
+    sim_root: Path = args.sim_root
+    output_dir: Path = args.output_dir
+
+
 
     config = build_lstm_dataset._validate_config(build_lstm_dataset._load_config(config_path))
     build_lstm_dataset.build_dataset(sim_root, output_dir, config["steady_state"], args.lookback)

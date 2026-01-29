@@ -40,7 +40,7 @@ Modules under `src/rabl/machine_learning` and scripts under `scripts/` provide h
 ├── src/
 │   ├── rabl/                   # Core Python package
 │   │   ├── interface/          # Dymola batch runner
-│   │   ├── variography_profiles/  # Drum profile generation
+│   │   ├── variography/  # Drum profile generation
 │   │   └── machine_learning/    # Dataset prep/analysis utilities
 │   └── modelica/              # Modelica package(s) for Dymola
 └── tests/                     # Automated tests (if added)
