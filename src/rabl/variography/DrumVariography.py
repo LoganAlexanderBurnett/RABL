@@ -389,7 +389,7 @@ class DrumProfileGenerator:
 
         # Angle
         for i, bp in enumerate(branched_list):
-            axes[0].plot(t, bp.theta_deg, alpha=0.6, label=f"branch {i}")
+            axes[0].plot(t, bp.theta_deg, alpha=0.6)
         axes[0].plot(t, base.theta_deg, label="base", linewidth=1.0, color='k')
         axes[0].axvline(t_branch, linestyle="--", label="branch time")
         axes[0].set_ylabel("Angle [deg]")
