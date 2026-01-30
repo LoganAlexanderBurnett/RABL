@@ -456,6 +456,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ell", type=float, default=5.0)
     parser.add_argument("--sill", type=float, default=0.1)
     parser.add_argument("--nug", type=float, default=0.0)
+    parser.add_argument("--n_profiles", type=int, default=10)
+    parser.add_argument("--n_branches", type=int, default=10)
     return parser
 
 
@@ -477,13 +479,13 @@ if __name__ == "__main__":
         cond_jitter=1e-10,
     )
 
-    profiles = gen.generate(t_grid, n_realizations=10, baseline_angle_deg=45.0, seed=999)
+    profiles = gen.generate(t_grid, n_realizations=args.n_profiles, baseline_angle_deg=45.0, seed=999)
     base = profiles[0]
 
     branched_profiles = gen.branch_N_times(
         base,
         t_branch=80.0,
-        n_branches=10,
+        n_branches=args.n_branches,
         seed=123,
     )
 
