@@ -116,45 +116,37 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
     for p in results_csvs:
         dfs.append((p.stem, _read_results_csv(p)))
 
-    rows = 2
+    rows = 3
     cols = 6
-    per_page = rows * cols
-    chunks = [PLOT_VARS[i : i + per_page] for i in range(0, len(PLOT_VARS), per_page)]
+    fig, axes = plt.subplots(rows, cols, figsize=(18, 12), sharex=True)
+    axes = axes.flatten()
 
-    for i, chunk in enumerate(chunks, start=1):
-        fig, axes = plt.subplots(rows, cols, figsize=(18, 8), sharex=True)
-        axes = axes.flatten()
+    for ax, var in zip(axes, PLOT_VARS, strict=False):
+        color = COLOR_MAP.get(var, "black")
 
-        for ax, var in zip(axes, chunk, strict=False):
-            color = COLOR_MAP.get(var, "black")
+        # Overlay every profile on this subplot
+        for _, df in dfs:
+            ax.plot(
+                df["t"].to_numpy(),
+                df[var].to_numpy(),
+                color=color,
+                linewidth=1.0,
+                alpha=0.10,
+            )
 
-            # Overlay every profile on this subplot
-            for _, df in dfs:
-                ax.plot(
-                    df["t"].to_numpy(),
-                    df[var].to_numpy(),
-                    color=color,
-                    linewidth=1.0,
-                    alpha=0.10,
-                )
+        ax.set_title(var)
+        ax.set_ylabel(var)
+        ax.grid(True, which="both", alpha=0.35)
 
-            ax.set_title(var)
-            ax.set_ylabel(var)
-            ax.grid(True, which="both", alpha=0.35)
+    for ax in axes[len(PLOT_VARS):]:
+        ax.set_axis_off()
 
-        for ax in axes[len(chunk):]:
-            ax.set_axis_off()
+    for ax in axes[-cols:]:
+        ax.set_xlabel("t (s)")
 
-        for ax in axes[-cols:]:
-            ax.set_xlabel("t (s)")
-
-        fig.tight_layout()
-        if len(chunks) == 1:
-            page_output = output_path
-        else:
-            page_output = output_path.with_name(f"{output_path.stem}_part{i}{output_path.suffix}")
-        fig.savefig(page_output, dpi=150)
-        plt.close(fig)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
 
 
 def main() -> None:
