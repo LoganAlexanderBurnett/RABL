@@ -686,11 +686,11 @@ if __name__ == "__main__":
         print(f"delta_t             = {delta_t:g} s")
         print(f"N (time nodes)      = {len(t_grid)}")
         print(f"T                  ~= {delta_t * (len(t_grid) - 1):g} s")
-        print(f"sigma_theta_target  = {args.sigma_theta_target:g} deg")
+        print(f"sigma_theta_target  = {args.sigma_theta_target:.6f} deg")
         print(f"computed sill_v     = {sill:.6g} (deg/s)^2")
-        print(f"computed sigma_v    = {sigma_v:.6g} deg/s (pointwise)")
-        print(f"estimated vmax      = {vmax_est:.6g} deg/s (p_all={args.p_all:g})")
-        print(f"sigma_theta_end chk = {sigma_check:.6g} deg")
+        print(f"computed sigma_v    = {sigma_v:.6g} deg/s (per-sample std dev)")
+        print(f"estimated vmax      = {vmax_est:.6g} deg/s (~{args.p_all:.2%} confidence)")
+        print(f"sigma_theta_end chk = {sigma_check:.6f} deg")
 
     gen = DrumProfileGenerator(
         kernel=args.kernel,
