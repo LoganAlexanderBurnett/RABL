@@ -253,6 +253,11 @@ class DrumProfileGenerator:
         self._cache_key = None
         self._cache = None
 
+    @staticmethod
+    def _theta_within_bounds(theta: np.ndarray, min_deg: float = 0.0, max_deg: float = 180.0) -> bool:
+        theta = np.asarray(theta, float)
+        return bool(np.all((theta >= min_deg) & (theta <= max_deg)))
+
     # -----------------------------
     # Velocity correlation ρ(|Δt|)
     # -----------------------------
@@ -388,11 +393,21 @@ class DrumProfileGenerator:
         rng = np.random.default_rng(seed)
 
         profiles: List[DrumProfile] = []
-        for i in range(n_realizations):
+        attempts = 0
+        max_attempts = max(100, 100 * n_realizations)
+        while len(profiles) < n_realizations:
             theta = self.sample_theta(t, baseline_angle_deg, rng)
+            attempts += 1
+            if not self._theta_within_bounds(theta):
+                if attempts >= max_attempts:
+                    raise RuntimeError(
+                        "Failed to generate a bounded profile within the attempt limit. "
+                        "Consider relaxing constraints or increasing max_attempts."
+                    )
+                continue
             v, a = self.velocity_and_accel_from_theta(t, theta)
             profiles.append(DrumProfile(t=t, theta_deg=theta, v_deg_s=v, a_deg_s2=a))
-            print(f"Profiles generated: [{i+1}/{n_realizations}]")
+            print(f"Profiles generated: [{len(profiles)}/{n_realizations}]")
         return profiles
 
     def solve_params_for_sigma_theta(
@@ -513,14 +528,22 @@ class DrumProfileGenerator:
         )
 
         rng = np.random.default_rng(seed)
-        theta_fut = rng.multivariate_normal(mean=mu_cond, cov=Sigma_cond)
-
-        theta_full = original.theta_deg.copy()
-        theta_full[:S] = theta_past
-        theta_full[S:] = theta_fut
-
-        v_full, a_full = self.velocity_and_accel_from_theta(t, theta_full)
-        return DrumProfile(t=t, theta_deg=theta_full, v_deg_s=v_full, a_deg_s2=a_full)
+        attempts = 0
+        max_attempts = 1000
+        while True:
+            theta_fut = rng.multivariate_normal(mean=mu_cond, cov=Sigma_cond)
+            theta_full = original.theta_deg.copy()
+            theta_full[:S] = theta_past
+            theta_full[S:] = theta_fut
+            attempts += 1
+            if self._theta_within_bounds(theta_full):
+                v_full, a_full = self.velocity_and_accel_from_theta(t, theta_full)
+                return DrumProfile(t=t, theta_deg=theta_full, v_deg_s=v_full, a_deg_s2=a_full)
+            if attempts >= max_attempts:
+                raise RuntimeError(
+                    "Failed to generate a bounded branched profile within the attempt limit. "
+                    "Consider relaxing constraints or increasing max_attempts."
+                )
 
     # -----------------------------
     # Branch N times efficiently
@@ -565,17 +588,26 @@ class DrumProfileGenerator:
             L = np.linalg.cholesky(Sigma_cond2)
 
         rng = np.random.default_rng(seed)
-        Z = rng.standard_normal(size=(n_branches, n_fut))
-        theta_fut_draws = mu_cond[None, :] + Z @ L.T
-
         branched: List[DrumProfile] = []
-        for k in range(n_branches):
+        attempts = 0
+        max_attempts = max(1000, 1000 * n_branches)
+        while len(branched) < n_branches:
+            z = rng.standard_normal(size=n_fut)
+            theta_fut = mu_cond + L @ z
             theta_full = original.theta_deg.copy()
             theta_full[:S] = theta_past
-            theta_full[S:] = theta_fut_draws[k]
+            theta_full[S:] = theta_fut
+            attempts += 1
+            if not self._theta_within_bounds(theta_full):
+                if attempts >= max_attempts:
+                    raise RuntimeError(
+                        "Failed to generate bounded branches within the attempt limit. "
+                        "Consider relaxing constraints or increasing max_attempts."
+                    )
+                continue
             v_full, a_full = self.velocity_and_accel_from_theta(t, theta_full)
             branched.append(DrumProfile(t=t, theta_deg=theta_full, v_deg_s=v_full, a_deg_s2=a_full))
-            print(f"Branches generated: [{k+1}/{n_branches}]")
+            print(f"Branches generated: [{len(branched)}/{n_branches}]")
 
         return branched
 
