@@ -1,7 +1,9 @@
 import csv
 from dataclasses import dataclass
+from statistics import NormalDist
 from typing import Optional, List, Tuple
 import argparse
+import math
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -23,6 +25,165 @@ def matern52_corr(h, ell):
     h = np.asarray(h, dtype=float)
     r = np.sqrt(5.0) * np.abs(h) / ell
     return (1.0 + r + (r**2) / 3.0) * np.exp(-r)
+
+
+# =============================================================================
+# Variogram parameter helpers
+# =============================================================================
+def sill_for_vmax(vmax: float, p_all: float, N: int) -> float:
+    """
+    Return the velocity sill needed so |v| <= vmax with probability p_all.
+
+    Notes:
+        - N is the number of time nodes in the grid; M = N - 1 velocity points.
+        - Uses a conservative union-bound to convert p_all to a per-point bound.
+    """
+    if N < 2:
+        raise ValueError("N must be >= 2")
+    if vmax <= 0:
+        raise ValueError("vmax must be > 0")
+    if not (0.0 < p_all < 1.0):
+        raise ValueError("p_all must be in (0, 1)")
+
+    M = N - 1
+    p_pt = 1.0 - (1.0 - p_all) / M
+    z = NormalDist().inv_cdf((p_pt + 1.0) / 2.0)
+    sigma_v = vmax / z
+    return sigma_v**2
+
+
+def _A_of_ell(kernel: str, delta_t: float, N: int, ell: float) -> float:
+    """
+    Return A(ell) for the final-node variance under a uniform grid.
+
+    Notes:
+        - N is the number of time nodes in the grid; M = N - 1 velocity points.
+        - delta_t is the uniform spacing between time nodes.
+    """
+    if N < 2:
+        raise ValueError("N must be >= 2")
+    if delta_t <= 0:
+        raise ValueError("delta_t must be > 0")
+    if ell <= 0:
+        raise ValueError("ell must be > 0")
+
+    if kernel == "matern32":
+        corr = matern32_corr
+    elif kernel == "matern52":
+        corr = matern52_corr
+    else:
+        raise ValueError("kernel must be 'matern32' or 'matern52'")
+
+    M = N - 1
+    k = np.arange(1, M, dtype=float)
+    rho = corr(k * delta_t, ell)
+
+    A = M * 1.0 + 2.0 * np.sum((M - k) * rho)
+    return float(A)
+
+
+def sigma_theta_end(
+    kernel: str,
+    delta_t: float,
+    N: int,
+    ell: float,
+    sill: float,
+    nugget: float = 0.0,
+) -> float:
+    """
+    Return the std dev of theta at the final node.
+
+    Notes:
+        - N is the number of time nodes in the grid; M = N - 1 velocity points.
+        - delta_t is the uniform spacing between time nodes.
+    """
+    if sill < 0 or nugget < 0:
+        raise ValueError("sill and nugget must be >= 0")
+    M = N - 1
+    A = _A_of_ell(kernel, delta_t, N, ell)
+    var = (delta_t**2) * (sill * A + nugget * M)
+    return math.sqrt(var)
+
+
+def solve_ell_for_sigma_theta(
+    kernel: str,
+    delta_t: float,
+    T: float,
+    N: int,
+    sigma_theta_target: float,
+    *,
+    sill: float,
+    nugget: float = 0.0,
+    ell_low: float = 1e-6,
+    ell_high: float | None = None,
+    max_iter: int = 100,
+    tol: float = 1e-10,
+) -> float:
+    """
+    Solve for ell such that sigma_theta_end(...) == sigma_theta_target.
+
+    Notes:
+        - N is the number of time nodes in the grid; M = N - 1 velocity points.
+        - delta_t is the uniform spacing between time nodes.
+        - T is only used as a sanity check / default upper bracket.
+    """
+    if sigma_theta_target <= 0:
+        raise ValueError("sigma_theta_target must be > 0")
+    if T <= 0:
+        raise ValueError("T must be > 0")
+    if N < 2:
+        raise ValueError("N must be >= 2")
+    if delta_t <= 0:
+        raise ValueError("delta_t must be > 0")
+    if sill < 0 or nugget < 0:
+        raise ValueError("sill and nugget must be >= 0")
+
+    implied_T = delta_t * (N - 1)
+    if abs(implied_T - T) > 1e-6 * max(1.0, T):
+        pass
+
+    M = N - 1
+    sigma_min = delta_t * math.sqrt((sill + nugget) * M)
+    sigma_max = delta_t * math.sqrt(sill * (M**2) + nugget * M)
+
+    if not (sigma_min <= sigma_theta_target <= sigma_max):
+        raise ValueError(
+            "Target sigma not achievable with given sill/nugget/grid. "
+            f"sigma_min≈{sigma_min:.6g}, sigma_max≈{sigma_max:.6g}, "
+            f"target={sigma_theta_target:.6g}."
+        )
+
+    if ell_high is None:
+        ell_high = 100.0 * max(T, delta_t)
+
+    def f(ell: float) -> float:
+        return sigma_theta_end(kernel, delta_t, N, ell, sill, nugget) - sigma_theta_target
+
+    lo, hi = ell_low, ell_high
+    flo, fhi = f(lo), f(hi)
+
+    expand_count = 0
+    while fhi < 0 and expand_count < 50:
+        hi *= 2.0
+        fhi = f(hi)
+        expand_count += 1
+
+    if flo > 0:
+        raise ValueError("ell_low already gives sigma above target; decrease ell_low.")
+    if fhi < 0:
+        raise ValueError("Failed to bracket solution; increase ell_high.")
+
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        fmid = f(mid)
+        if abs(fmid) < tol:
+            return mid
+        if fmid > 0:
+            hi = mid
+        else:
+            lo = mid
+
+    return 0.5 * (lo + hi)
 
 
 # =============================================================================
@@ -233,6 +394,45 @@ class DrumProfileGenerator:
             profiles.append(DrumProfile(t=t, theta_deg=theta, v_deg_s=v, a_deg_s2=a))
             print(f"Profiles generated: [{i+1}/{n_realizations}]")
         return profiles
+
+    def solve_params_for_sigma_theta(
+        self,
+        t_grid: np.ndarray,
+        sigma_theta_target: float,
+        v_max: float = 1.0,
+        p_all: float = 0.999,
+        nugget: float = 0.0,
+        *,
+        ell_bounds: Tuple[float, float | None] = (1e-6, None),
+    ) -> Tuple[float, float]:
+        """
+        Solve (ell, sill) that match sigma_theta_target at the final node.
+
+        Notes:
+            - N is the number of time nodes in the grid; M = N - 1 velocity points.
+            - delta_t is the uniform spacing between time nodes.
+            - Returns (ell, sill). The caller can assign these to the generator.
+        """
+        t_grid = np.asarray(t_grid, float)
+        if t_grid.size < 2:
+            raise ValueError("t_grid must have at least 2 points")
+
+        delta_t = float(np.mean(np.diff(t_grid)))
+        N = t_grid.size
+        sill = sill_for_vmax(v_max, p_all, N)
+        ell_low, ell_high = ell_bounds
+        ell = solve_ell_for_sigma_theta(
+            kernel=self.kernel,
+            delta_t=delta_t,
+            T=float(t_grid[-1] - t_grid[0]),
+            N=N,
+            sigma_theta_target=sigma_theta_target,
+            sill=sill,
+            nugget=nugget,
+            ell_low=ell_low,
+            ell_high=ell_high,
+        )
+        return ell, sill
 
     # -----------------------------
     # Conditional future angles given past angles
@@ -458,6 +658,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nug", type=float, default=0.0)
     parser.add_argument("--n_profiles", type=int, default=10)
     parser.add_argument("--n_branches", type=int, default=10)
+    parser.add_argument(
+        "--sigma_theta_target",
+        type=float,
+        default=None,
+        help="If set, overrides --ell/--sill and solves parameters from the target sigma.",
+    )
+    parser.add_argument("--vmax", type=float, default=1.0)
+    parser.add_argument("--p_all", type=float, default=0.999)
     return parser
 
 
@@ -470,10 +678,26 @@ if __name__ == "__main__":
 
     t_grid = np.linspace(0.0, 200.0, 2001)
 
+    ell = args.ell
+    sill = args.sill
+    if args.sigma_theta_target is not None:
+        N = t_grid.size
+        delta_t = float(np.mean(np.diff(t_grid)))
+        sill = sill_for_vmax(args.vmax, args.p_all, N)
+        ell = solve_ell_for_sigma_theta(
+            kernel=args.kernel,
+            delta_t=delta_t,
+            T=float(t_grid[-1] - t_grid[0]),
+            N=N,
+            sigma_theta_target=args.sigma_theta_target,
+            sill=sill,
+            nugget=args.nug,
+        )
+
     gen = DrumProfileGenerator(
         kernel=args.kernel,
-        ell=args.ell,
-        sill_v_deg2_s2=args.sill,
+        ell=ell,
+        sill_v_deg2_s2=sill,
         nugget_v_deg2_s2=args.nug,
         jitter_frac=1e-10,
         cond_jitter=1e-10,
