@@ -1,5 +1,6 @@
 import csv
 from dataclasses import dataclass
+from statistics import NormalDist
 from typing import Optional, List, Tuple
 import argparse
 import math
@@ -92,6 +93,24 @@ def sill_for_sigma_theta_target(
     if sill < 0:
         raise ValueError("Computed sill must be >= 0 for the target sigma.")
     return sill
+
+
+def vmax_for_sill(sill: float, p_all: float, N: int) -> float:
+    """
+    Conservative estimate of vmax such that max_i |v_i| <= vmax with probability ~p_all,
+    using the same union-bound logic as sill_for_vmax.
+    """
+    if N < 2:
+        raise ValueError("N must be >= 2")
+    if sill < 0:
+        raise ValueError("sill must be >= 0")
+    if not (0.0 < p_all < 1.0):
+        raise ValueError("p_all must be in (0, 1)")
+
+    M = N - 1
+    p_pt = 1.0 - (1.0 - p_all) / M
+    z = NormalDist().inv_cdf((p_pt + 1.0) / 2.0)
+    return z * math.sqrt(sill)
 
 
 def sigma_theta_end(
@@ -625,6 +644,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="If set, overrides --sill and solves sill from the target sigma and --ell.",
     )
+    parser.add_argument("--p_all", type=float, default=0.999)
     return parser
 
 
@@ -650,6 +670,27 @@ if __name__ == "__main__":
             sigma_theta_target=args.sigma_theta_target,
             nugget=args.nug,
         )
+        sigma_v = math.sqrt(sill)
+        sigma_check = sigma_theta_end(
+            kernel=args.kernel,
+            delta_t=delta_t,
+            N=N,
+            ell=ell,
+            sill=sill,
+            nugget=args.nug,
+        )
+        vmax_est = vmax_for_sill(sill, args.p_all, N)
+        print("=== Parameter solution ===")
+        print(f"kernel              = {args.kernel}")
+        print(f"ell                 = {args.ell:g} s")
+        print(f"delta_t             = {delta_t:g} s")
+        print(f"N (time nodes)      = {len(t_grid)}")
+        print(f"T                  ~= {delta_t * (len(t_grid) - 1):g} s")
+        print(f"sigma_theta_target  = {args.sigma_theta_target:g} deg")
+        print(f"computed sill_v     = {sill:.6g} (deg/s)^2")
+        print(f"computed sigma_v    = {sigma_v:.6g} deg/s (pointwise)")
+        print(f"estimated vmax      = {vmax_est:.6g} deg/s (p_all={args.p_all:g})")
+        print(f"sigma_theta_end chk = {sigma_check:.6g} deg")
 
     gen = DrumProfileGenerator(
         kernel=args.kernel,
