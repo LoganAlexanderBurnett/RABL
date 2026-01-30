@@ -2,6 +2,7 @@ import csv
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
 import argparse
+import math
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -23,6 +24,97 @@ def matern52_corr(h, ell):
     h = np.asarray(h, dtype=float)
     r = np.sqrt(5.0) * np.abs(h) / ell
     return (1.0 + r + (r**2) / 3.0) * np.exp(-r)
+
+
+# =============================================================================
+# Variogram parameter helpers
+# =============================================================================
+def _A_of_ell(kernel: str, delta_t: float, N: int, ell: float) -> float:
+    """
+    Return A(ell) for the final-node variance under a uniform grid.
+
+    Notes:
+        - N is the number of time nodes in the grid; M = N - 1 velocity points.
+        - delta_t is the uniform spacing between time nodes.
+    """
+    if N < 2:
+        raise ValueError("N must be >= 2")
+    if delta_t <= 0:
+        raise ValueError("delta_t must be > 0")
+    if ell <= 0:
+        raise ValueError("ell must be > 0")
+
+    if kernel == "matern32":
+        corr = matern32_corr
+    elif kernel == "matern52":
+        corr = matern52_corr
+    else:
+        raise ValueError("kernel must be 'matern32' or 'matern52'")
+
+    M = N - 1
+    k = np.arange(1, M, dtype=float)
+    rho = corr(k * delta_t, ell)
+
+    A = M * 1.0 + 2.0 * np.sum((M - k) * rho)
+    return float(A)
+
+
+def sill_for_sigma_theta_target(
+    kernel: str,
+    delta_t: float,
+    N: int,
+    ell: float,
+    sigma_theta_target: float,
+    nugget: float = 0.0,
+) -> float:
+    """
+    Solve for the velocity sill that matches a target sigma at the final node.
+
+    Notes:
+        - N is the number of time nodes in the grid; M = N - 1 velocity points.
+        - delta_t is the uniform spacing between time nodes.
+    """
+    if N < 2:
+        raise ValueError("N must be >= 2")
+    if delta_t <= 0:
+        raise ValueError("delta_t must be > 0")
+    if ell <= 0:
+        raise ValueError("ell must be > 0")
+    if sigma_theta_target <= 0:
+        raise ValueError("sigma_theta_target must be > 0")
+    if nugget < 0:
+        raise ValueError("nugget must be >= 0")
+
+    M = N - 1
+    A = _A_of_ell(kernel, delta_t, N, ell)
+    var = sigma_theta_target**2
+    sill = ((var / (delta_t**2)) - nugget * M) / A
+    if sill < 0:
+        raise ValueError("Computed sill must be >= 0 for the target sigma.")
+    return sill
+
+
+def sigma_theta_end(
+    kernel: str,
+    delta_t: float,
+    N: int,
+    ell: float,
+    sill: float,
+    nugget: float = 0.0,
+) -> float:
+    """
+    Return the std dev of theta at the final node.
+
+    Notes:
+        - N is the number of time nodes in the grid; M = N - 1 velocity points.
+        - delta_t is the uniform spacing between time nodes.
+    """
+    if sill < 0 or nugget < 0:
+        raise ValueError("sill and nugget must be >= 0")
+    M = N - 1
+    A = _A_of_ell(kernel, delta_t, N, ell)
+    var = (delta_t**2) * (sill * A + nugget * M)
+    return math.sqrt(var)
 
 
 # =============================================================================
@@ -91,6 +183,11 @@ class DrumProfileGenerator:
         # cache for last t-grid matrices
         self._cache_key = None
         self._cache = None
+
+    @staticmethod
+    def _theta_within_bounds(theta: np.ndarray, min_deg: float = 0.0, max_deg: float = 180.0) -> bool:
+        theta = np.asarray(theta, float)
+        return bool(np.all((theta >= min_deg) & (theta <= max_deg)))
 
     # -----------------------------
     # Velocity correlation ρ(|Δt|)
@@ -227,12 +324,59 @@ class DrumProfileGenerator:
         rng = np.random.default_rng(seed)
 
         profiles: List[DrumProfile] = []
-        for i in range(n_realizations):
+        attempts = 0
+        max_attempts = max(100, 100 * n_realizations)
+        while len(profiles) < n_realizations:
             theta = self.sample_theta(t, baseline_angle_deg, rng)
+            attempts += 1
+            if not self._theta_within_bounds(theta):
+                if attempts >= max_attempts:
+                    raise RuntimeError(
+                        "Failed to generate a bounded profile within the attempt limit. "
+                        "Consider relaxing constraints or increasing max_attempts."
+                    )
+                continue
             v, a = self.velocity_and_accel_from_theta(t, theta)
             profiles.append(DrumProfile(t=t, theta_deg=theta, v_deg_s=v, a_deg_s2=a))
-            print(f"Profiles generated: [{i+1}/{n_realizations}]")
+            print(f"Profiles generated: [{len(profiles)}/{n_realizations}]")
         return profiles
+
+    def solve_params_for_sigma_theta(
+        self,
+        t_grid: np.ndarray,
+        sigma_theta_target: float,
+        ell: float,
+        nugget: float = 0.0,
+        *,
+        update_instance: bool = False,
+    ) -> Tuple[float, float, float]:
+        """
+        Solve (ell, sill, nugget) that match sigma_theta_target at the final node.
+
+        Notes:
+            - N is the number of time nodes in the grid; M = N - 1 velocity points.
+            - delta_t is the uniform spacing between time nodes.
+            - Returns (ell, sill, nugget). Optionally updates the generator instance.
+        """
+        t_grid = np.asarray(t_grid, float)
+        if t_grid.size < 2:
+            raise ValueError("t_grid must have at least 2 points")
+
+        delta_t = float(np.mean(np.diff(t_grid)))
+        N = t_grid.size
+        sill = sill_for_sigma_theta_target(
+            kernel=self.kernel,
+            delta_t=delta_t,
+            N=N,
+            ell=ell,
+            sigma_theta_target=sigma_theta_target,
+            nugget=nugget,
+        )
+        if update_instance:
+            self.ell = float(ell)
+            self.sill_v = float(sill)
+            self.nugget_v = float(nugget)
+        return ell, sill, nugget
 
     # -----------------------------
     # Conditional future angles given past angles
@@ -313,14 +457,22 @@ class DrumProfileGenerator:
         )
 
         rng = np.random.default_rng(seed)
-        theta_fut = rng.multivariate_normal(mean=mu_cond, cov=Sigma_cond)
-
-        theta_full = original.theta_deg.copy()
-        theta_full[:S] = theta_past
-        theta_full[S:] = theta_fut
-
-        v_full, a_full = self.velocity_and_accel_from_theta(t, theta_full)
-        return DrumProfile(t=t, theta_deg=theta_full, v_deg_s=v_full, a_deg_s2=a_full)
+        attempts = 0
+        max_attempts = 1000
+        while True:
+            theta_fut = rng.multivariate_normal(mean=mu_cond, cov=Sigma_cond)
+            theta_full = original.theta_deg.copy()
+            theta_full[:S] = theta_past
+            theta_full[S:] = theta_fut
+            attempts += 1
+            if self._theta_within_bounds(theta_full):
+                v_full, a_full = self.velocity_and_accel_from_theta(t, theta_full)
+                return DrumProfile(t=t, theta_deg=theta_full, v_deg_s=v_full, a_deg_s2=a_full)
+            if attempts >= max_attempts:
+                raise RuntimeError(
+                    "Failed to generate a bounded branched profile within the attempt limit. "
+                    "Consider relaxing constraints or increasing max_attempts."
+                )
 
     # -----------------------------
     # Branch N times efficiently
@@ -365,17 +517,26 @@ class DrumProfileGenerator:
             L = np.linalg.cholesky(Sigma_cond2)
 
         rng = np.random.default_rng(seed)
-        Z = rng.standard_normal(size=(n_branches, n_fut))
-        theta_fut_draws = mu_cond[None, :] + Z @ L.T
-
         branched: List[DrumProfile] = []
-        for k in range(n_branches):
+        attempts = 0
+        max_attempts = max(1000, 1000 * n_branches)
+        while len(branched) < n_branches:
+            z = rng.standard_normal(size=n_fut)
+            theta_fut = mu_cond + L @ z
             theta_full = original.theta_deg.copy()
             theta_full[:S] = theta_past
-            theta_full[S:] = theta_fut_draws[k]
+            theta_full[S:] = theta_fut
+            attempts += 1
+            if not self._theta_within_bounds(theta_full):
+                if attempts >= max_attempts:
+                    raise RuntimeError(
+                        "Failed to generate bounded branches within the attempt limit. "
+                        "Consider relaxing constraints or increasing max_attempts."
+                    )
+                continue
             v_full, a_full = self.velocity_and_accel_from_theta(t, theta_full)
             branched.append(DrumProfile(t=t, theta_deg=theta_full, v_deg_s=v_full, a_deg_s2=a_full))
-            print(f"Branches generated: [{k+1}/{n_branches}]")
+            print(f"Branches generated: [{len(branched)}/{n_branches}]")
 
         return branched
 
@@ -458,6 +619,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nug", type=float, default=0.0)
     parser.add_argument("--n_profiles", type=int, default=10)
     parser.add_argument("--n_branches", type=int, default=10)
+    parser.add_argument(
+        "--sigma_theta_target",
+        type=float,
+        default=None,
+        help="If set, overrides --sill and solves sill from the target sigma and --ell.",
+    )
     return parser
 
 
@@ -470,10 +637,24 @@ if __name__ == "__main__":
 
     t_grid = np.linspace(0.0, 200.0, 2001)
 
+    ell = args.ell
+    sill = args.sill
+    if args.sigma_theta_target is not None:
+        N = t_grid.size
+        delta_t = float(np.mean(np.diff(t_grid)))
+        sill = sill_for_sigma_theta_target(
+            kernel=args.kernel,
+            delta_t=delta_t,
+            N=N,
+            ell=ell,
+            sigma_theta_target=args.sigma_theta_target,
+            nugget=args.nug,
+        )
+
     gen = DrumProfileGenerator(
         kernel=args.kernel,
-        ell=args.ell,
-        sill_v_deg2_s2=args.sill,
+        ell=ell,
+        sill_v_deg2_s2=sill,
         nugget_v_deg2_s2=args.nug,
         jitter_frac=1e-10,
         cond_jitter=1e-10,
