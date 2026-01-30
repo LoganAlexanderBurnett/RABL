@@ -51,11 +51,11 @@ COLOR_MAP = {
     # P_MW in pink
     "P_MW": "#e377c2",
 
-    # rho dollars in dark blue
-    "rho_dollars": "#1f3a93",
-    "rho_drums_dollars": "#1f3a93",
-    "rho_fuel_dollars": "#1f3a93",
-    "rho_moderator_dollars": "#1f3a93",
+    # rho dollars total in black, components in distinct colors
+    "rho_dollars": "black",
+    "rho_drums_dollars": "#1f77b4",
+    "rho_fuel_dollars": "#2ca02c",
+    "rho_moderator_dollars": "#ff7f0e",
 
     # Q_to_steam in gray
     "Q_to_steam": "#7f7f7f",
@@ -121,22 +121,37 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
     fig, axes = plt.subplots(rows, cols, figsize=(18, 12), sharex=True)
     axes = axes.flatten()
 
-    for ax, var in zip(axes, PLOT_VARS, strict=False):
-        color = COLOR_MAP.get(var, "black")
+        for ax, var in zip(axes, PLOT_VARS, strict=False):
+            color = COLOR_MAP.get(var, "black")
 
-        # Overlay every profile on this subplot
-        for _, df in dfs:
-            ax.plot(
-                df["t"].to_numpy(),
-                df[var].to_numpy(),
-                color=color,
-                linewidth=1.0,
-                alpha=0.10,
-            )
+            # Overlay every profile on this subplot
+            for _, df in dfs:
+                ax.plot(
+                    df["t"].to_numpy(),
+                    df[var].to_numpy(),
+                    color=color,
+                    linewidth=1.0,
+                    alpha=0.10,
+                )
 
-        ax.set_title(var)
-        ax.set_ylabel(var)
-        ax.grid(True, which="both", alpha=0.35)
+                if var == "rho_dollars":
+                    for component in (
+                        "rho_drums_dollars",
+                        "rho_fuel_dollars",
+                        "rho_moderator_dollars",
+                    ):
+                        component_color = COLOR_MAP.get(component, "black")
+                        ax.plot(
+                            df["t"].to_numpy(),
+                            df[component].to_numpy(),
+                            color=component_color,
+                            linewidth=1.0,
+                            alpha=0.10,
+                        )
+
+            ax.set_title(var)
+            ax.set_ylabel(var)
+            ax.grid(True, which="both", alpha=0.35)
 
     for ax in axes[len(PLOT_VARS):]:
         ax.set_axis_off()
