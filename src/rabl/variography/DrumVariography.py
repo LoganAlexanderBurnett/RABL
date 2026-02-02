@@ -146,19 +146,77 @@ class DrumProfile:
     v_deg_s: np.ndarray
     a_deg_s2: np.ndarray
 
-    def save_csv(self, path: str) -> None:
+    # -----------------------------
+    # I/O helpers
+    # -----------------------------
+    @staticmethod
+    def _as_1d(arr: np.ndarray, name: str) -> np.ndarray:
+        a = np.asarray(arr).squeeze()
+        if a.ndim != 1:
+            raise ValueError(f"{name} must be 1D after squeeze; got shape {a.shape}")
+        return a.astype(float, copy=False)
+
+    @classmethod
+    def _require_len(cls, arr: np.ndarray, n: int, name: str) -> np.ndarray:
+        a = cls._as_1d(arr, name)
+        if a.size != n:
+            raise ValueError(f"{name} must have length {n}, got {a.size}")
+        return a
+
+    @classmethod
+    def _pad_short(cls, arr: np.ndarray, n: int, name: str, fill: float = np.nan) -> np.ndarray:
+        a = cls._as_1d(arr, name)
+        if a.size > n:
+            raise ValueError(f"{name} length {a.size} exceeds t length {n}")
+        if a.size == n:
+            return a
+        out = np.full(n, fill, dtype=float)
+        out[: a.size] = a
+        return out
+
+    def save_csv(self, path: str, missing: str = "nan") -> None:
+        """Save an N-row CSV (N = len(t)) even if v/a are shorter.
+
+        Rules:
+            - t and theta must be length N.
+            - v and a may be length <= N; if shorter, they are padded to N with NaN.
+            - If missing == "blank", NaN values are written as empty cells.
+              If missing == "nan", NaN values are written as the string 'nan' (via float(np.nan)).
+        """
+        if missing not in {"nan", "blank"}:
+            raise ValueError("missing must be 'nan' or 'blank'")
+
+        t = self._require_len(self.t, len(self.t), "t")
+        N = t.size
+        theta = self._require_len(self.theta_deg, N, "theta_deg")
+        v = self._pad_short(self.v_deg_s, N, "v_deg_s", fill=np.nan)
+        a = self._pad_short(self.a_deg_s2, N, "a_deg_s2", fill=np.nan)
+
         header = ["Time(s)", "Drum_Angle(deg)", "Drum_Velocity(deg/s)", "Drum_Acceleration(deg/s^2)"]
+
+        def cell(x: float):
+            if missing == "blank" and (x is None or math.isnan(float(x))):
+                return ""
+            return float(x)
+
         with open(path, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(header)
-            for ti, th, vi, ai in zip(self.t, self.theta_deg, self.v_deg_s, self.a_deg_s2):
-                w.writerow([float(ti), float(th), float(vi), float(ai)])
+            for i in range(N):
+                w.writerow([cell(t[i]), cell(theta[i]), cell(v[i]), cell(a[i])])
 
     def save_mat(self, path: str) -> None:
-        t = np.asarray(self.t).squeeze()
-        theta = np.asarray(self.theta_deg).squeeze()
-        v = np.asarray(self.v_deg_s).squeeze()
-        a = np.asarray(self.a_deg_s2).squeeze()
+        """Save a MAT file with an N×4 numeric table in 'profile'.
+
+        Rules match save_csv:
+            - t and theta must be length N.
+            - v and a may be shorter and will be padded with NaN to length N.
+        """
+        t = self._require_len(self.t, len(self.t), "t")
+        N = t.size
+        theta = self._require_len(self.theta_deg, N, "theta_deg")
+        v = self._pad_short(self.v_deg_s, N, "v_deg_s", fill=np.nan)
+        a = self._pad_short(self.a_deg_s2, N, "a_deg_s2", fill=np.nan)
 
         table = np.column_stack([t, theta, v, a])
         savemat(
@@ -169,18 +227,28 @@ class DrumProfile:
 
 
 # =============================================================================
-# Generator class (Gaussian-consistent branching on PAST ANGLES)
+# Generator class (Gaussian-consistent branching on PAST VELOCITIES)
 # =============================================================================
 class DrumProfileGenerator:
     """
     Prior is defined on VELOCITY v(t) as a zero-mean GP with Matérn correlation.
-    We generate ANGLE theta(t) by linear integration:
+    Generate ANGLE theta(t) by linear integration:
         theta = theta0*1 + B v
     Therefore theta is Gaussian:
         theta ~ N(theta0*1,  Sigma_theta),  Sigma_theta = B K_v B^T
-    Branching conditions on past ANGLES (Gaussian-consistent):
-        theta_future | theta_past  is Gaussian.
-    Velocity and acceleration are then computed by finite differences of theta.
+    Branching conditions on past INTERVAL VELOCITIES (Gaussian-consistent):
+        v_future | v_past is Gaussian, then integrate to get theta.
+
+    Notes on outputs in this file:
+        - For *generated* profiles (generate()), velocity is treated as the primary
+          sampled quantity and is defined on the N-1 *intervals* between time nodes.
+          We condition on v[0]=0 on that interval grid, keep the sampled interval velocities,
+          and compute theta by integration (theta = theta0*1 + B v_intervals).
+          For output, we pad v and a to length N by appending a trailing NaN at index N-1.
+        - For *velocity-conditioned branching* (branch/branch_N_times), we keep the past
+          interval velocities fixed, sample future interval velocities from the conditional GP,
+          integrate to get the branched angle, compute acceleration from velocity differences,
+          and pad v/a with a trailing NaN for output.
     """
 
     def __init__(
@@ -241,19 +309,23 @@ class DrumProfileGenerator:
     @staticmethod
     def build_integration_matrix(t: np.ndarray) -> np.ndarray:
         """
-        Forward-Euler integration on nodes using left-endpoint velocity:
-            theta[i] = theta0 + sum_{j=0}^{i-1} v[j] * dt[j]
-        with dt[j] = t[j+1]-t[j].
+        Forward-Euler integration on nodes using left-endpoint *interval* velocity:
+            theta[i] = theta0 + sum_{j=0}^{i-1} v_int[j] * dt[j]
+        with dt[j] = t[j+1]-t[j] and v_int[j] defined on the interval [t[j], t[j+1]).
 
-        This is linear: theta = theta0*1 + B v
+        This is linear: theta = theta0*1 + B v_int
 
-        Note: v[N-1] is unused by this discretization (last column of B is zeros).
+        Shapes:
+            - N = len(t) time nodes
+            - M = N-1 interval velocities
+            - B is (N, M)
         """
         t = np.asarray(t, float)
         N = len(t)
-        dt = np.diff(t)  # length N-1
+        dt = np.diff(t)  # length M = N-1
+        M = N - 1
 
-        B = np.zeros((N, N), dtype=float)
+        B = np.zeros((N, M), dtype=float)
         # row 0 is all zeros (theta[0] = theta0)
         for i in range(1, N):
             # theta[i] depends on v[0..i-1] with weights dt[0..i-1]
@@ -272,8 +344,12 @@ class DrumProfileGenerator:
         if self._cache_key == key and self._cache is not None:
             return self._cache
 
-        Kv = self.build_velocity_cov(t)
-        B = self.build_integration_matrix(t)
+        # Interval-velocity grid: left endpoints of each interval.
+        # M = N-1 velocities live on [t[i], t[i+1]) and are indexed by i=0..N-2.
+        t_v = t[:-1]
+
+        Kv = self.build_velocity_cov(t_v)          # (M, M)
+        B = self.build_integration_matrix(t)       # (N, M)
         Sigma_theta = B @ Kv @ B.T
 
         # Stabilize (Sigma_theta can be ill-conditioned due to integration)
@@ -288,45 +364,103 @@ class DrumProfileGenerator:
         return Kv, B, Sigma_theta
 
     # -----------------------------
-    # Compute v and a from theta via finite differences (node-wise)
+    # Compute a on the interval grid from interval velocities
     # -----------------------------
     @staticmethod
-    def velocity_and_accel_from_theta(t: np.ndarray, theta: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Node-wise backward differences:
+    def accel_intervals_from_v(t: np.ndarray, v_intervals: np.ndarray) -> np.ndarray:
+        """Compute interval accelerations from interval velocities.
 
-          v[0] = 0
-          v[i] = (theta[i] - theta[i-1]) / dt[i-1]   for i>=1
+        Here v_intervals[j] is defined on [t[j], t[j+1]) for j=0..M-1, where M=N-1.
+        We return a_intervals of length M, aligned to the same left-endpoint grid (t[:-1]).
 
-          a[0] = 0
-          a[i] = (v[i] - v[i-1]) / dt[i-1]           for i>=1
+        We use forward differences where possible and a backward difference at the end:
+            a[j]   = (v[j+1] - v[j]) / dt[j]          for j = 0..M-2
+            a[M-1] = (v[M-1] - v[M-2]) / dt[M-2]      (backward at the end)
 
-        This is linear in theta (hence Gaussian if theta is Gaussian).
+        This keeps a_intervals fully defined (no internal NaNs). The final *node*
+        acceleration at t[N-1] is undefined and should be padded as NaN separately.
         """
         t = np.asarray(t, float)
-        theta = np.asarray(theta, float)
+        v = np.asarray(v_intervals, float)
+        if t.ndim != 1 or v.ndim != 1:
+            raise ValueError("t and v_intervals must be 1D")
+        if t.size < 2:
+            raise ValueError("t must have at least 2 points")
+
         dt = np.diff(t)
+        M = t.size - 1
+        if v.size != M:
+            raise ValueError(f"v_intervals must have length N-1={M}; got {v.size}")
+        if np.any(dt <= 0):
+            raise ValueError("t must be strictly increasing")
 
-        v = np.empty_like(theta)
-        v[0] = 0.0
-        v[1:] = np.diff(theta) / dt
+        a = np.empty_like(v)
+        if M == 1:
+            a[0] = 0.0
+            return a
 
-        a = np.empty_like(theta)
-        a[0] = 0.0
-        a[1:] = np.diff(v) / dt
-
-        return v, a
+        a[:-1] = np.diff(v) / dt[:-1]
+        a[-1] = (v[-1] - v[-2]) / dt[-2]
+        return a
 
     # -----------------------------
     # Sample a full angle path (Gaussian) via v then integrate
     # -----------------------------
-    def sample_theta(self, t: np.ndarray, theta0: float, rng: np.random.Generator) -> np.ndarray:
+
+    def sample_v_conditioned_v0(self, Kv: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        """Sample v ~ N(0, Kv) conditioned on v[0] == 0.
+
+        Exact Gaussian conditioning identity:
+            If v ~ N(0, K), then
+                v_cond = v - (K[:,0] / K[0,0]) * v[0]
+            has the distribution of v | (v[0]=0), and satisfies v_cond[0]=0.
+
+        We add a small denominator jitter (cond_jitter) for numerical stability.
         """
-        Sample v ~ N(0, K_v), then theta = theta0*1 + B v.
+        Kv = np.asarray(Kv, float)
+        if Kv.ndim != 2 or Kv.shape[0] != Kv.shape[1]:
+            raise ValueError(f"Kv must be square; got shape {Kv.shape}")
+        N = Kv.shape[0]
+        v = rng.multivariate_normal(mean=np.zeros(N), cov=Kv)
+        denom = float(Kv[0, 0]) + float(self.cond_jitter)
+        if denom == 0.0:
+            raise ValueError("Kv[0,0] + cond_jitter is zero; cannot condition on v[0]=0")
+        v_cond = v - (Kv[:, 0] / denom) * v[0]
+        v_cond[0] = 0.0  # enforce exactly
+        return v_cond
+
+    def sample_velocity_and_theta_conditioned_v0(
+        self, t: np.ndarray, theta0: float, rng: np.random.Generator
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Sample (v_intervals, theta) with the constraint v_intervals[0] == 0.
+
+        Notes:
+            - v_intervals has length M = N-1 and lives on the interval grid t_v = t[:-1].
+            - The conditioning is applied directly to the M×M interval-velocity covariance Kv.
         """
         Kv, B, _ = self._get_theta_gaussian_mats(t)
-        v = rng.multivariate_normal(mean=np.zeros(len(t)), cov=Kv)
-        theta = theta0 + B @ v
+        v_int = self.sample_v_conditioned_v0(Kv, rng)
+        # Sanity: v_int is interval-based (M=N-1) and conditioned to start at 0.
+        if v_int.size != t.size - 1:
+            raise RuntimeError(f"Expected interval velocity length N-1={t.size-1}, got {v_int.size}")
+        # sample_v_conditioned_v0 enforces v_int[0]=0 exactly.
+        if v_int.size > 0 and v_int[0] != 0.0:
+            raise RuntimeError(f"Conditioning failed: v_int[0]={v_int[0]}")
+        theta = theta0 + B @ v_int
+        return v_int, theta
+
+    def sample_velocity_and_theta(
+        self, t: np.ndarray, theta0: float, rng: np.random.Generator
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Sample (v_intervals, theta) where v_intervals ~ N(0, K_v) and theta = theta0*1 + B v_intervals."""
+        Kv, B, _ = self._get_theta_gaussian_mats(t)
+        v_int = rng.multivariate_normal(mean=np.zeros(Kv.shape[0]), cov=Kv)
+        theta = theta0 + B @ v_int
+        return v_int, theta
+
+    def sample_theta(self, t: np.ndarray, theta0: float, rng: np.random.Generator) -> np.ndarray:
+        """Back-compat: sample theta only (still via sampling v then integrating)."""
+        _, theta = self.sample_velocity_and_theta(t, theta0, rng)
         return theta
 
     # -----------------------------
@@ -346,7 +480,12 @@ class DrumProfileGenerator:
         attempts = 0
         max_attempts = max(100, 100 * n_realizations)
         while len(profiles) < n_realizations:
-            theta = self.sample_theta(t, baseline_angle_deg, rng)
+            v_int, theta = self.sample_velocity_and_theta_conditioned_v0(t, baseline_angle_deg, rng)
+            # Sanity checks for interval velocities and conditioning
+            if v_int.size != t.size - 1:
+                raise RuntimeError(f"Expected v_int length N-1={t.size-1}, got {v_int.size}")
+            if v_int.size > 0 and v_int[0] != 0.0:
+                raise RuntimeError(f"Expected conditioned v_int[0]=0, got {v_int[0]}")
             attempts += 1
             if not self._theta_within_bounds(theta):
                 if attempts >= max_attempts:
@@ -355,8 +494,16 @@ class DrumProfileGenerator:
                         "Consider relaxing constraints or increasing max_attempts."
                     )
                 continue
-            v, a = self.velocity_and_accel_from_theta(t, theta)
-            profiles.append(DrumProfile(t=t, theta_deg=theta, v_deg_s=v, a_deg_s2=a))
+
+            # Treat velocity as the primary quantity: keep sampled *interval* velocities.
+            # Compute interval acceleration from interval velocity differences.
+            a_int = self.accel_intervals_from_v(t, v_int)
+
+            # Output schema is node-aligned length N, with trailing NaN at index N-1.
+            v_nodes = np.concatenate([v_int, [np.nan]])
+            a_nodes = np.concatenate([a_int, [np.nan]])
+
+            profiles.append(DrumProfile(t=t, theta_deg=theta, v_deg_s=v_nodes, a_deg_s2=a_nodes))
             print(f"Profiles generated: [{len(profiles)}/{n_realizations}]")
         return profiles
 
@@ -398,64 +545,93 @@ class DrumProfileGenerator:
         return ell, sill, nugget
 
     # -----------------------------
-    # Conditional future angles given past angles
+    # Conditional future interval velocities given past interval velocities
     # -----------------------------
-    def conditional_future_params_from_past_angles(
+    def conditional_future_params_from_past_velocities(
         self,
         t: np.ndarray,
-        idx_branch: int,
-        theta_past: np.ndarray,
-        theta0: float,
+        n_past_intervals: int,
+        v_past: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Condition on past ANGLES (indices 0..idx_branch inclusive).
-        Return conditional mean/cov for future angles (idx_branch+1..N-1).
+        """Condition the interval-velocity GP on past interval velocities.
 
-        theta ~ N(mu, Sigma_theta), mu = theta0 * 1
+        Definitions:
+            - N = len(t) time nodes.
+            - M = N-1 interval velocities v[0..M-1] live on intervals [t[i], t[i+1]).
+            - n_past_intervals = P is how many *leading* interval velocities are fixed/observed.
+              The future velocities are v[P:] of length F = M - P.
+
+        This returns (mu_cond, Sigma_cond) for v_future = v[P:].
+
+        Notes:
+            - The GP prior is v ~ N(0, Kv) on the interval grid t_v = t[:-1].
         """
         t = np.asarray(t, float)
-        theta_past = np.asarray(theta_past, float)
+        if t.ndim != 1:
+            raise ValueError("t must be 1D")
+        N = t.size
+        if N < 2:
+            raise ValueError("t must have at least 2 points")
+        M = N - 1
 
-        N = len(t)
-        S = idx_branch + 1
-        if S <= 0 or S > N:
-            raise ValueError("idx_branch out of range")
-        if theta_past.shape[0] != S:
-            raise ValueError("theta_past length must be idx_branch+1")
+        P = int(n_past_intervals)
+        if P < 0 or P > M:
+            raise ValueError(f"n_past_intervals must be in [0, {M}], got {P}")
 
-        if S == N:
+        v_past = np.asarray(v_past, float).squeeze()
+        if P == 0:
+            if v_past.size != 0:
+                raise ValueError("v_past must be empty when n_past_intervals=0")
+        else:
+            if v_past.ndim != 1 or v_past.size != P:
+                raise ValueError(f"v_past must have length {P}, got shape {v_past.shape}")
+
+        # No future velocities to sample.
+        if P == M:
             return np.zeros((0,), float), np.zeros((0, 0), float)
 
-        _, _, Sigma_theta = self._get_theta_gaussian_mats(t)
+        Kv, _, _ = self._get_theta_gaussian_mats(t)
+        if Kv.shape != (M, M):
+            raise RuntimeError(f"Expected Kv shape {(M, M)}, got {Kv.shape}")
 
-        Sigma_pp = Sigma_theta[:S, :S]
-        Sigma_pf = Sigma_theta[:S, S:]
-        Sigma_fp = Sigma_theta[S:, :S]
-        Sigma_ff = Sigma_theta[S:, S:]
+        # If P==0, future is just the full prior.
+        if P == 0:
+            mu_cond = np.zeros((M,), float)
+            Sigma_cond = Kv.copy()
+            Sigma_cond = 0.5 * (Sigma_cond + Sigma_cond.T)
+            Sigma_cond = Sigma_cond + self.cond_jitter * np.eye(M)
+            return mu_cond, Sigma_cond
 
-        mu_p = theta0 * np.ones(S)
-        mu_f = theta0 * np.ones(N - S)
+        # Partition into past/future blocks
+        Sigma_pp = Kv[:P, :P]
+        Sigma_pf = Kv[:P, P:]
+        Sigma_fp = Kv[P:, :P]
+        Sigma_ff = Kv[P:, P:]
 
-        # mu_cond = mu_f + Sigma_fp Sigma_pp^{-1} (theta_past - mu_p)
-        alpha = np.linalg.solve(Sigma_pp, (theta_past - mu_p))
-        mu_cond = mu_f + Sigma_fp @ alpha
+        # Stabilize Sigma_pp for solve
+        Sigma_pp = 0.5 * (Sigma_pp + Sigma_pp.T)
+        Sigma_pp = Sigma_pp + self.cond_jitter * np.eye(P)
+
+        # mu_cond = Sigma_fp Sigma_pp^{-1} v_past   (prior mean is 0)
+        alpha = np.linalg.solve(Sigma_pp, v_past)
+        mu_cond = Sigma_fp @ alpha
 
         # Sigma_cond = Sigma_ff - Sigma_fp Sigma_pp^{-1} Sigma_pf
         A = np.linalg.solve(Sigma_pp, Sigma_pf)
         Sigma_cond = Sigma_ff - Sigma_fp @ A
         Sigma_cond = 0.5 * (Sigma_cond + Sigma_cond.T)
 
-        # stabilize
+        # Stabilize conditional covariance
         if Sigma_cond.shape[0] > 0:
             Sigma_cond = Sigma_cond + self.cond_jitter * np.eye(Sigma_cond.shape[0])
 
         return mu_cond, Sigma_cond
 
     # -----------------------------
-    # Branch once: condition on entire past ANGLE history
+    # Branch once: condition on past INTERVAL VELOCITIES, sample future velocities, then integrate
     # -----------------------------
     def branch(self, original: DrumProfile, t_branch: float, seed: Optional[int] = None) -> DrumProfile:
-        t = original.t
+        t = np.asarray(original.t, float)
         idx = int(np.argmin(np.abs(t - t_branch)))
         if not np.isclose(t[idx], t_branch, rtol=0.0, atol=1e-12):
             raise ValueError(
@@ -463,30 +639,58 @@ class DrumProfileGenerator:
                 f"Closest node is t[{idx}]={t[idx]}."
             )
 
-        N = len(t)
+        N = t.size
+        M = N - 1
         if idx >= N - 1:
+            # no future intervals; nothing to branch
             return original
 
-        S = idx + 1
-        theta_past = original.theta_deg[:S].copy()
+        # Extract original interval velocities (length M). Stored v is node-aligned with a trailing NaN.
+        v_orig_nodes = np.asarray(original.v_deg_s, float).squeeze()
+        if v_orig_nodes.ndim != 1 or v_orig_nodes.size != N:
+            raise ValueError(f"original.v_deg_s must be length N={N}")
+        v_orig_int = v_orig_nodes[:M].copy()
+        if np.any(~np.isfinite(v_orig_int)):
+            raise ValueError("original interval velocities contain NaN/inf in the first N-1 entries")
+
         theta0 = float(original.theta_deg[0])
 
-        mu_cond, Sigma_cond = self.conditional_future_params_from_past_angles(
-            t=t, idx_branch=idx, theta_past=theta_past, theta0=theta0
-        )
+        # Past interval count is idx (intervals 0..idx-1). For idx==0, treat v[0]=0 as the only 'past' constraint.
+        if idx == 0:
+            P = 1
+            v_past = np.array([0.0], dtype=float)
+        else:
+            P = idx
+            v_past = v_orig_int[:P].copy()
 
+        mu_cond, Sigma_cond = self.conditional_future_params_from_past_velocities(
+            t=t, n_past_intervals=P, v_past=v_past
+        )
+        n_fut = mu_cond.size
+        # Assemble past+future into a full interval-velocity vector of length M.
         rng = np.random.default_rng(seed)
+
+        Kv, B, _ = self._get_theta_gaussian_mats(t)
         attempts = 0
         max_attempts = 1000
         while True:
-            theta_fut = rng.multivariate_normal(mean=mu_cond, cov=Sigma_cond)
-            theta_full = original.theta_deg.copy()
-            theta_full[:S] = theta_past
-            theta_full[S:] = theta_fut
+            if n_fut == 0:
+                v_new_int = v_past.copy()
+            else:
+                v_future = rng.multivariate_normal(mean=mu_cond, cov=Sigma_cond)
+                v_new_int = np.concatenate([v_past, v_future])
+
+            if v_new_int.size != M:
+                raise RuntimeError(f"Expected v_new_int length M={M}, got {v_new_int.size}")
+
+            theta_new = theta0 + B @ v_new_int
             attempts += 1
-            if self._theta_within_bounds(theta_full):
-                v_full, a_full = self.velocity_and_accel_from_theta(t, theta_full)
-                return DrumProfile(t=t, theta_deg=theta_full, v_deg_s=v_full, a_deg_s2=a_full)
+            if self._theta_within_bounds(theta_new):
+                a_int = self.accel_intervals_from_v(t, v_new_int)
+                v_nodes = np.concatenate([v_new_int, [np.nan]])
+                a_nodes = np.concatenate([a_int, [np.nan]])
+                return DrumProfile(t=t, theta_deg=theta_new, v_deg_s=v_nodes, a_deg_s2=a_nodes)
+
             if attempts >= max_attempts:
                 raise RuntimeError(
                     "Failed to generate a bounded branched profile within the attempt limit. "
@@ -494,7 +698,7 @@ class DrumProfileGenerator:
                 )
 
     # -----------------------------
-    # Branch N times efficiently
+    # Branch N times efficiently (velocity-space)
     # -----------------------------
     def branch_N_times(
         self,
@@ -506,7 +710,7 @@ class DrumProfileGenerator:
         if n_branches <= 0:
             return []
 
-        t = original.t
+        t = np.asarray(original.t, float)
         idx = int(np.argmin(np.abs(t - t_branch)))
         if not np.isclose(t[idx], t_branch, rtol=0.0, atol=1e-12):
             raise ValueError(
@@ -514,52 +718,82 @@ class DrumProfileGenerator:
                 f"Closest node is t[{idx}]={t[idx]}."
             )
 
-        if idx >= len(t) - 1:
+        N = t.size
+        M = N - 1
+        if idx >= N - 1:
             return [original for _ in range(n_branches)]
 
-        S = idx + 1
-        theta_past = original.theta_deg[:S].copy()
+        # Extract original interval velocities
+        v_orig_nodes = np.asarray(original.v_deg_s, float).squeeze()
+        if v_orig_nodes.ndim != 1 or v_orig_nodes.size != N:
+            raise ValueError(f"original.v_deg_s must be length N={N}")
+        v_orig_int = v_orig_nodes[:M].copy()
+        if np.any(~np.isfinite(v_orig_int)):
+            raise ValueError("original interval velocities contain NaN/inf in the first N-1 entries")
+
         theta0 = float(original.theta_deg[0])
 
-        mu_cond, Sigma_cond = self.conditional_future_params_from_past_angles(
-            t=t, idx_branch=idx, theta_past=theta_past, theta0=theta0
+        # Past interval count is idx; for idx==0, enforce v[0]=0 as the only constraint.
+        if idx == 0:
+            P = 1
+            v_past = np.array([0.0], dtype=float)
+        else:
+            P = idx
+            v_past = v_orig_int[:P].copy()
+
+        mu_cond, Sigma_cond = self.conditional_future_params_from_past_velocities(
+            t=t, n_past_intervals=P, v_past=v_past
         )
         n_fut = mu_cond.size
         if n_fut == 0:
-            return [original for _ in range(n_branches)]
+            # All velocities are fixed by the past; just return identical copies.
+            out: List[DrumProfile] = []
+            Kv, B, _ = self._get_theta_gaussian_mats(t)
+            theta_new = theta0 + B @ v_past
+            a_int = self.accel_intervals_from_v(t, v_past)
+            v_nodes = np.concatenate([v_past, [np.nan]])
+            a_nodes = np.concatenate([a_int, [np.nan]])
+            prof = DrumProfile(t=t, theta_deg=theta_new, v_deg_s=v_nodes, a_deg_s2=a_nodes)
+            return [prof for _ in range(n_branches)]
 
-        # Cholesky once
+        # Cholesky once for fast sampling
         try:
             L = np.linalg.cholesky(Sigma_cond)
         except np.linalg.LinAlgError:
             Sigma_cond2 = Sigma_cond + (10.0 * self.cond_jitter) * np.eye(n_fut)
             L = np.linalg.cholesky(Sigma_cond2)
 
+        Kv, B, _ = self._get_theta_gaussian_mats(t)
         rng = np.random.default_rng(seed)
+
         branched: List[DrumProfile] = []
         attempts = 0
         max_attempts = max(1000, 1000 * n_branches)
+
         while len(branched) < n_branches:
             z = rng.standard_normal(size=n_fut)
-            theta_fut = mu_cond + L @ z
-            theta_full = original.theta_deg.copy()
-            theta_full[:S] = theta_past
-            theta_full[S:] = theta_fut
+            v_future = mu_cond + L @ z
+            v_new_int = np.concatenate([v_past, v_future])
+
+            theta_new = theta0 + B @ v_new_int
             attempts += 1
-            if not self._theta_within_bounds(theta_full):
+            if not self._theta_within_bounds(theta_new):
                 if attempts >= max_attempts:
                     raise RuntimeError(
                         "Failed to generate bounded branches within the attempt limit. "
                         "Consider relaxing constraints or increasing max_attempts."
                     )
                 continue
-            v_full, a_full = self.velocity_and_accel_from_theta(t, theta_full)
-            branched.append(DrumProfile(t=t, theta_deg=theta_full, v_deg_s=v_full, a_deg_s2=a_full))
+
+            a_int = self.accel_intervals_from_v(t, v_new_int)
+            v_nodes = np.concatenate([v_new_int, [np.nan]])
+            a_nodes = np.concatenate([a_int, [np.nan]])
+            branched.append(DrumProfile(t=t, theta_deg=theta_new, v_deg_s=v_nodes, a_deg_s2=a_nodes))
             print(f"Branches generated: [{len(branched)}/{n_branches}]")
 
         return branched
 
-    # -----------------------------
+# -----------------------------
     # Plot: base vs branches (stacked panels)
     # -----------------------------
     @staticmethod
@@ -573,7 +807,7 @@ class DrumProfileGenerator:
         axes[0].plot(t, base.theta_deg, label="base", linewidth=1.0, color='k')
         axes[0].axvline(t_branch, linestyle="--", label="branch time")
         axes[0].set_ylabel("Angle [deg]")
-        axes[0].set_title(f"Base vs {len(branched_list)} Branched Profiles (Gaussian conditioning on past angles)")
+        axes[0].set_title(f"Base vs {len(branched_list)} Branched Profiles (Gaussian conditioning on past velocities)")
         axes[0].grid(True)
         axes[0].legend(ncol=2, fontsize=9)
 
@@ -590,7 +824,6 @@ class DrumProfileGenerator:
             axes[2].plot(t, bp.a_deg_s2, alpha=0.6)
         axes[2].plot(t, base.a_deg_s2, label="base", linewidth=1.0, color='k')
         axes[2].axvline(t_branch, linestyle="--")
-        axes[2].set_ylim(-0.3, 0.3)
         axes[2].set_ylabel("Acceleration [deg/s²]")
         axes[2].set_xlabel("Time [s]")
         axes[2].grid(True)
@@ -701,7 +934,8 @@ if __name__ == "__main__":
         cond_jitter=1e-10,
     )
 
-    profiles = gen.generate(t_grid, n_realizations=args.n_profiles, baseline_angle_deg=45.0, seed=999)
+    equilibrium_drum_angle = 45.0
+    profiles = gen.generate(t_grid, n_realizations=args.n_profiles, baseline_angle_deg=equilibrium_drum_angle, seed=999)
     base = profiles[0]
 
     branched_profiles = gen.branch_N_times(
