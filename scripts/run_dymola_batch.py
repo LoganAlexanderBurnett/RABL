@@ -26,7 +26,7 @@ def _load_config(config_path: Path) -> dict:
         "t_grid_intervals": getattr(config_module, "T_GRID_INTERVALS", None),
         "kernel": getattr(config_module, "KERNEL", None),
         "ell": getattr(config_module, "ELL", None),
-        "sill_v_deg2_s2": getattr(config_module, "SILL_V_DEG2_S2", None),
+        "sigma_theta_target": getattr(config_module, "SIGMA_THETA_TARGET", None),
         "nugget_v_deg2_s2": getattr(config_module, "NUGGET_V_DEG2_S2", None),
         "batch_number": getattr(config_module, "BATCH_NUMBER", None),
         "num_profiles": getattr(config_module, "NUM_PROFILES", None),
@@ -43,8 +43,8 @@ def _validate_config(config: dict) -> dict:
         raise SystemExit("KERNEL must be a string in config.py.")
     if not isinstance(config["ell"], (int, float)) or config["ell"] <= 0:
         raise SystemExit("ELL must be a positive number in config.py.")
-    if not isinstance(config["sill_v_deg2_s2"], (int, float)) or config["sill_v_deg2_s2"] < 0:
-        raise SystemExit("SILL_V_DEG2_S2 must be a non-negative number in config.py.")
+    if not isinstance(config["sigma_theta_target"], (int, float)) or config["sigma_theta_target"] <= 0:
+        raise SystemExit("SIGMA_THETA_TARGET must be a positive number in config.py.")
     if not isinstance(config["nugget_v_deg2_s2"], (int, float)) or config["nugget_v_deg2_s2"] < 0:
         raise SystemExit("NUGGET_V_DEG2_S2 must be a non-negative number in config.py.")
     if not isinstance(config["batch_number"], int) or config["batch_number"] < 0:
@@ -114,10 +114,17 @@ def main() -> None:
     generator = DrumProfileGenerator(
         kernel=config["kernel"],
         ell=config["ell"],
-        sill_v_deg2_s2=config["sill_v_deg2_s2"],
+        sill_v_deg2_s2=1.0,
         nugget_v_deg2_s2=config["nugget_v_deg2_s2"],
         jitter_frac=1e-10,
         cond_jitter=1e-10,
+    )
+    generator.solve_params_for_sigma_theta(
+        t_grid=t_grid,
+        sigma_theta_target=config["sigma_theta_target"],
+        ell=config["ell"],
+        nugget=config["nugget_v_deg2_s2"],
+        update_instance=True,
     )
 
     num_profiles = config["num_profiles"]
