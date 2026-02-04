@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import h5py
 import matplotlib.pyplot as plt
@@ -540,6 +540,8 @@ def test_and_save_forecasts(
     control_channel: int = 0,
     target_names: list[str] | None = None,
     output_name: str = "rolling_forecasts.h5",
+    max_plots: int = 0,
+    plot_callback: Callable[..., None] | None = None,
 ) -> dict[str, float]:
     if target_names is None:
         target_names = list(TARGET_NAMES)
@@ -577,6 +579,15 @@ def test_and_save_forecasts(
                 "mse": mse,
             }
         )
+        if plot_callback is not None and len(forecasts) <= max_plots:
+            save_path = out_dir / f"rolling_forecast_{profile_name}.png"
+            plot_callback(
+                x_profile=x_np,
+                y_true=y_np,
+                y_pred=y_pred,
+                title=f"Rolling Forecast - {profile_name}",
+                save_path=save_path,
+            )
 
     save_start = perf_counter()
     save_rolling_forecasts_hdf5(

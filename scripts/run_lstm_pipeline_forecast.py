@@ -77,35 +77,6 @@ def main() -> None:
     model, _history, used_device = pipeline.train(epochs=args.epochs, out_dir=args.out_dir)
     print(f"Finished training using device: {used_device}")
 
-    forecast_results: list[dict[str, object]] = []
-
-    for index, (profile_name, x_profile, y_profile) in enumerate(datasets["test_profile_ds"]):
-        name = profile_name
-        x_np = x_profile.numpy()
-        y_np = y_profile.numpy()
-
-        y_pred = pipeline.forecast(model, x_np)
-
-        forecast_results.append(
-            {
-                "profile_name": name,
-                "y_pred": y_pred,
-                "y_true": y_np,
-            }
-        )
-
-        if index < args.max_plots:
-            save_path = args.out_dir / f"rolling_forecast_{name}.png"
-            pipeline.plot(
-                x_profile=x_np,
-                y_true=y_np,
-                y_pred=y_pred,
-                title=f"Rolling Forecast - {name}",
-                save_path=save_path,
-            )
-
-    print(f"Generated rolling forecasts for {len(forecast_results)} test profiles.")
-
     test_and_save_forecasts(
         model,
         datasets["test_profile_ds"],
@@ -113,6 +84,8 @@ def main() -> None:
         state_dim=pipeline.config.state_dim,
         control_channel=pipeline.config.control_channel,
         target_names=pipeline.config.target_names,
+        max_plots=args.max_plots,
+        plot_callback=pipeline.plot,
     )
 
 
