@@ -22,7 +22,7 @@ TOY_SCALE_FACTORS = (
     -2.0,
     0.25,
 )
-K = 10
+K = 3
 
 
 DRUM_PROFILE_PATTERN = "drum_profile_*.csv"
