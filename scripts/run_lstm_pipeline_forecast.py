@@ -5,7 +5,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rabl.machine_learning.lstm_pipeline import LSTMPipeline, LSTMPipelineConfig
+from rabl.machine_learning.lstm_pipeline import (
+    LSTMPipeline,
+    LSTMPipelineConfig,
+    test_and_save_forecasts,
+)
 
 
 repo_root = Path(__file__).resolve().parents[1]
@@ -101,6 +105,15 @@ def main() -> None:
             )
 
     print(f"Generated rolling forecasts for {len(forecast_results)} test profiles.")
+
+    test_and_save_forecasts(
+        model,
+        datasets["test_profile_ds"],
+        out_dir=args.out_dir,
+        state_dim=pipeline.config.state_dim,
+        control_channel=pipeline.config.control_channel,
+        target_names=pipeline.config.target_names,
+    )
 
 
 if __name__ == "__main__":
