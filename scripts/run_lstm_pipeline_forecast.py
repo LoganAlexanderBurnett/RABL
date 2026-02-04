@@ -7,10 +7,8 @@ from pathlib import Path
 
 from rabl.machine_learning.lstm_pipeline import LSTMPipeline, LSTMPipelineConfig
 
-import tensorflow as tf
 
-
-repo_root = Path(__file_).resolve().parents[1]
+repo_root = Path(__file__).resolve().parents[1]
 DEFAULT_H5_PATH = repo_root / "outputs" / "datasets" / "lstm_toy_batch_0001-batch_0001_k10_standard_train0.70_val0.15_test0.15.h5"
 DEFAULT_OUT_DIR = repo_root / "outputs" / "ml_results" / "toy_results"
 
@@ -78,12 +76,11 @@ def main() -> None:
     forecast_results: list[dict[str, object]] = []
 
     for index, (profile_name, x_profile, y_profile) in enumerate(datasets["test_profile_ds"]):
-        name = profile_name.numpy().decode()
+        name = profile_name
         x_np = x_profile.numpy()
         y_np = y_profile.numpy()
 
-        with tf.device(used_device):
-            y_pred = pipeline.forecast(model, x_np)
+        y_pred = pipeline.forecast(model, x_np)
 
         forecast_results.append(
             {

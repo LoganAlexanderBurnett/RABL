@@ -437,9 +437,9 @@ def rolling_forecast(model: nn.Module, x_profile: np.ndarray, *, state_dim: int 
             pred = model(input_tensor).cpu().numpy()[0]
             preds.append(pred)
 
-        # Slide state window forward by 1 (append prediction)
-        if step + 1 < x_profile.shape[0]:
-            window_states = np.vstack([window_states[1:], pred])
+            # Slide state window forward by 1 (append prediction)
+            if step + 1 < x_profile.shape[0]:
+                window_states = np.vstack([window_states[1:], pred])
 
     return np.asarray(preds, dtype=np.float32)
 
