@@ -1,15 +1,19 @@
 # VARIOGRAPHY AND SIMULATION PARAMETERS
-BASELINE_ANGLE_DEG = 45.0
-NUM_PROFILES       = 1_000
-T_GRID_DURATION    = 200.0
-T_GRID_INTERVALS   = 2000
-KERNEL             = "matern52"
+
+# Change for each batch as necessary
+NUM_PROFILES       = 10
 ELL                = 10.0
 SIGMA_THETA_TARGET = 2.5
-NUGGET_V_DEG2_S2   = 0.0
 BATCH_NUMBER       = 1
-SEED               = 123
+SEED               = 123    # avoid duplicate drum profiles across batches, but ensure reproducibility
 PLOT_BATCH_NUMBERS = [1]
+
+# Should never need to change
+NUGGET_V_DEG2_S2   = 0.0
+KERNEL             = "matern52"
+T_GRID_DURATION    = 200.0
+T_GRID_INTERVALS   = 2000
+BASELINE_ANGLE_DEG = 45.0
 
 STEADY_STATE = {
     "TN2": 878.1500000000001,

@@ -108,7 +108,10 @@ class DymolaBatchRunner:
     # -----------------------------
     def start(self):
         self.out_dir_abs.mkdir(parents=True, exist_ok=True)
-        self.summary_csv = self.out_dir_abs / "batch_summary.csv"
+        if self.summary_csv is None:
+            self.summary_csv = self.out_dir_abs /  "batch_summary.csv"
+        else:
+            self.summary_csv = self.out_dir_abs / self.summary_csv
 
         print("Starting Dymola instance...")
         t0 = time()
