@@ -5,6 +5,7 @@ src/rabl/__init__.py
 src/rabl.egg-info/PKG-INFO
 src/rabl.egg-info/SOURCES.txt
 src/rabl.egg-info/dependency_links.txt
+src/rabl.egg-info/requires.txt
 src/rabl.egg-info/top_level.txt
 src/rabl/interface/__init__.py
 src/rabl/interface/pymola.py

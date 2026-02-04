@@ -6,6 +6,7 @@ License: MIT
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
 License-File: LICENSE
+Requires-Dist: torch
 Dynamic: license-file
 
 ![RABL_LOGO](misc/rabl_logo.png)

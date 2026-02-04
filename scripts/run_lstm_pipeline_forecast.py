@@ -9,7 +9,7 @@ from rabl.machine_learning.lstm_pipeline import LSTMPipeline, LSTMPipelineConfig
 
 
 repo_root = Path(__file__).resolve().parents[1]
-DEFAULT_H5_PATH = repo_root / "outputs" / "datasets" / "lstm_toy_batch_0001-batch_0001_k10_standard_train0.70_val0.15_test0.15.h5"
+DEFAULT_H5_PATH = repo_root / "outputs" / "datasets" / "lstm_toy_batch_0001-batch_0001_k3_standard_train0.70_val0.15_test0.15.h5"
 DEFAULT_OUT_DIR = repo_root / "outputs" / "ml_results" / "toy_results"
 
 
