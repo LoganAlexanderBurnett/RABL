@@ -9,6 +9,9 @@ description = "RABL tools and batch Dymola runners."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+dependencies = [
+    "torch",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

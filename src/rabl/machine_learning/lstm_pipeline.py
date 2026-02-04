@@ -31,7 +31,7 @@ Intended usage (example):
         y_true=y_prof,
         y_pred=y_pred,
         target_names=TARGET_NAMES,
-        title=f"Rolling Forecast - {name.numpy().decode()}",
+        title=f"Rolling Forecast - {name}",
         save_path=Path("outputs/rolling_forecast.png"),
     )
 """
@@ -41,12 +41,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
-import tensorflow as tf
+import torch
+from torch import nn
+from torch.utils.data import DataLoader, IterableDataset
 
 # --------------------------------------------------------------------------------------
 # Defaults / naming
@@ -78,27 +80,17 @@ TARGET_NAMES: list[str] = [
 # Device selection
 # --------------------------------------------------------------------------------------
 
-def choose_device_prefer_gpu() -> str:
+def choose_device_prefer_gpu() -> torch.device:
     """
-    Prefer GPU if TensorFlow can see one, otherwise use CPU.
-
-    NOTE: Having a CUDA-enabled TF wheel is necessary but not sufficient:
-    TensorFlow must also be able to initialize CUDA at runtime, and see a real GPU.
+    Prefer GPU if CUDA is available, otherwise use CPU.
     """
-    gpus = tf.config.list_physical_devices("GPU")
-    if gpus:
-        # Prevent TF from grabbing all VRAM at once (recommended)
-        for gpu in gpus:
-            try:
-                tf.config.experimental.set_memory_growth(gpu, True)
-            except Exception as e:
-                print(f"Warning: could not set memory growth for {gpu}: {e}")
+    if torch.cuda.is_available():
+        device = torch.device("cuda:0")
+        print(f"Using GPU: {torch.cuda.get_device_name(device)}")
+        return device
 
-        print(f"Using GPU: {gpus[0].name}")
-        return "/GPU:0"
-
-    print("No GPU detected by TensorFlow. Using CPU.")
-    return "/CPU:0"
+    print("No GPU detected by PyTorch. Using CPU.")
+    return torch.device("cpu")
 
 
 # --------------------------------------------------------------------------------------
@@ -132,7 +124,7 @@ def _count_samples_in_split(h5_path: Path, split: str, profile_names: list[str])
 
 def _train_sample_generator(
     h5_path: Path, profile_names: list[str], split: str, seed: int
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Iterable[tuple[np.ndarray, np.ndarray]]:
     rng = np.random.default_rng(seed)
     with h5py.File(h5_path, "r") as h5f:
         files_group = h5f[split]["files"]
@@ -146,7 +138,7 @@ def _train_sample_generator(
                 yield x_data[idx], y_data[idx]
 
 
-def _sample_generator(h5_path: Path, profile_names: list[str], split: str) -> tuple[np.ndarray, np.ndarray]:
+def _sample_generator(h5_path: Path, profile_names: list[str], split: str) -> Iterable[tuple[np.ndarray, np.ndarray]]:
     with h5py.File(h5_path, "r") as h5f:
         files_group = h5f[split]["files"]
         for profile_name in profile_names:
@@ -157,7 +149,7 @@ def _sample_generator(h5_path: Path, profile_names: list[str], split: str) -> tu
                 yield x_data[idx], y_data[idx]
 
 
-def _profile_generator(h5_path: Path, profile_names: list[str], split: str) -> tuple[str, np.ndarray, np.ndarray]:
+def _profile_generator(h5_path: Path, profile_names: list[str], split: str) -> Iterable[tuple[str, np.ndarray, np.ndarray]]:
     with h5py.File(h5_path, "r") as h5f:
         files_group = h5f[split]["files"]
         for profile_name in profile_names:
@@ -167,13 +159,40 @@ def _profile_generator(h5_path: Path, profile_names: list[str], split: str) -> t
             yield profile_name, x_data, y_data
 
 
+class SampleDataset(IterableDataset):
+    def __init__(self, h5_path: Path, profile_names: list[str], split: str, seed: int | None = None):
+        self.h5_path = Path(h5_path)
+        self.profile_names = list(profile_names)
+        self.split = split
+        self.seed = seed
+
+    def __iter__(self) -> Iterable[tuple[torch.Tensor, torch.Tensor]]:
+        if self.seed is None:
+            generator = _sample_generator(self.h5_path, self.profile_names, self.split)
+        else:
+            generator = _train_sample_generator(self.h5_path, self.profile_names, self.split, self.seed)
+        for x_data, y_data in generator:
+            yield torch.from_numpy(x_data), torch.from_numpy(y_data)
+
+
+class ProfileDataset(IterableDataset):
+    def __init__(self, h5_path: Path, profile_names: list[str], split: str):
+        self.h5_path = Path(h5_path)
+        self.profile_names = list(profile_names)
+        self.split = split
+
+    def __iter__(self) -> Iterable[tuple[str, torch.Tensor, torch.Tensor]]:
+        for profile_name, x_data, y_data in _profile_generator(self.h5_path, self.profile_names, self.split):
+            yield profile_name, torch.from_numpy(x_data), torch.from_numpy(y_data)
+
+
 # --------------------------------------------------------------------------------------
 # Dataset building
 # --------------------------------------------------------------------------------------
 
 def build_datasets(h5_path: Path, batch_size: int, seed: int) -> dict[str, Any]:
     """
-    Returns a dict that includes tf.data.Datasets plus helpful metadata.
+    Returns a dict that includes torch DataLoaders plus helpful metadata.
     """
     train_profiles = _get_profile_names(h5_path, "train")
     val_profiles = _get_profile_names(h5_path, "val")
@@ -192,44 +211,22 @@ def build_datasets(h5_path: Path, batch_size: int, seed: int) -> dict[str, Any]:
     train_steps = max(1, ceil(train_num_samples / batch_size))
     val_steps = max(1, ceil(val_num_samples / batch_size))
 
-    sample_signature = (
-        tf.TensorSpec(shape=x_shape[1:], dtype=tf.float32),
-        tf.TensorSpec(shape=y_shape[1:], dtype=tf.float32),
-    )
-
     # Train dataset: shuffled sample order per profile
-    train_ds = tf.data.Dataset.from_generator(
-        lambda: _train_sample_generator(h5_path, train_profiles, "train", seed),
-        output_signature=sample_signature,
-    ).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    train_ds = SampleDataset(h5_path, train_profiles, "train", seed=seed)
+    train_loader = DataLoader(train_ds, batch_size=batch_size)
 
     # Validation samples dataset (flat)
-    val_sample_ds = tf.data.Dataset.from_generator(
-        lambda: _sample_generator(h5_path, val_profiles, "val"),
-        output_signature=sample_signature,
-    ).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    val_sample_ds = SampleDataset(h5_path, val_profiles, "val")
+    val_sample_loader = DataLoader(val_sample_ds, batch_size=batch_size)
 
     # Profile datasets: yields entire profile arrays
-    profile_signature = (
-        tf.TensorSpec(shape=(), dtype=tf.string),
-        tf.TensorSpec(shape=(None, *x_shape[1:]), dtype=tf.float32),
-        tf.TensorSpec(shape=(None, *y_shape[1:]), dtype=tf.float32),
-    )
-
-    val_profile_ds = tf.data.Dataset.from_generator(
-        lambda: _profile_generator(h5_path, val_profiles, "val"),
-        output_signature=profile_signature,
-    )
-
-    test_profile_ds = tf.data.Dataset.from_generator(
-        lambda: _profile_generator(h5_path, test_profiles, "test"),
-        output_signature=profile_signature,
-    )
+    val_profile_ds = ProfileDataset(h5_path, val_profiles, "val")
+    test_profile_ds = ProfileDataset(h5_path, test_profiles, "test")
 
     return {
         # datasets
-        "train": train_ds,
-        "val_samples": val_sample_ds,
+        "train": train_loader,
+        "val_samples": val_sample_loader,
         "val_profile_ds": val_profile_ds,
         "test_profile_ds": test_profile_ds,
         # metadata
@@ -253,17 +250,65 @@ def build_datasets(h5_path: Path, batch_size: int, seed: int) -> dict[str, Any]:
 # Model + training
 # --------------------------------------------------------------------------------------
 
-def build_model(timesteps: int, num_features: int, num_targets: int) -> tf.keras.Model:
-    model = tf.keras.Sequential(
-        [
-            tf.keras.layers.Input(shape=(timesteps, num_features)),
-            tf.keras.layers.LSTM(64, return_sequences=False, stateful=False),
-            tf.keras.layers.Dense(64, activation="relu"),
-            tf.keras.layers.Dense(num_targets),
-        ]
-    )
-    model.compile(optimizer="adam", loss="mse", metrics=["mse"])
-    return model
+class LSTMRegressor(nn.Module):
+    def __init__(self, timesteps: int, num_features: int, num_targets: int):
+        super().__init__()
+        self.lstm = nn.LSTM(input_size=num_features, hidden_size=64, batch_first=True)
+        self.fc1 = nn.Linear(64, 64)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(64, num_targets)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        lstm_out, _ = self.lstm(x)
+        last_step = lstm_out[:, -1, :]
+        return self.fc2(self.relu(self.fc1(last_step)))
+
+
+def build_model(timesteps: int, num_features: int, num_targets: int) -> LSTMRegressor:
+    return LSTMRegressor(timesteps, num_features, num_targets)
+
+
+def _train_one_epoch(
+    model: nn.Module,
+    loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    loss_fn: nn.Module,
+    device: torch.device,
+) -> float:
+    model.train()
+    total_loss = 0.0
+    num_batches = 0
+    for x_batch, y_batch in loader:
+        x_batch = x_batch.to(device)
+        y_batch = y_batch.to(device)
+        optimizer.zero_grad()
+        preds = model(x_batch)
+        loss = loss_fn(preds, y_batch)
+        loss.backward()
+        optimizer.step()
+        total_loss += float(loss.item())
+        num_batches += 1
+    return total_loss / max(1, num_batches)
+
+
+def _evaluate(
+    model: nn.Module,
+    loader: DataLoader,
+    loss_fn: nn.Module,
+    device: torch.device,
+) -> float:
+    model.eval()
+    total_loss = 0.0
+    num_batches = 0
+    with torch.no_grad():
+        for x_batch, y_batch in loader:
+            x_batch = x_batch.to(device)
+            y_batch = y_batch.to(device)
+            preds = model(x_batch)
+            loss = loss_fn(preds, y_batch)
+            total_loss += float(loss.item())
+            num_batches += 1
+    return total_loss / max(1, num_batches)
 
 
 def train_model(
@@ -271,15 +316,11 @@ def train_model(
     *,
     epochs: int = DEFAULT_EPOCHS,
     plot_path: str | Path | None = None,
-    training_device: str | None = None,
+    training_device: torch.device | None = None,
     verbose: int = 1,
-) -> tuple[tf.keras.Model, tf.keras.callbacks.History, Path]:
+) -> tuple[nn.Module, dict[str, list[float]], Path]:
     """
     Train the LSTM and save a train/val curve plot.
-
-    Key improvement vs the original:
-    - Passes steps_per_epoch / validation_steps so Keras won't show "Unknown"
-      when datasets come from generators.
     """
     timesteps = int(datasets["sample_shape"][1])
     num_features = int(datasets["sample_shape"][2])
@@ -288,31 +329,28 @@ def train_model(
     if training_device is None:
         training_device = choose_device_prefer_gpu()
 
-    steps_per_epoch = int(datasets.get("train_steps_per_epoch", 0)) or None
-    validation_steps = int(datasets.get("val_steps", 0)) or None
+    model = build_model(timesteps, num_features, num_targets).to(training_device)
+    optimizer = torch.optim.Adam(model.parameters())
+    loss_fn = nn.MSELoss()
 
-    with tf.device(training_device):
-        model = build_model(timesteps, num_features, num_targets)
-        model.summary()
-
-        history = model.fit(
-            datasets["train"],
-            validation_data=datasets["val_samples"],
-            epochs=epochs,
-            steps_per_epoch=steps_per_epoch,
-            validation_steps=validation_steps,
-            verbose=verbose,
-        )
+    history = {"loss": [], "val_loss": []}
+    for epoch in range(1, epochs + 1):
+        train_loss = _train_one_epoch(model, datasets["train"], optimizer, loss_fn, training_device)
+        val_loss = _evaluate(model, datasets["val_samples"], loss_fn, training_device)
+        history["loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
+        if verbose:
+            print(f"Epoch {epoch}/{epochs} - loss: {train_loss:.6f} - val_loss: {val_loss:.6f}")
 
     resolved_plot_path = Path(plot_path) if plot_path is not None else None
     if resolved_plot_path is None:
         resolved_plot_path = Path("outputs") / "plots" / "lstm_training_curves.png"
     resolved_plot_path.parent.mkdir(parents=True, exist_ok=True)
 
-    epochs_range = range(1, len(history.history["loss"]) + 1)
+    epochs_range = range(1, len(history["loss"]) + 1)
     plt.figure(figsize=(10, 6))
-    plt.plot(epochs_range, history.history["loss"], label="Train Loss (MSE)")
-    plt.plot(epochs_range, history.history["val_loss"], label="Val Loss (MSE)")
+    plt.plot(epochs_range, history["loss"], label="Train Loss (MSE)")
+    plt.plot(epochs_range, history["val_loss"], label="Val Loss (MSE)")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.title("Training and Validation Loss")
@@ -330,7 +368,7 @@ def train_with_fallback(
     epochs: int,
     out_dir: Path,
     prefer_gpu: bool = True,
-) -> tuple[tf.keras.Model, tf.keras.callbacks.History, str]:
+) -> tuple[nn.Module, dict[str, list[float]], torch.device]:
     """
     Try GPU first (if prefer_gpu). If anything fails, retry on CPU.
     Returns (model, history, used_device).
@@ -338,11 +376,10 @@ def train_with_fallback(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    preferred = choose_device_prefer_gpu() if prefer_gpu else "/CPU:0"
+    preferred = choose_device_prefer_gpu() if prefer_gpu else torch.device("cpu")
 
     # Attempt 1
     try:
-        tf.keras.backend.clear_session()
         model, history, _curve_path = train_model(
             datasets,
             epochs=epochs,
@@ -350,28 +387,26 @@ def train_with_fallback(
             training_device=preferred,
         )
         return model, history, preferred
-
     except Exception as e:
         print("\nTraining failed on preferred device:", preferred)
         print("Reason:", repr(e))
         print("Retrying on CPU...\n")
 
     # Attempt 2 (CPU)
-    tf.keras.backend.clear_session()
     model, history, _curve_path = train_model(
         datasets,
         epochs=epochs,
         plot_path=out_dir / "lstm_train_val_curve.png",
-        training_device="/CPU:0",
+        training_device=torch.device("cpu"),
     )
-    return model, history, "/CPU:0"
+    return model, history, torch.device("cpu")
 
 
 # --------------------------------------------------------------------------------------
 # Rolling forecast
 # --------------------------------------------------------------------------------------
 
-def rolling_forecast(model: tf.keras.Model, x_profile: np.ndarray, *, state_dim: int = STATE_DIM) -> np.ndarray:
+def rolling_forecast(model: nn.Module, x_profile: np.ndarray, *, state_dim: int = STATE_DIM) -> np.ndarray:
     """
     Rolling forecast over a single profile.
 
@@ -392,11 +427,15 @@ def rolling_forecast(model: tf.keras.Model, x_profile: np.ndarray, *, state_dim:
     window_states = x_profile[0, :, :state_dim].copy()
     preds: list[np.ndarray] = []
 
-    for step in range(x_profile.shape[0]):
-        control_window = x_profile[step, :, state_dim : state_dim + control_dim]
-        input_window = np.concatenate([window_states, control_window], axis=1)
-        pred = model.predict(input_window[None, ...], verbose=0)[0]  # (num_targets,)
-        preds.append(pred)
+    model.eval()
+    device = next(model.parameters()).device
+    with torch.no_grad():
+        for step in range(x_profile.shape[0]):
+            control_window = x_profile[step, :, state_dim : state_dim + control_dim]
+            input_window = np.concatenate([window_states, control_window], axis=1)
+            input_tensor = torch.from_numpy(input_window[None, ...]).to(device)
+            pred = model(input_tensor).cpu().numpy()[0]
+            preds.append(pred)
 
         # Slide state window forward by 1 (append prediction)
         if step + 1 < x_profile.shape[0]:
@@ -409,19 +448,10 @@ def rolling_forecast(model: tf.keras.Model, x_profile: np.ndarray, *, state_dim:
 # Inspection utilities
 # --------------------------------------------------------------------------------------
 
-def _try_cardinality(ds: tf.data.Dataset) -> int | None:
-    """
-    Attempt to infer the dataset cardinality via tf.data API.
-    Many generator-based datasets report UNKNOWN, so this may return None.
-    """
-    try:
-        card = tf.data.experimental.cardinality(ds).numpy()
-        # -2 is UNKNOWN_CARDINALITY, -1 is INFINITE_CARDINALITY
-        if card < 0:
-            return None
-        return int(card)
-    except Exception:
+def _try_cardinality(count: int) -> int | None:
+    if count < 0:
         return None
+    return int(count)
 
 
 def inspect_dataset_shapes(datasets: dict[str, Any]) -> None:
@@ -431,7 +461,7 @@ def inspect_dataset_shapes(datasets: dict[str, Any]) -> None:
       - batch size and inferred #batches
       - first batch shapes
       - first profile shapes
-      - tf.data reported cardinality (when available)
+      - loader cardinality derived from precomputed counts
     """
     print("Dataset summary:")
     print(f"  H5 path:         {datasets.get('h5_path', 'UNKNOWN')}")
@@ -457,13 +487,13 @@ def inspect_dataset_shapes(datasets: dict[str, Any]) -> None:
     print(f"  Test samples:    {test_n:,}  (profiles used for forecasting)")
     print("")
 
-    # tf.data reported cardinality (often unknown for generator datasets)
-    train_card = _try_cardinality(datasets["train"])
-    val_card = _try_cardinality(datasets["val_samples"])
-    val_prof_card = _try_cardinality(datasets["val_profile_ds"])
-    test_prof_card = _try_cardinality(datasets["test_profile_ds"])
+    # Known cardinality from precomputed counts
+    train_card = _try_cardinality(int(datasets.get("train_steps_per_epoch", 0)))
+    val_card = _try_cardinality(int(datasets.get("val_steps", 0)))
+    val_prof_card = _try_cardinality(len(datasets["val_profile_names"]))
+    test_prof_card = _try_cardinality(len(datasets["test_profile_names"]))
 
-    print("  tf.data cardinality (may be unknown for generator datasets):")
+    print("  loader cardinality (derived from precomputed counts):")
     print(f"    train:          {train_card}")
     print(f"    val_samples:    {val_card}")
     print(f"    val_profile_ds: {val_prof_card}")
@@ -479,7 +509,7 @@ def inspect_dataset_shapes(datasets: dict[str, Any]) -> None:
     # Profile inspection
     for split_name, dataset_key in (("val", "val_profile_ds"), ("test", "test_profile_ds")):
         profile_name, x_profile, y_profile = next(iter(datasets[dataset_key]))
-        print(f"{split_name.capitalize()} profile: {profile_name.numpy().decode()}")
+        print(f"{split_name.capitalize()} profile: {profile_name}")
         print(f"  X profile shape: {x_profile.shape}")
         print(f"  Y profile shape: {y_profile.shape}")
 
@@ -622,7 +652,7 @@ class LSTMPipeline:
         profile_name, x_profile, y_profile = next(iter(self.datasets["test_profile_ds"]))
         return profile_name, x_profile.numpy(), y_profile.numpy()
 
-    def forecast(self, model: tf.keras.Model, x_profile: np.ndarray) -> np.ndarray:
+    def forecast(self, model: nn.Module, x_profile: np.ndarray) -> np.ndarray:
         return rolling_forecast(model, x_profile, state_dim=self.config.state_dim)
 
     def plot(self, *, x_profile: np.ndarray, y_true: np.ndarray, y_pred: np.ndarray, title: str, save_path: Path | None = None):
@@ -659,12 +689,11 @@ def main() -> None:
     print(f"\nFinished training using device: {used_device}")
 
     profile_name, x_profile, y_profile = next(iter(datasets["test_profile_ds"]))
-    name = profile_name.numpy().decode()
+    name = profile_name
     x_np = x_profile.numpy()
     y_np = y_profile.numpy()
 
-    with tf.device(used_device):
-        y_pred = rolling_forecast(model, x_np)
+    y_pred = rolling_forecast(model, x_np)
 
     plot_forecast_vs_truth_grid(
         x_profile=x_np,
