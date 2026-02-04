@@ -41,6 +41,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Iterable
 
 import h5py
@@ -274,11 +275,23 @@ def _train_one_epoch(
     optimizer: torch.optim.Optimizer,
     loss_fn: nn.Module,
     device: torch.device,
-) -> float:
+) -> tuple[float, float, float, int]:
     model.train()
     total_loss = 0.0
     num_batches = 0
-    for x_batch, y_batch in loader:
+    data_time_s = 0.0
+    compute_time_s = 0.0
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    data_iter = iter(loader)
+    while True:
+        fetch_start = perf_counter()
+        try:
+            x_batch, y_batch = next(data_iter)
+        except StopIteration:
+            break
+        data_time_s += perf_counter() - fetch_start
+        compute_start = perf_counter()
         x_batch = x_batch.to(device)
         y_batch = y_batch.to(device)
         optimizer.zero_grad()
@@ -286,9 +299,13 @@ def _train_one_epoch(
         loss = loss_fn(preds, y_batch)
         loss.backward()
         optimizer.step()
+        compute_time_s += perf_counter() - compute_start
         total_loss += float(loss.item())
         num_batches += 1
-    return total_loss / max(1, num_batches)
+    max_mem = 0
+    if device.type == "cuda":
+        max_mem = int(torch.cuda.max_memory_allocated(device))
+    return total_loss / max(1, num_batches), data_time_s, compute_time_s, max_mem
 
 
 def _evaluate(
@@ -335,12 +352,23 @@ def train_model(
 
     history = {"loss": [], "val_loss": []}
     for epoch in range(1, epochs + 1):
-        train_loss = _train_one_epoch(model, datasets["train"], optimizer, loss_fn, training_device)
+        train_loss, data_time_s, compute_time_s, max_mem = _train_one_epoch(
+            model,
+            datasets["train"],
+            optimizer,
+            loss_fn,
+            training_device,
+        )
         val_loss = _evaluate(model, datasets["val_samples"], loss_fn, training_device)
         history["loss"].append(train_loss)
         history["val_loss"].append(val_loss)
         if verbose:
-            print(f"Epoch {epoch}/{epochs} - loss: {train_loss:.6f} - val_loss: {val_loss:.6f}")
+            mem_mb = max_mem / (1024**2)
+            print(
+                f"Epoch {epoch}/{epochs} - loss: {train_loss:.6f} - val_loss: {val_loss:.6f} "
+                f"- data_time: {data_time_s:.2f}s - compute_time: {compute_time_s:.2f}s "
+                f"- max_cuda_mem: {mem_mb:.2f} MB"
+            )
 
     resolved_plot_path = Path(plot_path) if plot_path is not None else None
     if resolved_plot_path is None:
@@ -442,6 +470,136 @@ def rolling_forecast(model: nn.Module, x_profile: np.ndarray, *, state_dim: int 
                 window_states = np.vstack([window_states[1:], pred])
 
     return np.asarray(preds, dtype=np.float32)
+
+
+def _extract_control_series(
+    x_profile: np.ndarray,
+    *,
+    state_dim: int,
+    control_channel: int,
+) -> np.ndarray:
+    if x_profile.ndim != 3:
+        raise ValueError(f"x_profile must be 3D (steps,timesteps,features). Got {x_profile.shape}")
+    _num_steps, _timesteps, num_features = x_profile.shape
+    control_dim = num_features - state_dim
+    if control_dim <= 0:
+        raise ValueError(
+            f"control_dim <= 0 (num_features={num_features}, state_dim={state_dim}). "
+            "This violates the rolling_forecast assumption."
+        )
+    if not (0 <= control_channel < control_dim):
+        raise ValueError(f"control_channel={control_channel} out of range [0, {control_dim-1}]")
+    control_idx = state_dim + control_channel
+    return x_profile[:, -1, control_idx].astype(np.float32)
+
+
+def _assemble_forecast_table(
+    t_series: np.ndarray,
+    u_series: np.ndarray,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+) -> np.ndarray:
+    if t_series.ndim != 1 or u_series.ndim != 1:
+        raise ValueError("t_series and u_series must be 1D arrays.")
+    if y_true.shape != y_pred.shape:
+        raise ValueError(f"y_true and y_pred must match. Got {y_true.shape} vs {y_pred.shape}")
+    if t_series.shape[0] != y_true.shape[0] or u_series.shape[0] != y_true.shape[0]:
+        raise ValueError("t_series/u_series length must match number of steps in y_true/y_pred.")
+    return np.column_stack([t_series, u_series, y_true, y_pred]).astype(np.float32)
+
+
+def save_rolling_forecasts_hdf5(
+    forecasts: list[dict[str, Any]],
+    *,
+    output_path: Path,
+    target_names: list[str],
+) -> None:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    column_names = (
+        ["t", "u(t)"]
+        + [f"x(t)_{name}" for name in target_names]
+        + [f"x^~(t)_{name}" for name in target_names]
+    )
+    column_attr = np.array(column_names, dtype="S")
+
+    with h5py.File(output_path, "w") as h5f:
+        for entry in forecasts:
+            group = h5f.create_group(entry["profile"])
+            group.create_dataset("data", data=entry["table"])
+            group.create_dataset("mse", data=entry["mse"])
+            group.attrs["columns"] = column_attr
+
+
+def test_and_save_forecasts(
+    model: nn.Module,
+    profile_ds: Iterable[tuple[str, torch.Tensor, torch.Tensor]],
+    *,
+    out_dir: Path,
+    state_dim: int = STATE_DIM,
+    control_channel: int = 0,
+    target_names: list[str] | None = None,
+    output_name: str = "rolling_forecasts.h5",
+) -> dict[str, float]:
+    if target_names is None:
+        target_names = list(TARGET_NAMES)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    forecasts: list[dict[str, Any]] = []
+    fetch_times: list[float] = []
+    inference_times: list[float] = []
+
+    profile_iter = iter(profile_ds)
+    while True:
+        fetch_start = perf_counter()
+        try:
+            profile_name, x_profile, y_profile = next(profile_iter)
+        except StopIteration:
+            break
+        fetch_times.append(perf_counter() - fetch_start)
+
+        x_np = x_profile.numpy()
+        y_np = y_profile.numpy()
+        inference_start = perf_counter()
+        y_pred = rolling_forecast(model, x_np, state_dim=state_dim)
+        inference_times.append(perf_counter() - inference_start)
+
+        t_series = np.arange(y_pred.shape[0], dtype=np.float32)
+        u_series = _extract_control_series(x_np, state_dim=state_dim, control_channel=control_channel)
+        table = _assemble_forecast_table(t_series, u_series, y_np, y_pred)
+        mse = float(np.mean((y_np - y_pred) ** 2))
+
+        forecasts.append(
+            {
+                "profile": str(profile_name),
+                "table": table,
+                "mse": mse,
+            }
+        )
+
+    save_start = perf_counter()
+    save_rolling_forecasts_hdf5(
+        forecasts,
+        output_path=out_dir / output_name,
+        target_names=target_names,
+    )
+    save_time_s = perf_counter() - save_start
+
+    avg_fetch = float(np.mean(fetch_times)) if fetch_times else 0.0
+    avg_inference = float(np.mean(inference_times)) if inference_times else 0.0
+    print(
+        "Testing timing summary:"
+        f" avg_fetch_profile: {avg_fetch:.4f}s"
+        f" avg_inference_profile: {avg_inference:.4f}s"
+        f" save_time: {save_time_s:.4f}s"
+    )
+
+    return {
+        "avg_fetch_profile_s": avg_fetch,
+        "avg_inference_profile_s": avg_inference,
+        "save_time_s": save_time_s,
+    }
 
 
 # --------------------------------------------------------------------------------------
@@ -702,6 +860,15 @@ def main() -> None:
         target_names=TARGET_NAMES,
         title=f"Rolling Forecast - {name}",
         save_path=out_dir / f"rolling_forecast_{name}.png",
+    )
+
+    test_and_save_forecasts(
+        model,
+        datasets["test_profile_ds"],
+        out_dir=out_dir,
+        state_dim=STATE_DIM,
+        control_channel=0,
+        target_names=TARGET_NAMES,
     )
 
 
