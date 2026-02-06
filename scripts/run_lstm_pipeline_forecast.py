@@ -9,6 +9,7 @@ from rabl.machine_learning.lstm_pipeline import (
     LSTMPipeline,
     LSTMPipelineConfig,
     test_and_save_forecasts,
+    clear_cuda_cache
 )
 
 
@@ -36,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--epochs",
         type=int,
-        default=5,
+        default=2,
         help="Number of training epochs.",
     )
     parser.add_argument(
@@ -89,10 +90,10 @@ def main() -> None:
         h5_path=args.h5_path
     )
 
-    if used_device == "cuda":
-        print("Clearing GPU...")
+    if "cuda" in str(used_device):
+        print(f"Clearing {used_device}...")
         del model
-        torch.cuda.empty_cache()
+        clear_cuda_cache()
 
 
 if __name__ == "__main__":
