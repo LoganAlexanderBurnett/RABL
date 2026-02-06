@@ -123,6 +123,49 @@ def _count_samples_in_split(h5_path: Path, split: str, profile_names: list[str])
     return total
 
 
+def _infer_scaling_type(scaling_group: h5py.Group) -> str:
+    keys = set(scaling_group.keys())
+    if {"x_mean", "x_std", "y_mean", "y_std"}.issubset(keys):
+        return "standard"
+    if {"x_min", "x_max", "x_span", "y_min", "y_max", "y_span"}.issubset(keys):
+        return "minmax"
+    raise ValueError(f"Unable to infer scaling type from scaling group keys: {sorted(keys)}")
+
+
+def _load_scaling_stats(h5_path: Path) -> dict[str, Any]:
+    with h5py.File(h5_path, "r") as h5f:
+        if "scaling" not in h5f:
+            raise KeyError("HDF5 file missing required 'scaling' group.")
+        scaling_group = h5f["scaling"]
+        scaling_type = _infer_scaling_type(scaling_group)
+        if scaling_type == "standard":
+            return {
+                "type": scaling_type,
+                "y": {
+                    "mean": scaling_group["y_mean"][...].astype(np.float32),
+                    "std": scaling_group["y_std"][...].astype(np.float32),
+                },
+            }
+        return {
+            "type": scaling_type,
+            "y": {
+                "min": scaling_group["y_min"][...].astype(np.float32),
+                "span": scaling_group["y_span"][...].astype(np.float32),
+            },
+        }
+
+
+def _descale_targets(h5_path: Path, values: np.ndarray) -> np.ndarray:
+    stats = _load_scaling_stats(h5_path)
+    scaling_type = stats["type"]
+    y_stats = stats["y"]
+    if scaling_type == "standard":
+        return values * y_stats["std"] + y_stats["mean"]
+    if scaling_type == "minmax":
+        return values * y_stats["span"] + y_stats["min"]
+    raise ValueError(f"Unsupported scaling type: {scaling_type}")
+
+
 def _train_sample_generator(
     h5_path: Path, profile_names: list[str], split: str, seed: int
 ) -> Iterable[tuple[np.ndarray, np.ndarray]]:
@@ -552,6 +595,7 @@ def test_and_save_forecasts(
     profile_ds: Iterable[tuple[str, torch.Tensor, torch.Tensor]],
     *,
     out_dir: Path,
+    h5_path: Path | None = None,
     state_dim: int = STATE_DIM,
     control_channel: int = 0,
     target_names: list[str] | None = None,
@@ -583,10 +627,16 @@ def test_and_save_forecasts(
         y_pred = rolling_forecast(model, x_np, state_dim=state_dim)
         inference_times.append(perf_counter() - inference_start)
 
-        t_series = np.arange(y_pred.shape[0], dtype=np.float32)
+        y_true = y_np
+        y_pred_out = y_pred
+        if h5_path is not None:
+            y_true = _descale_targets(h5_path, y_true)
+            y_pred_out = _descale_targets(h5_path, y_pred_out)
+
+        t_series = np.arange(y_pred_out.shape[0], dtype=np.float32)
         u_series = _extract_control_series(x_np, state_dim=state_dim, control_channel=control_channel)
-        table = _assemble_forecast_table(t_series, u_series, y_np, y_pred)
-        mse = float(np.mean((y_np - y_pred) ** 2))
+        table = _assemble_forecast_table(t_series, u_series, y_true, y_pred_out)
+        mse = float(np.mean((y_true - y_pred_out) ** 2))
 
         forecasts.append(
             {
@@ -599,8 +649,8 @@ def test_and_save_forecasts(
             save_path = out_dir / f"rolling_forecast_{profile_name}.png"
             plot_callback(
                 x_profile=x_np,
-                y_true=y_np,
-                y_pred=y_pred,
+                y_true=y_true,
+                y_pred=y_pred_out,
                 title=f"Rolling Forecast - {profile_name}",
                 save_path=save_path,
             )
@@ -615,16 +665,23 @@ def test_and_save_forecasts(
 
     avg_fetch = float(np.mean(fetch_times)) if fetch_times else 0.0
     avg_inference = float(np.mean(inference_times)) if inference_times else 0.0
+    total_fetch = float(np.sum(fetch_times)) if fetch_times else 0.0
+    total_inference = float(np.sum(inference_times)) if inference_times else 0.0
+    total_test = total_fetch + total_inference
     print(
         "Testing timing summary:"
         f" avg_fetch_profile: {avg_fetch:.4f}s"
         f" avg_inference_profile: {avg_inference:.4f}s"
+        f" total_fetch: {total_fetch:.4f}s"
+        f" total_test: {total_test:.4f}s"
         f" save_time: {save_time_s:.4f}s"
     )
 
     return {
         "avg_fetch_profile_s": avg_fetch,
         "avg_inference_profile_s": avg_inference,
+        "total_fetch_s": total_fetch,
+        "total_test_s": total_test,
         "save_time_s": save_time_s,
     }
 
@@ -893,6 +950,7 @@ def main() -> None:
         model,
         datasets["test_profile_ds"],
         out_dir=out_dir,
+        h5_path=datasets["h5_path"],
         state_dim=STATE_DIM,
         control_channel=0,
         target_names=TARGET_NAMES,
