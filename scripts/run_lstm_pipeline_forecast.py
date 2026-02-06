@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--epochs",
         type=int,
-        default=20,
+        default=5,
         help="Number of training epochs.",
     )
     parser.add_argument(
@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-plots",
         type=int,
-        default=10,
+        default=5,
         help="Number of test profiles to plot.",
     )
     return parser.parse_args()

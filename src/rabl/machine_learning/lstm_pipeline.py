@@ -214,11 +214,11 @@ def build_datasets(h5_path: Path, batch_size: int, seed: int) -> dict[str, Any]:
 
     # Train dataset: shuffled sample order per profile
     train_ds = SampleDataset(h5_path, train_profiles, "train", seed=seed)
-    train_loader = DataLoader(train_ds, batch_size=batch_size)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, pin_memory=True)
 
     # Validation samples dataset (flat)
     val_sample_ds = SampleDataset(h5_path, val_profiles, "val")
-    val_sample_loader = DataLoader(val_sample_ds, batch_size=batch_size)
+    val_sample_loader = DataLoader(val_sample_ds, batch_size=batch_size, pin_memory=True)
 
     # Profile datasets: yields entire profile arrays
     val_profile_ds = ProfileDataset(h5_path, val_profiles, "val")
@@ -291,16 +291,21 @@ def _train_one_epoch(
         except StopIteration:
             break
         data_time_s += perf_counter() - fetch_start
+
         compute_start = perf_counter()
-        x_batch = x_batch.to(device)
-        y_batch = y_batch.to(device)
+        x_batch = x_batch.to(device, non_blocking=True)
+        y_batch = y_batch.to(device, non_blocking=True)
         optimizer.zero_grad()
         preds = model(x_batch)
         loss = loss_fn(preds, y_batch)
         loss.backward()
         optimizer.step()
-        compute_time_s += perf_counter() - compute_start
+
+        if device == "cuda":
+            torch.cuda.synchronize(device)
+
         total_loss += float(loss.item())
+        compute_time_s += perf_counter() - compute_start       
         num_batches += 1
     max_mem = 0
     if device.type == "cuda":
@@ -359,7 +364,17 @@ def train_model(
             loss_fn,
             training_device,
         )
+
+        if training_device.type =="cuda":
+            torch.cuda.synchronize(training_device)
+        
+        val_start = perf_counter()
         val_loss = _evaluate(model, datasets["val_samples"], loss_fn, training_device)
+
+        if training_device.type == "cuda":
+            torch.cuda.synchronize(training_device)
+        val_time_s = perf_counter() - val_start
+        
         history["loss"].append(train_loss)
         history["val_loss"].append(val_loss)
         if verbose:
@@ -367,6 +382,7 @@ def train_model(
             print(
                 f"Epoch {epoch}/{epochs} - loss: {train_loss:.6f} - val_loss: {val_loss:.6f} "
                 f"- data_time: {data_time_s:.2f}s - compute_time: {compute_time_s:.2f}s "
+                f"- val_time: {val_time_s:.2f}s "
                 f"- max_cuda_mem: {mem_mb:.2f} MB"
             )
 
@@ -771,7 +787,7 @@ def plot_forecast_vs_truth_grid(
         plt.savefig(save_path, dpi=150)
         print(f"Saved forecast plot to: {save_path}")
 
-    plt.show()
+    plt.close(fig)
 
 
 # --------------------------------------------------------------------------------------
