@@ -9,7 +9,7 @@ from rabl.machine_learning.lstm_pipeline import (
     LSTMPipeline,
     LSTMPipelineConfig,
     test_and_save_forecasts,
-    clear_cuda_cache
+    clear_cuda_cache,
 )
 
 
@@ -47,6 +47,11 @@ def parse_args() -> argparse.Namespace:
         help="Random seed used when building datasets.",
     )
     parser.add_argument(
+        "--preload",
+        action="store_true",
+        help="Preload the full dataset into RAM before training.",
+    )
+    parser.add_argument(
         "--out-dir",
         type=Path,
         default=DEFAULT_OUT_DIR,
@@ -69,6 +74,7 @@ def main() -> None:
         h5_path=args.h5_path,
         batch_size=args.batch_size,
         seed=args.seed,
+        preload=args.preload,
     )
     pipeline = LSTMPipeline(config)
 

@@ -50,7 +50,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 from torch import nn
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset, TensorDataset
 
 # --------------------------------------------------------------------------------------
 # Defaults / naming
@@ -261,14 +261,122 @@ class ProfileDataset(IterableDataset):
             yield profile_name, torch.from_numpy(x_data), torch.from_numpy(y_data)
 
 
+class PreloadedProfileDataset(Dataset):
+    def __init__(self, profiles: list[tuple[str, torch.Tensor, torch.Tensor]]):
+        self.profiles = profiles
+
+    def __len__(self) -> int:
+        return len(self.profiles)
+
+    def __getitem__(self, idx: int) -> tuple[str, torch.Tensor, torch.Tensor]:
+        return self.profiles[idx]
+
+
 # --------------------------------------------------------------------------------------
 # Dataset building
 # --------------------------------------------------------------------------------------
 
-def build_datasets(h5_path: Path, batch_size: int, seed: int) -> dict[str, Any]:
+def _load_split_samples(
+    h5_path: Path,
+    split: str,
+    profile_names: list[str],
+    sample_shape: tuple[int, ...],
+    target_shape: tuple[int, ...],
+) -> tuple[np.ndarray, np.ndarray]:
+    if not profile_names:
+        empty_x = np.empty((0,) + sample_shape[1:], dtype=np.float32)
+        empty_y = np.empty((0,) + target_shape[1:], dtype=np.float32)
+        return empty_x, empty_y
+
+    x_chunks: list[np.ndarray] = []
+    y_chunks: list[np.ndarray] = []
+    with h5py.File(h5_path, "r") as h5f:
+        files_group = h5f[split]["files"]
+        for profile_name in profile_names:
+            group = files_group[profile_name]
+            x_chunks.append(group["X"][...].astype(np.float32))
+            y_chunks.append(group["Y"][...].astype(np.float32))
+    x_all = np.concatenate(x_chunks, axis=0)
+    y_all = np.concatenate(y_chunks, axis=0)
+    return x_all, y_all
+
+
+def _load_profile_tuples(
+    h5_path: Path, split: str, profile_names: list[str]
+) -> list[tuple[str, torch.Tensor, torch.Tensor]]:
+    profiles: list[tuple[str, torch.Tensor, torch.Tensor]] = []
+    with h5py.File(h5_path, "r") as h5f:
+        files_group = h5f[split]["files"]
+        for profile_name in profile_names:
+            group = files_group[profile_name]
+            x_data = torch.from_numpy(group["X"][...].astype(np.float32))
+            y_data = torch.from_numpy(group["Y"][...].astype(np.float32))
+            profiles.append((profile_name, x_data, y_data))
+    return profiles
+
+
+def build_datasets_preload(h5_path: Path, batch_size: int, seed: int) -> dict[str, Any]:
+    """
+    Returns a dict with DataLoaders while preloading all arrays into memory.
+    """
+    train_profiles = _get_profile_names(h5_path, "train")
+    val_profiles = _get_profile_names(h5_path, "val")
+    test_profiles = _get_profile_names(h5_path, "test")
+
+    if not train_profiles:
+        raise ValueError("No training profiles found in HDF5.")
+
+    x_shape, y_shape = _get_profile_shapes(h5_path, "train", train_profiles[0])
+
+    x_train, y_train = _load_split_samples(h5_path, "train", train_profiles, x_shape, y_shape)
+    x_val, y_val = _load_split_samples(h5_path, "val", val_profiles, x_shape, y_shape)
+
+    train_num_samples = int(x_train.shape[0])
+    val_num_samples = int(x_val.shape[0])
+
+    train_steps = max(1, ceil(train_num_samples / batch_size))
+    val_steps = max(1, ceil(val_num_samples / batch_size))
+
+    train_ds = TensorDataset(torch.from_numpy(x_train), torch.from_numpy(y_train))
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, pin_memory=True)
+
+    val_sample_ds = TensorDataset(torch.from_numpy(x_val), torch.from_numpy(y_val))
+    val_sample_loader = DataLoader(val_sample_ds, batch_size=batch_size, shuffle=False, pin_memory=True)
+
+    val_profile_ds = PreloadedProfileDataset(_load_profile_tuples(h5_path, "val", val_profiles))
+    test_profile_ds = PreloadedProfileDataset(_load_profile_tuples(h5_path, "test", test_profiles))
+    test_num_samples = sum(int(x_profile.shape[0]) for _, x_profile, _ in test_profile_ds)
+
+    return {
+        # datasets
+        "train": train_loader,
+        "val_samples": val_sample_loader,
+        "val_profile_ds": val_profile_ds,
+        "test_profile_ds": test_profile_ds,
+        # metadata
+        "train_profile_names": train_profiles,
+        "val_profile_names": val_profiles,
+        "test_profile_names": test_profiles,
+        "sample_shape": x_shape,
+        "target_shape": y_shape,
+        "batch_size": batch_size,
+        "seed": seed,
+        "train_num_samples": train_num_samples,
+        "val_num_samples": val_num_samples,
+        "test_num_samples": test_num_samples,
+        "train_steps_per_epoch": train_steps,
+        "val_steps": val_steps,
+        "h5_path": Path(h5_path),
+    }
+
+
+def build_datasets(h5_path: Path, batch_size: int, seed: int, preload: bool = False) -> dict[str, Any]:
     """
     Returns a dict that includes torch DataLoaders plus helpful metadata.
     """
+    if preload:
+        return build_datasets_preload(h5_path=h5_path, batch_size=batch_size, seed=seed)
+
     train_profiles = _get_profile_names(h5_path, "train")
     val_profiles = _get_profile_names(h5_path, "val")
     test_profiles = _get_profile_names(h5_path, "test")
@@ -931,6 +1039,7 @@ class LSTMPipelineConfig:
     h5_path: Path
     batch_size: int = DEFAULT_BATCH_SIZE
     seed: int = 123
+    preload: bool = False
     target_names: list[str] = None  # set in __post_init__
     state_dim: int = STATE_DIM
     control_name: str = "drumAngleDeg"
@@ -950,7 +1059,12 @@ class LSTMPipeline:
         self.datasets: dict[str, Any] | None = None
 
     def build(self) -> dict[str, Any]:
-        self.datasets = build_datasets(self.config.h5_path, self.config.batch_size, self.config.seed)
+        self.datasets = build_datasets(
+            self.config.h5_path,
+            self.config.batch_size,
+            self.config.seed,
+            preload=self.config.preload,
+        )
         return self.datasets
 
     def inspect(self) -> None:
