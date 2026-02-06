@@ -48,6 +48,7 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from tqdm import tqdm
 from torch import nn
 from torch.utils.data import DataLoader, IterableDataset
 
@@ -340,6 +341,9 @@ def _train_one_epoch(
     optimizer: torch.optim.Optimizer,
     loss_fn: nn.Module,
     device: torch.device,
+    *,
+    epoch: int,
+    total_epochs: int,
 ) -> tuple[float, float, float, int]:
     model.train()
     total_loss = 0.0
@@ -349,10 +353,20 @@ def _train_one_epoch(
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
     data_iter = iter(loader)
+    try:
+        total_batches = len(loader)
+    except TypeError:
+        total_batches = None
+    progress = tqdm(
+        data_iter,
+        total=total_batches,
+        desc=f"Train {epoch}/{total_epochs}",
+        unit="batch",
+    )
     while True:
         fetch_start = perf_counter()
         try:
-            x_batch, y_batch = next(data_iter)
+            x_batch, y_batch = next(progress)
         except StopIteration:
             break
         data_time_s += perf_counter() - fetch_start
@@ -370,8 +384,10 @@ def _train_one_epoch(
             torch.cuda.synchronize(device)
 
         total_loss += float(loss.item())
-        compute_time_s += perf_counter() - compute_start       
+        compute_time_s += perf_counter() - compute_start
         num_batches += 1
+        progress.set_postfix(loss=f"{loss.item():.6f}")
+    progress.close()
     max_mem = 0
     if device.type == "cuda":
         max_mem = int(torch.cuda.max_memory_allocated(device))
@@ -383,12 +399,24 @@ def _evaluate(
     loader: DataLoader,
     loss_fn: nn.Module,
     device: torch.device,
+    *,
+    epoch: int,
+    total_epochs: int,
 ) -> float:
     model.eval()
     total_loss = 0.0
     num_batches = 0
     with torch.no_grad():
-        for x_batch, y_batch in loader:
+        try:
+            total_batches = len(loader)
+        except TypeError:
+            total_batches = None
+        for x_batch, y_batch in tqdm(
+            loader,
+            total=total_batches,
+            desc=f"Val {epoch}/{total_epochs}",
+            unit="batch",
+        ):
             x_batch = x_batch.to(device)
             y_batch = y_batch.to(device)
             preds = model(x_batch)
@@ -428,13 +456,22 @@ def train_model(
             optimizer,
             loss_fn,
             training_device,
+            epoch=epoch,
+            total_epochs=epochs,
         )
 
         if training_device.type =="cuda":
             torch.cuda.synchronize(training_device)
         
         val_start = perf_counter()
-        val_loss = _evaluate(model, datasets["val_samples"], loss_fn, training_device)
+        val_loss = _evaluate(
+            model,
+            datasets["val_samples"],
+            loss_fn,
+            training_device,
+            epoch=epoch,
+            total_epochs=epochs,
+        )
 
         if training_device.type == "cuda":
             torch.cuda.synchronize(training_device)
@@ -636,10 +673,15 @@ def test_and_save_forecasts(
     scaling_stats = _load_scaling_stats(h5_path) if h5_path is not None else None
 
     profile_iter = iter(profile_ds)
+    try:
+        total_profiles = len(profile_ds)
+    except TypeError:
+        total_profiles = None
+    progress = tqdm(profile_iter, total=total_profiles, desc="Forecast profiles", unit="profile")
     while True:
         fetch_start = perf_counter()
         try:
-            profile_name, x_profile, y_profile = next(profile_iter)
+            profile_name, x_profile, y_profile = next(progress)
         except StopIteration:
             break
         fetch_times.append(perf_counter() - fetch_start)
@@ -687,6 +729,8 @@ def test_and_save_forecasts(
                 title=f"Rolling Forecast - {profile_name}",
                 save_path=save_path,
             )
+        progress.set_postfix(mse=f"{mse:.6e}")
+    progress.close()
 
     save_start = perf_counter()
     save_rolling_forecasts_hdf5(
