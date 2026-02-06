@@ -352,23 +352,18 @@ def _train_one_epoch(
     compute_time_s = 0.0
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
-    data_iter = iter(loader)
     try:
         total_batches = len(loader)
     except TypeError:
         total_batches = None
     progress = tqdm(
-        data_iter,
+        loader,
         total=total_batches,
         desc=f"Train {epoch}/{total_epochs}",
         unit="batch",
     )
-    while True:
+    for x_batch, y_batch in progress:
         fetch_start = perf_counter()
-        try:
-            x_batch, y_batch = next(progress)
-        except StopIteration:
-            break
         data_time_s += perf_counter() - fetch_start
 
         compute_start = perf_counter()
@@ -672,18 +667,13 @@ def test_and_save_forecasts(
     inference_times: list[float] = []
     scaling_stats = _load_scaling_stats(h5_path) if h5_path is not None else None
 
-    profile_iter = iter(profile_ds)
     try:
         total_profiles = len(profile_ds)
     except TypeError:
         total_profiles = None
-    progress = tqdm(profile_iter, total=total_profiles, desc="Forecast profiles", unit="profile")
-    while True:
+    progress = tqdm(profile_ds, total=total_profiles, desc="Forecast profiles", unit="profile")
+    for profile_name, x_profile, y_profile in progress:
         fetch_start = perf_counter()
-        try:
-            profile_name, x_profile, y_profile = next(progress)
-        except StopIteration:
-            break
         fetch_times.append(perf_counter() - fetch_start)
 
         x_np = x_profile.numpy()
