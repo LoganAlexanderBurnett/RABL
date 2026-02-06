@@ -95,6 +95,14 @@ def choose_device_prefer_gpu() -> torch.device:
     return torch.device("cpu")
 
 
+def clear_cuda_cache() -> None:
+    """
+    Clear cached CUDA memory to help free VRAM.
+    """
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 # --------------------------------------------------------------------------------------
 # HDF5 helpers
 # --------------------------------------------------------------------------------------
