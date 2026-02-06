@@ -141,6 +141,10 @@ def _load_scaling_stats(h5_path: Path) -> dict[str, Any]:
         if scaling_type == "standard":
             return {
                 "type": scaling_type,
+                "x": {
+                    "mean": scaling_group["x_mean"][...].astype(np.float32),
+                    "std": scaling_group["x_std"][...].astype(np.float32),
+                },
                 "y": {
                     "mean": scaling_group["y_mean"][...].astype(np.float32),
                     "std": scaling_group["y_std"][...].astype(np.float32),
@@ -148,6 +152,10 @@ def _load_scaling_stats(h5_path: Path) -> dict[str, Any]:
             }
         return {
             "type": scaling_type,
+            "x": {
+                "min": scaling_group["x_min"][...].astype(np.float32),
+                "span": scaling_group["x_span"][...].astype(np.float32),
+            },
             "y": {
                 "min": scaling_group["y_min"][...].astype(np.float32),
                 "span": scaling_group["y_span"][...].astype(np.float32),
@@ -157,12 +165,26 @@ def _load_scaling_stats(h5_path: Path) -> dict[str, Any]:
 
 def _descale_targets(h5_path: Path, values: np.ndarray) -> np.ndarray:
     stats = _load_scaling_stats(h5_path)
+    return _descale_targets_from_stats(stats, values)
+
+
+def _descale_targets_from_stats(stats: dict[str, Any], values: np.ndarray) -> np.ndarray:
     scaling_type = stats["type"]
     y_stats = stats["y"]
     if scaling_type == "standard":
         return values * y_stats["std"] + y_stats["mean"]
     if scaling_type == "minmax":
         return values * y_stats["span"] + y_stats["min"]
+    raise ValueError(f"Unsupported scaling type: {scaling_type}")
+
+
+def _descale_feature_from_stats(stats: dict[str, Any], values: np.ndarray, feature_idx: int) -> np.ndarray:
+    scaling_type = stats["type"]
+    x_stats = stats["x"]
+    if scaling_type == "standard":
+        return values * x_stats["std"][feature_idx] + x_stats["mean"][feature_idx]
+    if scaling_type == "minmax":
+        return values * x_stats["span"][feature_idx] + x_stats["min"][feature_idx]
     raise ValueError(f"Unsupported scaling type: {scaling_type}")
 
 
@@ -611,6 +633,7 @@ def test_and_save_forecasts(
     forecasts: list[dict[str, Any]] = []
     fetch_times: list[float] = []
     inference_times: list[float] = []
+    scaling_stats = _load_scaling_stats(h5_path) if h5_path is not None else None
 
     profile_iter = iter(profile_ds)
     while True:
@@ -629,12 +652,15 @@ def test_and_save_forecasts(
 
         y_true = y_np
         y_pred_out = y_pred
-        if h5_path is not None:
-            y_true = _descale_targets(h5_path, y_true)
-            y_pred_out = _descale_targets(h5_path, y_pred_out)
+        if scaling_stats is not None:
+            y_true = _descale_targets_from_stats(scaling_stats, y_true)
+            y_pred_out = _descale_targets_from_stats(scaling_stats, y_pred_out)
 
         t_series = np.arange(y_pred_out.shape[0], dtype=np.float32)
         u_series = _extract_control_series(x_np, state_dim=state_dim, control_channel=control_channel)
+        if scaling_stats is not None:
+            control_idx = state_dim + control_channel
+            u_series = _descale_feature_from_stats(scaling_stats, u_series, control_idx)
         table = _assemble_forecast_table(t_series, u_series, y_true, y_pred_out)
         mse = float(np.mean((y_true - y_pred_out) ** 2))
 
@@ -647,8 +673,15 @@ def test_and_save_forecasts(
         )
         if plot_callback is not None and len(forecasts) <= max_plots:
             save_path = out_dir / f"rolling_forecast_{profile_name}.png"
+            x_plot = x_np
+            if scaling_stats is not None:
+                control_idx = state_dim + control_channel
+                x_plot = x_np.copy()
+                x_plot[:, :, control_idx] = _descale_feature_from_stats(
+                    scaling_stats, x_plot[:, :, control_idx], control_idx
+                )
             plot_callback(
-                x_profile=x_np,
+                x_profile=x_plot,
                 y_true=y_true,
                 y_pred=y_pred_out,
                 title=f"Rolling Forecast - {profile_name}",
