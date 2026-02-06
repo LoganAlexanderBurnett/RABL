@@ -670,10 +670,10 @@ def test_and_save_forecasts(
     total_test = total_fetch + total_inference
     print(
         "Testing timing summary:"
-        f" avg_fetch_profile: {avg_fetch:.4f}s"
-        f" avg_inference_profile: {avg_inference:.4f}s"
-        f" total_fetch: {total_fetch:.4f}s"
-        f" total_test: {total_test:.4f}s"
+        f" total_fetch: {total_fetch:.4f}s - "
+        f" total_test: {total_test:.4f}s - "
+        f" avg_fetch_profile: {avg_fetch:.4f}s - "
+        f" avg_inference_profile: {avg_inference:.4f}s - "
         f" save_time: {save_time_s:.4f}s"
     )
 

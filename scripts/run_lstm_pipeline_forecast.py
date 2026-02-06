@@ -86,7 +86,13 @@ def main() -> None:
         target_names=pipeline.config.target_names,
         max_plots=args.max_plots,
         plot_callback=pipeline.plot,
+        h5_path=args.h5_path
     )
+
+    if used_device == "cuda":
+        print("Clearing GPU...")
+        del model
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
