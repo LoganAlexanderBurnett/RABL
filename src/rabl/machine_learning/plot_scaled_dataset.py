@@ -63,7 +63,7 @@ def _reconstruct_profile(
     x_states = x_data[0, :, :state_features]
     y_states = y_data
     if scaling_type != "none" and x_stats is not None and y_stats is not None:
-        x_states = _inverse_scale(scaling_type, x_states, x_stats)
+        x_states = _inverse_scale(scaling_type, x_states, x_stats, indices=slice(0, state_features))
         y_states = _inverse_scale(scaling_type, y_states, y_stats)
     states = np.vstack([x_states, y_states])
     control_window = x_data[0, :, state_features]
@@ -85,6 +85,7 @@ def _inverse_scale(
     data: np.ndarray,
     stats: dict[str, np.ndarray],
     index: int | None = None,
+    indices: slice | None = None,
 ) -> np.ndarray:
     if scaling_type == "none":
         return data
@@ -92,6 +93,10 @@ def _inverse_scale(
         if scaling_type == "standard":
             return data * stats["std"][index] + stats["mean"][index]
         return data * stats["span"][index] + stats["min"][index]
+    if indices is not None:
+        if scaling_type == "standard":
+            return data * stats["std"][indices] + stats["mean"][indices]
+        return data * stats["span"][indices] + stats["min"][indices]
     if scaling_type == "standard":
         return data * stats["std"] + stats["mean"]
     return data * stats["span"] + stats["min"]
