@@ -333,30 +333,29 @@ class LSTMRegressor(nn.Module):
         num_targets: int,
         *,
         n_lstm: int = 1,
-        lstm_hidden: tuple[int, ...] = (64,),
+        lstm_hidden: int = 64,
+        lstm_dropout: float = 0.0,
         n_fc: int = 1,
         fc_hidden: tuple[int, ...] = (64,),
     ):
         super().__init__()
         if n_lstm < 1:
             raise ValueError(f"n_lstm must be >= 1 (got {n_lstm}).")
-        if len(lstm_hidden) != n_lstm:
-            raise ValueError("lstm_hidden must be a tuple of length n_lstm.")
         if n_fc < 1:
             raise ValueError(f"n_fc must be >= 1 (got {n_fc}).")
         if len(fc_hidden) != n_fc:
             raise ValueError("fc_hidden must be a tuple of length n_fc.")
 
-        self.lstm_layers = nn.ModuleList()
-        lstm_input = num_features
-        for hidden_size in lstm_hidden:
-            self.lstm_layers.append(
-                nn.LSTM(input_size=lstm_input, hidden_size=hidden_size, batch_first=True)
-            )
-            lstm_input = hidden_size
+        self.lstm = nn.LSTM(
+            input_size=num_features,
+            hidden_size=lstm_hidden,
+            num_layers=n_lstm,
+            dropout=lstm_dropout,
+            batch_first=True,
+        )
 
         self.fc_layers = nn.ModuleList()
-        fc_input = lstm_hidden[-1]
+        fc_input = lstm_hidden
         for hidden_size in fc_hidden:
             self.fc_layers.append(nn.Linear(fc_input, hidden_size))
             fc_input = hidden_size
@@ -365,9 +364,7 @@ class LSTMRegressor(nn.Module):
         self.output_layer = nn.Linear(fc_hidden[-1], num_targets)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        lstm_out = x
-        for lstm_layer in self.lstm_layers:
-            lstm_out, _ = lstm_layer(lstm_out)
+        lstm_out, _ = self.lstm(x)
         last_step = lstm_out[:, -1, :]
         fc_out = last_step
         for fc_layer in self.fc_layers:
@@ -381,7 +378,8 @@ def build_model(
     num_targets: int,
     *,
     n_lstm: int = 1,
-    lstm_hidden: tuple[int, ...] = (64,),
+    lstm_hidden: int = 64,
+    lstm_dropout: float = 0.0,
     n_fc: int = 1,
     fc_hidden: tuple[int, ...] = (64,),
 ) -> LSTMRegressor:
@@ -391,15 +389,15 @@ def build_model(
         num_targets,
         n_lstm=n_lstm,
         lstm_hidden=lstm_hidden,
+        lstm_dropout=lstm_dropout,
         n_fc=n_fc,
         fc_hidden=fc_hidden,
     )
-    lstm_desc = ", ".join(str(size) for size in lstm_hidden)
     fc_desc = ", ".join(str(size) for size in fc_hidden)
     print(
         "LSTMRegressor architecture:\n"
         f"  Input features: {num_features}\n"
-        f"  LSTM layers ({n_lstm}): [{lstm_desc}]\n"
+        f"  LSTM layers ({n_lstm}): hidden_size={lstm_hidden}, dropout={lstm_dropout}\n"
         f"  FC layers ({n_fc}): [{fc_desc}]\n"
         f"  Output targets: {num_targets}\n"
     )
@@ -499,9 +497,11 @@ def train_model(
     plot_path: str | Path | None = None,
     training_device: torch.device | None = None,
     n_lstm: int = 1,
-    lstm_hidden: tuple[int, ...] = (64,),
+    lstm_hidden: int = 64,
+    lstm_dropout: float = 0.0,
     n_fc: int = 1,
     fc_hidden: tuple[int, ...] = (64,),
+    learning_rate: float = 1e-3,
     verbose: int = 1,
 ) -> tuple[nn.Module, dict[str, list[float]], Path]:
     """
@@ -520,10 +520,11 @@ def train_model(
         num_targets,
         n_lstm=n_lstm,
         lstm_hidden=lstm_hidden,
+        lstm_dropout=lstm_dropout,
         n_fc=n_fc,
         fc_hidden=fc_hidden,
     ).to(training_device)
-    optimizer = torch.optim.Adam(model.parameters())
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     loss_fn = nn.MSELoss()
 
     history = {"loss": [], "val_loss": []}
@@ -592,9 +593,11 @@ def train_with_fallback(
     epochs: int,
     out_dir: Path,
     n_lstm: int = 1,
-    lstm_hidden: tuple[int, ...] = (64,),
+    lstm_hidden: int = 64,
+    lstm_dropout: float = 0.0,
     n_fc: int = 1,
     fc_hidden: tuple[int, ...] = (64,),
+    learning_rate: float = 1e-3,
     prefer_gpu: bool = True,
 ) -> tuple[nn.Module, dict[str, list[float]], torch.device]:
     """
@@ -615,8 +618,10 @@ def train_with_fallback(
             training_device=preferred,
             n_lstm=n_lstm,
             lstm_hidden=lstm_hidden,
+            lstm_dropout=lstm_dropout,
             n_fc=n_fc,
             fc_hidden=fc_hidden,
+            learning_rate=learning_rate,
         )
         return model, history, preferred
     except Exception as e:
@@ -632,8 +637,10 @@ def train_with_fallback(
         training_device=torch.device("cpu"),
         n_lstm=n_lstm,
         lstm_hidden=lstm_hidden,
+        lstm_dropout=lstm_dropout,
         n_fc=n_fc,
         fc_hidden=fc_hidden,
+        learning_rate=learning_rate,
     )
     return model, history, torch.device("cpu")
 
@@ -1023,19 +1030,18 @@ class LSTMPipelineConfig:
     control_name: str = "drumAngleDeg"
     control_channel: int = 0
     n_lstm: int = 1
-    lstm_hidden: tuple[int, ...] = (64,)
+    lstm_hidden: int = 64
+    lstm_dropout: float = 0.0
     n_fc: int = 1
     fc_hidden: tuple[int, ...] = (64,)
+    learning_rate: float = 1e-3
 
     def __post_init__(self) -> None:
         if self.target_names is None:
             self.target_names = list(TARGET_NAMES)
-        self.lstm_hidden = tuple(self.lstm_hidden)
         self.fc_hidden = tuple(self.fc_hidden)
         if self.n_lstm < 1:
             raise ValueError(f"n_lstm must be >= 1 (got {self.n_lstm}).")
-        if len(self.lstm_hidden) != self.n_lstm:
-            raise ValueError("lstm_hidden must be a tuple of length n_lstm.")
         if self.n_fc < 1:
             raise ValueError(f"n_fc must be >= 1 (got {self.n_fc}).")
         if len(self.fc_hidden) != self.n_fc:
@@ -1068,8 +1074,10 @@ class LSTMPipeline:
             out_dir=out_dir,
             n_lstm=self.config.n_lstm,
             lstm_hidden=self.config.lstm_hidden,
+            lstm_dropout=self.config.lstm_dropout,
             n_fc=self.config.n_fc,
             fc_hidden=self.config.fc_hidden,
+            learning_rate=self.config.learning_rate,
             prefer_gpu=prefer_gpu,
         )
 

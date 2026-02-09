@@ -67,9 +67,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lstm-hidden",
         type=int,
-        nargs="+",
-        default=(64, 64, 64),
-        help="Hidden units per LSTM layer (space-separated list).",
+        default=64,
+        help="Hidden units for the LSTM layers (shared across all layers).",
+    )
+    parser.add_argument(
+        "--lstm-dropout",
+        type=float,
+        default=0.0,
+        help="Dropout between stacked LSTM layers (ignored if n_lstm=1).",
     )
     parser.add_argument(
         "--n-fc",
@@ -84,6 +89,12 @@ def parse_args() -> argparse.Namespace:
         default=(64,),
         help="Hidden units per fully connected layer (space-separated list).",
     )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=1e-3,
+        help="Learning rate for the optimizer.",
+    )
     return parser.parse_args()
 
 
@@ -96,9 +107,11 @@ def main() -> None:
         batch_size=args.batch_size,
         seed=args.seed,
         n_lstm=args.n_lstm,
-        lstm_hidden=tuple(args.lstm_hidden),
+        lstm_hidden=args.lstm_hidden,
+        lstm_dropout=args.lstm_dropout,
         n_fc=args.n_fc,
         fc_hidden=tuple(args.fc_hidden),
+        learning_rate=args.learning_rate,
     )
     pipeline = LSTMPipeline(config)
 
