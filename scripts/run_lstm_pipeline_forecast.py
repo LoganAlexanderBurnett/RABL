@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=64,
+        default=256,
         help="Batch size for training.",
     )
     parser.add_argument(
@@ -61,14 +61,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--n-lstm",
         type=int,
-        default=1,
+        default=3,
         help="Number of stacked LSTM layers.",
     )
     parser.add_argument(
         "--lstm-hidden",
         type=int,
         nargs="+",
-        default=[64],
+        default=(64, 64, 64),
         help="Hidden units per LSTM layer (space-separated list).",
     )
     parser.add_argument(
@@ -81,7 +81,7 @@ def parse_args() -> argparse.Namespace:
         "--fc-hidden",
         type=int,
         nargs="+",
-        default=[64],
+        default=(64,),
         help="Hidden units per fully connected layer (space-separated list).",
     )
     return parser.parse_args()

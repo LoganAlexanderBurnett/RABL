@@ -88,7 +88,7 @@ def choose_device_prefer_gpu() -> torch.device:
     """
     if torch.cuda.is_available():
         device = torch.device("cuda:0")
-        print(f"Using GPU: {torch.cuda.get_device_name(device)}")
+        print(f"Using GPU: {torch.cuda.get_device_name(device)}\n")
         return device
 
     print("No GPU detected by PyTorch. Using CPU.")
@@ -401,7 +401,7 @@ def build_model(
         f"  Input features: {num_features}\n"
         f"  LSTM layers ({n_lstm}): [{lstm_desc}]\n"
         f"  FC layers ({n_fc}): [{fc_desc}]\n"
-        f"  Output targets: {num_targets}"
+        f"  Output targets: {num_targets}\n"
     )
     return model
 
@@ -831,12 +831,12 @@ def test_and_save_forecasts(
     total_inference = float(np.sum(inference_times)) if inference_times else 0.0
     total_test = total_fetch + total_inference
     print(
-        "Testing timing summary:"
+        "\nTesting timing summary:"
         f" total_fetch: {total_fetch:.4f}s - "
         f" total_test: {total_test:.4f}s - "
         f" avg_fetch_profile: {avg_fetch:.4f}s - "
         f" avg_inference_profile: {avg_inference:.4f}s - "
-        f" save_time: {save_time_s:.4f}s"
+        f" save_time: {save_time_s:.4f}s\n"
     )
 
     return {
@@ -915,7 +915,7 @@ def inspect_dataset_shapes(datasets: dict[str, Any]) -> None:
         profile_name, x_profile, y_profile = next(iter(datasets[dataset_key]))
         print(f"{split_name.capitalize()} profile: {profile_name}")
         print(f"  X profile shape: {x_profile.shape}")
-        print(f"  Y profile shape: {y_profile.shape}")
+        print(f"  Y profile shape: {y_profile.shape}\n")
 
 
 # --------------------------------------------------------------------------------------
@@ -1117,7 +1117,7 @@ def main() -> None:
         epochs=epochs,
         out_dir=out_dir,
     )
-    print(f"\nFinished training using device: {used_device}")
+    print(f"\nFinished training using device: {used_device}\n")
 
     profile_name, x_profile, y_profile = next(iter(datasets["test_profile_ds"]))
     name = profile_name
