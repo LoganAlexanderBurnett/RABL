@@ -55,11 +55,22 @@ def _load_split_profiles(
 def _reconstruct_profile(
     x_data: np.ndarray,
     y_data: np.ndarray,
+    x_stats: dict[str, np.ndarray] | None = None,
+    y_stats: dict[str, np.ndarray] | None = None,
+    scaling_type: str = "none",
 ) -> tuple[np.ndarray, np.ndarray]:
     state_features = y_data.shape[-1]
-    states = np.vstack([x_data[0, :, :state_features], y_data])
+    x_states = x_data[0, :, :state_features]
+    y_states = y_data
+    if scaling_type != "none" and x_stats is not None and y_stats is not None:
+        x_states = _inverse_scale(scaling_type, x_states, x_stats)
+        y_states = _inverse_scale(scaling_type, y_states, y_stats)
+    states = np.vstack([x_states, y_states])
     control_window = x_data[0, :, state_features]
     control_tail = x_data[:, -1, state_features]
+    if scaling_type != "none" and x_stats is not None:
+        control_window = _inverse_scale(scaling_type, control_window, x_stats, index=state_features)
+        control_tail = _inverse_scale(scaling_type, control_tail, x_stats, index=state_features)
     control = np.concatenate([control_window, control_tail])
     if control.shape[0] > states.shape[0]:
         control = control[: states.shape[0]]
@@ -67,6 +78,42 @@ def _reconstruct_profile(
         pad = states.shape[0] - control.shape[0]
         control = np.pad(control, (0, pad), mode="edge")
     return states, control
+
+
+def _inverse_scale(
+    scaling_type: str,
+    data: np.ndarray,
+    stats: dict[str, np.ndarray],
+    index: int | None = None,
+) -> np.ndarray:
+    if scaling_type == "none":
+        return data
+    if index is not None:
+        if scaling_type == "standard":
+            return data * stats["std"][index] + stats["mean"][index]
+        return data * stats["span"][index] + stats["min"][index]
+    if scaling_type == "standard":
+        return data * stats["std"] + stats["mean"]
+    return data * stats["span"] + stats["min"]
+
+
+def _load_scaling_stats(h5f: h5py.File) -> tuple[str, dict[str, np.ndarray] | None, dict[str, np.ndarray] | None]:
+    scaling_type = h5f.attrs.get("scaling_type", "none")
+    if isinstance(scaling_type, bytes):
+        scaling_type = scaling_type.decode()
+    if scaling_type == "none":
+        return scaling_type, None, None
+
+    scaling_group = h5f.get("scaling")
+    if scaling_group is None:
+        raise ValueError("Dataset missing scaling statistics.")
+    if scaling_type == "standard":
+        x_stats = {"mean": scaling_group["x_mean"][()], "std": scaling_group["x_std"][()]}
+        y_stats = {"mean": scaling_group["y_mean"][()], "std": scaling_group["y_std"][()]}
+    else:
+        x_stats = {"min": scaling_group["x_min"][()], "span": scaling_group["x_span"][()]}
+        y_stats = {"min": scaling_group["y_min"][()], "span": scaling_group["y_span"][()]}
+    return scaling_type, x_stats, y_stats
 
 
 def plot_scaled_features(
@@ -92,11 +139,17 @@ def plot_scaled_features(
             split: _collect_samples(h5f, split=split, max_samples=max_samples, seed=seed)
             for split in splits
         }
+        scaling_type, x_stats, y_stats = _load_scaling_stats(h5f)
         profiles_by_split: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
+        descaled_profiles_by_split: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
         for split in splits:
             split_profiles = _load_split_profiles(h5f, split)
             profiles_by_split[split] = [
                 _reconstruct_profile(x_data, y_data) for x_data, y_data in split_profiles
+            ]
+            descaled_profiles_by_split[split] = [
+                _reconstruct_profile(x_data, y_data, x_stats, y_stats, scaling_type)
+                for x_data, y_data in split_profiles
             ]
 
     fig, axes = plt.subplots(7, 2, figsize=(12, 18), sharex=False)
@@ -146,6 +199,28 @@ def plot_scaled_features(
     profile_output = output_path.with_name(f"{input_path.stem}_all_splits_profiles.png")
     profile_fig.savefig(profile_output, dpi=200)
     plt.close(profile_fig)
+
+    descaled_fig, descaled_axes = plt.subplots(7, 2, figsize=(12, 18), sharex=False)
+    descaled_axes = descaled_axes.flatten()
+    for idx, ax in enumerate(descaled_axes):
+        for split, color in zip(splits, ("red", "yellow", "green"), strict=False):
+            for profile_idx, (states, control) in enumerate(descaled_profiles_by_split[split]):
+                if idx < states.shape[1]:
+                    series = states[:, idx]
+                else:
+                    series = control
+                label = split if profile_idx == 0 else "_nolegend_"
+                ax.plot(series, color=color, alpha=0.35, label=label)
+        ax.set_title(feature_labels[idx])
+        ax.grid(True, alpha=0.2)
+        if idx == 0:
+            ax.legend()
+
+    descaled_fig.suptitle("Descaled feature profiles by split (time series)", fontsize=14)
+    descaled_fig.tight_layout(rect=[0, 0.03, 1, 0.98])
+    descaled_output = output_path.with_name(f"{input_path.stem}_all_splits_profiles_descaled.png")
+    descaled_fig.savefig(descaled_output, dpi=200)
+    plt.close(descaled_fig)
     return output_path
 
 
