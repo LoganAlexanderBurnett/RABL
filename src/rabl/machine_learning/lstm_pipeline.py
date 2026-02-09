@@ -987,8 +987,8 @@ def plot_forecast_vs_truth_grid(
     for i in range(num_targets):
         ax = axes[i + 1]
         name = target_names[i]
-        ax.plot(y_true[:, i], label="truth")
-        ax.plot(y_pred[:, i], "--", label="pred")
+        ax.plot(y_true[:, i], label="truth", color='black')
+        ax.plot(y_pred[:, i], label="pred", color='blue')
         ax.set_title(name)
         ax.set_xlabel("Forecast step")
         ax.set_ylabel(name)
