@@ -58,6 +58,32 @@ def parse_args() -> argparse.Namespace:
         default=5,
         help="Number of test profiles to plot.",
     )
+    parser.add_argument(
+        "--n-lstm",
+        type=int,
+        default=1,
+        help="Number of stacked LSTM layers.",
+    )
+    parser.add_argument(
+        "--lstm-hidden",
+        type=int,
+        nargs="+",
+        default=[64],
+        help="Hidden units per LSTM layer (space-separated list).",
+    )
+    parser.add_argument(
+        "--n-fc",
+        type=int,
+        default=1,
+        help="Number of intermediate fully connected layers.",
+    )
+    parser.add_argument(
+        "--fc-hidden",
+        type=int,
+        nargs="+",
+        default=[64],
+        help="Hidden units per fully connected layer (space-separated list).",
+    )
     return parser.parse_args()
 
 
@@ -69,6 +95,10 @@ def main() -> None:
         h5_path=args.h5_path,
         batch_size=args.batch_size,
         seed=args.seed,
+        n_lstm=args.n_lstm,
+        lstm_hidden=tuple(args.lstm_hidden),
+        n_fc=args.n_fc,
+        fc_hidden=tuple(args.fc_hidden),
     )
     pipeline = LSTMPipeline(config)
 

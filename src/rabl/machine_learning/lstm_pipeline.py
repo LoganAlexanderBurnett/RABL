@@ -326,21 +326,84 @@ def build_datasets(h5_path: Path, batch_size: int, seed: int) -> dict[str, Any]:
 # --------------------------------------------------------------------------------------
 
 class LSTMRegressor(nn.Module):
-    def __init__(self, timesteps: int, num_features: int, num_targets: int):
+    def __init__(
+        self,
+        timesteps: int,
+        num_features: int,
+        num_targets: int,
+        *,
+        n_lstm: int = 1,
+        lstm_hidden: tuple[int, ...] = (64,),
+        n_fc: int = 1,
+        fc_hidden: tuple[int, ...] = (64,),
+    ):
         super().__init__()
-        self.lstm = nn.LSTM(input_size=num_features, hidden_size=64, batch_first=True)
-        self.fc1 = nn.Linear(64, 64)
+        if n_lstm < 1:
+            raise ValueError(f"n_lstm must be >= 1 (got {n_lstm}).")
+        if len(lstm_hidden) != n_lstm:
+            raise ValueError("lstm_hidden must be a tuple of length n_lstm.")
+        if n_fc < 1:
+            raise ValueError(f"n_fc must be >= 1 (got {n_fc}).")
+        if len(fc_hidden) != n_fc:
+            raise ValueError("fc_hidden must be a tuple of length n_fc.")
+
+        self.lstm_layers = nn.ModuleList()
+        lstm_input = num_features
+        for hidden_size in lstm_hidden:
+            self.lstm_layers.append(
+                nn.LSTM(input_size=lstm_input, hidden_size=hidden_size, batch_first=True)
+            )
+            lstm_input = hidden_size
+
+        self.fc_layers = nn.ModuleList()
+        fc_input = lstm_hidden[-1]
+        for hidden_size in fc_hidden:
+            self.fc_layers.append(nn.Linear(fc_input, hidden_size))
+            fc_input = hidden_size
+
         self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(64, num_targets)
+        self.output_layer = nn.Linear(fc_hidden[-1], num_targets)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        lstm_out, _ = self.lstm(x)
+        lstm_out = x
+        for lstm_layer in self.lstm_layers:
+            lstm_out, _ = lstm_layer(lstm_out)
         last_step = lstm_out[:, -1, :]
-        return self.fc2(self.relu(self.fc1(last_step)))
+        fc_out = last_step
+        for fc_layer in self.fc_layers:
+            fc_out = self.relu(fc_layer(fc_out))
+        return self.output_layer(fc_out)
 
 
-def build_model(timesteps: int, num_features: int, num_targets: int) -> LSTMRegressor:
-    return LSTMRegressor(timesteps, num_features, num_targets)
+def build_model(
+    timesteps: int,
+    num_features: int,
+    num_targets: int,
+    *,
+    n_lstm: int = 1,
+    lstm_hidden: tuple[int, ...] = (64,),
+    n_fc: int = 1,
+    fc_hidden: tuple[int, ...] = (64,),
+) -> LSTMRegressor:
+    model = LSTMRegressor(
+        timesteps,
+        num_features,
+        num_targets,
+        n_lstm=n_lstm,
+        lstm_hidden=lstm_hidden,
+        n_fc=n_fc,
+        fc_hidden=fc_hidden,
+    )
+    lstm_desc = ", ".join(str(size) for size in lstm_hidden)
+    fc_desc = ", ".join(str(size) for size in fc_hidden)
+    print(
+        "LSTMRegressor architecture:\n"
+        f"  Input features: {num_features}\n"
+        f"  LSTM layers ({n_lstm}): [{lstm_desc}]\n"
+        f"  FC layers ({n_fc}): [{fc_desc}]\n"
+        f"  Output targets: {num_targets}"
+    )
+    return model
 
 
 def _train_one_epoch(
@@ -435,6 +498,10 @@ def train_model(
     epochs: int = DEFAULT_EPOCHS,
     plot_path: str | Path | None = None,
     training_device: torch.device | None = None,
+    n_lstm: int = 1,
+    lstm_hidden: tuple[int, ...] = (64,),
+    n_fc: int = 1,
+    fc_hidden: tuple[int, ...] = (64,),
     verbose: int = 1,
 ) -> tuple[nn.Module, dict[str, list[float]], Path]:
     """
@@ -447,7 +514,15 @@ def train_model(
     if training_device is None:
         training_device = choose_device_prefer_gpu()
 
-    model = build_model(timesteps, num_features, num_targets).to(training_device)
+    model = build_model(
+        timesteps,
+        num_features,
+        num_targets,
+        n_lstm=n_lstm,
+        lstm_hidden=lstm_hidden,
+        n_fc=n_fc,
+        fc_hidden=fc_hidden,
+    ).to(training_device)
     optimizer = torch.optim.Adam(model.parameters())
     loss_fn = nn.MSELoss()
 
@@ -516,6 +591,10 @@ def train_with_fallback(
     *,
     epochs: int,
     out_dir: Path,
+    n_lstm: int = 1,
+    lstm_hidden: tuple[int, ...] = (64,),
+    n_fc: int = 1,
+    fc_hidden: tuple[int, ...] = (64,),
     prefer_gpu: bool = True,
 ) -> tuple[nn.Module, dict[str, list[float]], torch.device]:
     """
@@ -534,6 +613,10 @@ def train_with_fallback(
             epochs=epochs,
             plot_path=out_dir / "lstm_train_val_curve.png",
             training_device=preferred,
+            n_lstm=n_lstm,
+            lstm_hidden=lstm_hidden,
+            n_fc=n_fc,
+            fc_hidden=fc_hidden,
         )
         return model, history, preferred
     except Exception as e:
@@ -547,6 +630,10 @@ def train_with_fallback(
         epochs=epochs,
         plot_path=out_dir / "lstm_train_val_curve.png",
         training_device=torch.device("cpu"),
+        n_lstm=n_lstm,
+        lstm_hidden=lstm_hidden,
+        n_fc=n_fc,
+        fc_hidden=fc_hidden,
     )
     return model, history, torch.device("cpu")
 
@@ -935,10 +1022,24 @@ class LSTMPipelineConfig:
     state_dim: int = STATE_DIM
     control_name: str = "drumAngleDeg"
     control_channel: int = 0
+    n_lstm: int = 1
+    lstm_hidden: tuple[int, ...] = (64,)
+    n_fc: int = 1
+    fc_hidden: tuple[int, ...] = (64,)
 
     def __post_init__(self) -> None:
         if self.target_names is None:
             self.target_names = list(TARGET_NAMES)
+        self.lstm_hidden = tuple(self.lstm_hidden)
+        self.fc_hidden = tuple(self.fc_hidden)
+        if self.n_lstm < 1:
+            raise ValueError(f"n_lstm must be >= 1 (got {self.n_lstm}).")
+        if len(self.lstm_hidden) != self.n_lstm:
+            raise ValueError("lstm_hidden must be a tuple of length n_lstm.")
+        if self.n_fc < 1:
+            raise ValueError(f"n_fc must be >= 1 (got {self.n_fc}).")
+        if len(self.fc_hidden) != self.n_fc:
+            raise ValueError("fc_hidden must be a tuple of length n_fc.")
 
 
 class LSTMPipeline:
@@ -961,7 +1062,16 @@ class LSTMPipeline:
     def train(self, *, epochs: int = DEFAULT_EPOCHS, out_dir: Path = Path("outputs"), prefer_gpu: bool = True):
         if self.datasets is None:
             self.build()
-        return train_with_fallback(self.datasets, epochs=epochs, out_dir=out_dir, prefer_gpu=prefer_gpu)
+        return train_with_fallback(
+            self.datasets,
+            epochs=epochs,
+            out_dir=out_dir,
+            n_lstm=self.config.n_lstm,
+            lstm_hidden=self.config.lstm_hidden,
+            n_fc=self.config.n_fc,
+            fc_hidden=self.config.fc_hidden,
+            prefer_gpu=prefer_gpu,
+        )
 
     def sample_test_profile(self):
         if self.datasets is None:
@@ -1002,7 +1112,11 @@ def main() -> None:
     datasets = build_datasets(h5_path=h5_path, batch_size=batch_size, seed=seed)
     inspect_dataset_shapes(datasets)
 
-    model, history, used_device = train_with_fallback(datasets, epochs=epochs, out_dir=out_dir)
+    model, history, used_device = train_with_fallback(
+        datasets,
+        epochs=epochs,
+        out_dir=out_dir,
+    )
     print(f"\nFinished training using device: {used_device}")
 
     profile_name, x_profile, y_profile = next(iter(datasets["test_profile_ds"]))
