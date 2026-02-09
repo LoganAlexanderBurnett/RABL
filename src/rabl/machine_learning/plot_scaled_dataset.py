@@ -38,6 +38,35 @@ def _collect_samples(
     return np.concatenate(samples, axis=0)
 
 
+def _load_first_profile(
+    h5f: h5py.File,
+    split: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    files_group = h5f.get(f"{split}/files")
+    if files_group is None or len(files_group.keys()) == 0:
+        raise ValueError(f"Missing '{split}/files' group in dataset.")
+    first_key = sorted(files_group.keys())[0]
+    file_group = files_group[first_key]
+    return file_group["X"][()], file_group["Y"][()]
+
+
+def _reconstruct_profile(
+    x_data: np.ndarray,
+    y_data: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    state_features = y_data.shape[-1]
+    states = np.vstack([x_data[0, :, :state_features], y_data])
+    control_window = x_data[0, :, state_features]
+    control_tail = x_data[:, -1, state_features]
+    control = np.concatenate([control_window, control_tail])
+    if control.shape[0] > states.shape[0]:
+        control = control[: states.shape[0]]
+    elif control.shape[0] < states.shape[0]:
+        pad = states.shape[0] - control.shape[0]
+        control = np.pad(control, (0, pad), mode="edge")
+    return states, control
+
+
 def plot_scaled_features(
     input_path: Path,
     output_path: Path | None = None,
@@ -61,6 +90,10 @@ def plot_scaled_features(
             split: _collect_samples(h5f, split=split, max_samples=max_samples, seed=seed)
             for split in splits
         }
+        profiles_by_split = {}
+        for split in splits:
+            x_data, y_data = _load_first_profile(h5f, split)
+            profiles_by_split[split] = _reconstruct_profile(x_data, y_data)
 
     fig, axes = plt.subplots(7, 2, figsize=(12, 18), sharex=False)
     axes = axes.flatten()
@@ -87,6 +120,27 @@ def plot_scaled_features(
 
     fig.savefig(output_path, dpi=200)
     plt.close(fig)
+
+    profile_fig, profile_axes = plt.subplots(7, 2, figsize=(12, 18), sharex=False)
+    profile_axes = profile_axes.flatten()
+    for idx, ax in enumerate(profile_axes):
+        for split, color in zip(splits, ("red", "yellow", "green"), strict=False):
+            states, control = profiles_by_split[split]
+            if idx < states.shape[1]:
+                series = states[:, idx]
+            else:
+                series = control
+            ax.plot(series, color=color, alpha=0.7, label=split)
+        ax.set_title(feature_labels[idx])
+        ax.grid(True, alpha=0.2)
+        if idx == 0:
+            ax.legend()
+
+    profile_fig.suptitle("Scaled feature profiles by split (time series)", fontsize=14)
+    profile_fig.tight_layout(rect=[0, 0.03, 1, 0.98])
+    profile_output = output_path.with_name(f"{input_path.stem}_all_splits_profiles.png")
+    profile_fig.savefig(profile_output, dpi=200)
+    plt.close(profile_fig)
     return output_path
 
 
