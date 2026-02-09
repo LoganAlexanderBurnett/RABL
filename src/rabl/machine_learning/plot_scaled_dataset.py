@@ -38,16 +38,18 @@ def _collect_samples(
     return np.concatenate(samples, axis=0)
 
 
-def _load_first_profile(
+def _load_split_profiles(
     h5f: h5py.File,
     split: str,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> list[tuple[np.ndarray, np.ndarray]]:
     files_group = h5f.get(f"{split}/files")
     if files_group is None or len(files_group.keys()) == 0:
         raise ValueError(f"Missing '{split}/files' group in dataset.")
-    first_key = sorted(files_group.keys())[0]
-    file_group = files_group[first_key]
-    return file_group["X"][()], file_group["Y"][()]
+    profiles: list[tuple[np.ndarray, np.ndarray]] = []
+    for file_key in sorted(files_group.keys()):
+        file_group = files_group[file_key]
+        profiles.append((file_group["X"][()], file_group["Y"][()]))
+    return profiles
 
 
 def _reconstruct_profile(
@@ -90,10 +92,12 @@ def plot_scaled_features(
             split: _collect_samples(h5f, split=split, max_samples=max_samples, seed=seed)
             for split in splits
         }
-        profiles_by_split = {}
+        profiles_by_split: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
         for split in splits:
-            x_data, y_data = _load_first_profile(h5f, split)
-            profiles_by_split[split] = _reconstruct_profile(x_data, y_data)
+            split_profiles = _load_split_profiles(h5f, split)
+            profiles_by_split[split] = [
+                _reconstruct_profile(x_data, y_data) for x_data, y_data in split_profiles
+            ]
 
     fig, axes = plt.subplots(7, 2, figsize=(12, 18), sharex=False)
     axes = axes.flatten()
@@ -125,12 +129,13 @@ def plot_scaled_features(
     profile_axes = profile_axes.flatten()
     for idx, ax in enumerate(profile_axes):
         for split, color in zip(splits, ("red", "yellow", "green"), strict=False):
-            states, control = profiles_by_split[split]
-            if idx < states.shape[1]:
-                series = states[:, idx]
-            else:
-                series = control
-            ax.plot(series, color=color, alpha=0.7, label=split)
+            for profile_idx, (states, control) in enumerate(profiles_by_split[split]):
+                if idx < states.shape[1]:
+                    series = states[:, idx]
+                else:
+                    series = control
+                label = split if profile_idx == 0 else "_nolegend_"
+                ax.plot(series, color=color, alpha=0.35, label=label)
         ax.set_title(feature_labels[idx])
         ax.grid(True, alpha=0.2)
         if idx == 0:
