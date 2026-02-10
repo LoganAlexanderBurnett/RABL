@@ -157,7 +157,7 @@ def main() -> None:
     )
 
     runner = DymolaBatchRunner(cfg)
-    runner.summary_csv = f"batch_summary_sigmatheta{config["sigma_theta_target"]}-ell{config["ell"]}-seed{config["seed"]}.csv"
+    runner.summary_csv = f"batch_summary_sigmatheta{config['sigma_theta_target']}-ell{config['ell']}-seed{config['seed']}.csv"
     runner.start()
     try:
         runner.run_all()
