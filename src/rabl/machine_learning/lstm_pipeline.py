@@ -44,6 +44,9 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Iterable
 
+import os
+import random
+
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
@@ -81,6 +84,26 @@ TARGET_NAMES: list[str] = [
 # --------------------------------------------------------------------------------------
 # Device selection
 # --------------------------------------------------------------------------------------
+
+def set_global_determinism(seed: int) -> None:
+    """
+    Configure Python/NumPy/PyTorch RNG state for reproducible runs.
+    Uses deterministic CUDA/cuDNN behavior when available.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=True)
+
 
 def choose_device_prefer_gpu() -> torch.device:
     """
@@ -531,6 +554,7 @@ def train_model(
     learning_rate: float = 1e-3,
     verbose: int = 1,
     preload_train_to_device: bool = False,
+    deterministic_seed: int | None = None,
 ) -> tuple[nn.Module, dict[str, list[float]], Path]:
     """
     Train the LSTM and save a train/val curve plot.
@@ -541,6 +565,11 @@ def train_model(
 
     if training_device is None:
         training_device = choose_device_prefer_gpu()
+
+    resolved_seed = int(datasets.get("seed", 0)) if deterministic_seed is None else int(deterministic_seed)
+    set_global_determinism(resolved_seed)
+    if verbose:
+        print(f"Deterministic seed set to: {resolved_seed}")
 
     model = build_model(
         timesteps,
@@ -671,6 +700,7 @@ def train_with_fallback(
     learning_rate: float = 1e-3,
     prefer_gpu: bool = True,
     preload_train_to_device: bool = False,
+    deterministic_seed: int | None = None,
 ) -> tuple[nn.Module, dict[str, list[float]], torch.device]:
     """
     Try GPU first (if prefer_gpu). If anything fails, retry on CPU.
@@ -695,6 +725,7 @@ def train_with_fallback(
             fc_hidden=fc_hidden,
             learning_rate=learning_rate,
             preload_train_to_device=preload_train_to_device,
+            deterministic_seed=deterministic_seed,
         )
         return model, history, preferred
     except Exception as e:
@@ -715,6 +746,7 @@ def train_with_fallback(
         fc_hidden=fc_hidden,
         learning_rate=learning_rate,
         preload_train_to_device=False,
+        deterministic_seed=deterministic_seed,
     )
     return model, history, torch.device("cpu")
 
@@ -1146,6 +1178,7 @@ class LSTMPipeline:
         out_dir: Path = Path("outputs"),
         prefer_gpu: bool = True,
         preload_train_to_device: bool = False,
+        deterministic_seed: int | None = None,
     ):
 
         if self.datasets is None:
@@ -1162,6 +1195,7 @@ class LSTMPipeline:
             learning_rate=self.config.learning_rate,
             prefer_gpu=prefer_gpu,
             preload_train_to_device=preload_train_to_device,
+            deterministic_seed=self.config.seed if deterministic_seed is None else deterministic_seed,
         )
 
     def sample_test_profile(self):
