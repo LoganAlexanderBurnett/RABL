@@ -7,5 +7,5 @@
 __pycache__/
 *.pyc
 
-# store datasets locally, not in remote repo
-outputs/datasets/
+# store outputs/datasets locally, not in remote repo
+outputs/
