@@ -639,6 +639,22 @@ def train_model(
     plt.savefig(resolved_plot_path, dpi=150)
     print(f"Saved training curves to {resolved_plot_path}")
 
+    if verbose:
+        total_data_wait_s = float(sum(history["data_wait_time"]))
+        total_h2d_s = float(sum(history["h2d_time"]))
+        total_compute_s = float(sum(history["compute_time"]))
+        total_val_s = float(sum(history["val_time"]))
+        total_train_epoch_s = total_data_wait_s + total_h2d_s + total_compute_s
+        total_wall_estimate_s = preload_time_s + total_train_epoch_s + total_val_s
+        print("\nTiming summary (cumulative):")
+        print(f"  preload_time: {preload_time_s:.2f}s")
+        print(f"  train_data_wait_time: {total_data_wait_s:.2f}s")
+        print(f"  train_h2d_time: {total_h2d_s:.2f}s")
+        print(f"  train_compute_time: {total_compute_s:.2f}s")
+        print(f"  train_epoch_time_total: {total_train_epoch_s:.2f}s")
+        print(f"  val_time_total: {total_val_s:.2f}s")
+        print(f"  estimated_total_time: {total_wall_estimate_s:.2f}s")
+
     return model, history, resolved_plot_path
 
 
