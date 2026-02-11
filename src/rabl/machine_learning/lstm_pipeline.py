@@ -555,9 +555,21 @@ def train_model(
     verbose: int = 1,
     preload_train_to_device: bool = False,
     deterministic_seed: int | None = None,
+    early_stopping_patience: int | None = None,
+    early_stopping_min_delta: float = 0.0,
+    restore_best_weights: bool = True,
 ) -> tuple[nn.Module, dict[str, list[float]], Path]:
     """
     Train the LSTM and save a train/val curve plot.
+
+    Args:
+        early_stopping_patience: If set to a positive integer, stop training when
+            validation loss does not improve by more than `early_stopping_min_delta`
+            for this many consecutive epochs.
+        early_stopping_min_delta: Minimum decrease in validation loss required to
+            count as an improvement.
+        restore_best_weights: When early stopping is enabled, restore model weights
+            from the best validation-loss epoch before returning.
     """
     timesteps = int(datasets["sample_shape"][1])
     num_features = int(datasets["sample_shape"][2])
@@ -592,6 +604,16 @@ def train_model(
         "compute_time": [],
         "val_time": [],
     }
+
+    if early_stopping_patience is not None and early_stopping_patience <= 0:
+        raise ValueError("early_stopping_patience must be > 0 when provided.")
+    if early_stopping_min_delta < 0:
+        raise ValueError("early_stopping_min_delta must be >= 0.")
+
+    best_val_loss = float("inf")
+    best_state_dict: dict[str, torch.Tensor] | None = None
+    epochs_without_improvement = 0
+    best_epoch = 0
 
     train_source: Iterable[tuple[torch.Tensor, torch.Tensor]] = datasets["train"]
     preloaded_in_gpu = False
@@ -651,6 +673,37 @@ def train_model(
                 f"- max_cuda_mem: {mem_mb:.2f} MB"
             )
 
+        if early_stopping_patience is not None:
+            if val_loss < (best_val_loss - early_stopping_min_delta):
+                best_val_loss = val_loss
+                best_epoch = epoch
+                epochs_without_improvement = 0
+                if restore_best_weights:
+                    best_state_dict = {
+                        key: value.detach().cpu().clone() for key, value in model.state_dict().items()
+                    }
+            else:
+                epochs_without_improvement += 1
+                if verbose:
+                    print(
+                        "Early stopping check: "
+                        f"{epochs_without_improvement}/{early_stopping_patience} "
+                        "epochs without validation improvement."
+                    )
+                if epochs_without_improvement >= early_stopping_patience:
+                    if verbose:
+                        print(
+                            "Early stopping triggered at "
+                            f"epoch {epoch}; best validation loss was {best_val_loss:.6f} "
+                            f"at epoch {best_epoch}."
+                        )
+                    break
+
+    if early_stopping_patience is not None and restore_best_weights and best_state_dict is not None:
+        model.load_state_dict(best_state_dict)
+        if verbose:
+            print(f"Restored best model weights from epoch {best_epoch}.")
+
     resolved_plot_path = Path(plot_path) if plot_path is not None else None
     if resolved_plot_path is None:
         resolved_plot_path = Path("outputs") / "plots" / "lstm_training_curves.png"
@@ -701,6 +754,9 @@ def train_with_fallback(
     prefer_gpu: bool = True,
     preload_train_to_device: bool = False,
     deterministic_seed: int | None = None,
+    early_stopping_patience: int | None = None,
+    early_stopping_min_delta: float = 0.0,
+    restore_best_weights: bool = True,
 ) -> tuple[nn.Module, dict[str, list[float]], torch.device]:
     """
     Try GPU first (if prefer_gpu). If anything fails, retry on CPU.
@@ -726,6 +782,9 @@ def train_with_fallback(
             learning_rate=learning_rate,
             preload_train_to_device=preload_train_to_device,
             deterministic_seed=deterministic_seed,
+            early_stopping_patience=early_stopping_patience,
+            early_stopping_min_delta=early_stopping_min_delta,
+            restore_best_weights=restore_best_weights,
         )
         return model, history, preferred
     except Exception as e:
@@ -747,6 +806,9 @@ def train_with_fallback(
         learning_rate=learning_rate,
         preload_train_to_device=False,
         deterministic_seed=deterministic_seed,
+        early_stopping_patience=early_stopping_patience,
+        early_stopping_min_delta=early_stopping_min_delta,
+        restore_best_weights=restore_best_weights,
     )
     return model, history, torch.device("cpu")
 
@@ -1179,6 +1241,9 @@ class LSTMPipeline:
         prefer_gpu: bool = True,
         preload_train_to_device: bool = False,
         deterministic_seed: int | None = None,
+        early_stopping_patience: int | None = None,
+        early_stopping_min_delta: float = 0.0,
+        restore_best_weights: bool = True,
     ):
 
         if self.datasets is None:
@@ -1196,6 +1261,9 @@ class LSTMPipeline:
             prefer_gpu=prefer_gpu,
             preload_train_to_device=preload_train_to_device,
             deterministic_seed=self.config.seed if deterministic_seed is None else deterministic_seed,
+            early_stopping_patience=early_stopping_patience,
+            early_stopping_min_delta=early_stopping_min_delta,
+            restore_best_weights=restore_best_weights,
         )
 
     def sample_test_profile(self):
