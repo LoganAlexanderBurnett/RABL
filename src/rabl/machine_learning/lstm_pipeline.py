@@ -44,6 +44,9 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Iterable
 
+import os
+import random
+
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
@@ -81,6 +84,26 @@ TARGET_NAMES: list[str] = [
 # --------------------------------------------------------------------------------------
 # Device selection
 # --------------------------------------------------------------------------------------
+
+def set_global_determinism(seed: int) -> None:
+    """
+    Configure Python/NumPy/PyTorch RNG state for reproducible runs.
+    Uses deterministic CUDA/cuDNN behavior when available.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=True)
+
 
 def choose_device_prefer_gpu() -> torch.device:
     """
@@ -406,18 +429,20 @@ def build_model(
 
 def _train_one_epoch(
     model: nn.Module,
-    loader: DataLoader,
+    loader: Iterable[tuple[torch.Tensor, torch.Tensor]],
     optimizer: torch.optim.Optimizer,
     loss_fn: nn.Module,
     device: torch.device,
     *,
     epoch: int,
     total_epochs: int,
-) -> tuple[float, float, float, int]:
+    data_already_on_device: bool = False,
+) -> tuple[float, float, float, float, int]:
     model.train()
     total_loss = 0.0
     num_batches = 0
-    data_time_s = 0.0
+    data_wait_time_s = 0.0
+    h2d_time_s = 0.0
     compute_time_s = 0.0
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
@@ -431,31 +456,56 @@ def _train_one_epoch(
         desc=f"Train {epoch}/{total_epochs}",
         unit="batch",
     )
+    fetch_start = perf_counter()
     for x_batch, y_batch in progress:
-        fetch_start = perf_counter()
-        data_time_s += perf_counter() - fetch_start
+        data_wait_time_s += perf_counter() - fetch_start
+
+        transfer_start = perf_counter()
+        if not data_already_on_device:
+            x_batch = x_batch.to(device, non_blocking=True)
+            y_batch = y_batch.to(device, non_blocking=True)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+        h2d_time_s += perf_counter() - transfer_start
 
         compute_start = perf_counter()
-        x_batch = x_batch.to(device, non_blocking=True)
-        y_batch = y_batch.to(device, non_blocking=True)
         optimizer.zero_grad()
         preds = model(x_batch)
         loss = loss_fn(preds, y_batch)
         loss.backward()
         optimizer.step()
 
-        if device == "cuda":
+        if device.type == "cuda":
             torch.cuda.synchronize(device)
 
         total_loss += float(loss.item())
         compute_time_s += perf_counter() - compute_start
         num_batches += 1
         progress.set_postfix(loss=f"{loss.item():.6f}")
+        fetch_start = perf_counter()
     progress.close()
     max_mem = 0
     if device.type == "cuda":
         max_mem = int(torch.cuda.max_memory_allocated(device))
-    return total_loss / max(1, num_batches), data_time_s, compute_time_s, max_mem
+    return total_loss / max(1, num_batches), data_wait_time_s, h2d_time_s, compute_time_s, max_mem
+
+
+def _preload_train_batches_to_device(
+    loader: DataLoader,
+    device: torch.device,
+) -> tuple[list[tuple[torch.Tensor, torch.Tensor]], float]:
+    """
+    Materialize training batches onto `device` once so subsequent epochs avoid per-batch H2D copies.
+    Returns (batches_on_device, preload_time_seconds).
+    """
+    preloaded_batches: list[tuple[torch.Tensor, torch.Tensor]] = []
+    preload_start = perf_counter()
+    for x_batch, y_batch in tqdm(loader, desc="Preloading train batches", unit="batch"):
+        preloaded_batches.append((x_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True)))
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    preload_time_s = perf_counter() - preload_start
+    return preloaded_batches, preload_time_s
 
 
 def _evaluate(
@@ -503,6 +553,8 @@ def train_model(
     fc_hidden: tuple[int, ...] = (64,),
     learning_rate: float = 1e-3,
     verbose: int = 1,
+    preload_train_to_device: bool = False,
+    deterministic_seed: int | None = None,
 ) -> tuple[nn.Module, dict[str, list[float]], Path]:
     """
     Train the LSTM and save a train/val curve plot.
@@ -513,6 +565,11 @@ def train_model(
 
     if training_device is None:
         training_device = choose_device_prefer_gpu()
+
+    resolved_seed = int(datasets.get("seed", 0)) if deterministic_seed is None else int(deterministic_seed)
+    set_global_determinism(resolved_seed)
+    if verbose:
+        print(f"Deterministic seed set to: {resolved_seed}")
 
     model = build_model(
         timesteps,
@@ -527,16 +584,38 @@ def train_model(
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     loss_fn = nn.MSELoss()
 
-    history = {"loss": [], "val_loss": []}
+    history = {
+        "loss": [],
+        "val_loss": [],
+        "data_wait_time": [],
+        "h2d_time": [],
+        "compute_time": [],
+        "val_time": [],
+    }
+
+    train_source: Iterable[tuple[torch.Tensor, torch.Tensor]] = datasets["train"]
+    preloaded_in_gpu = False
+    preload_time_s = 0.0
+    if preload_train_to_device:
+        if training_device.type != "cuda":
+            print("preload_train_to_device=True requested, but training device is CPU. Skipping preload.")
+        else:
+            train_source, preload_time_s = _preload_train_batches_to_device(datasets["train"], training_device)
+            preloaded_in_gpu = True
+            print(
+                f"Preloaded {len(train_source)} training batches to {training_device} in {preload_time_s:.2f}s."
+            )
+
     for epoch in range(1, epochs + 1):
-        train_loss, data_time_s, compute_time_s, max_mem = _train_one_epoch(
+        train_loss, data_wait_time_s, h2d_time_s, compute_time_s, max_mem = _train_one_epoch(
             model,
-            datasets["train"],
+            train_source,
             optimizer,
             loss_fn,
             training_device,
             epoch=epoch,
             total_epochs=epochs,
+            data_already_on_device=preloaded_in_gpu,
         )
 
         if training_device.type =="cuda":
@@ -558,12 +637,17 @@ def train_model(
         
         history["loss"].append(train_loss)
         history["val_loss"].append(val_loss)
+        history["data_wait_time"].append(data_wait_time_s)
+        history["h2d_time"].append(h2d_time_s)
+        history["compute_time"].append(compute_time_s)
+        history["val_time"].append(val_time_s)
         if verbose:
             mem_mb = max_mem / (1024**2)
             print(
                 f"Epoch {epoch}/{epochs} - loss: {train_loss:.6f} - val_loss: {val_loss:.6f} "
-                f"- data_time: {data_time_s:.2f}s - compute_time: {compute_time_s:.2f}s "
-                f"- val_time: {val_time_s:.2f}s "
+                f"- data_wait: {data_wait_time_s:.2f}s - h2d: {h2d_time_s:.2f}s "
+                f"- compute: {compute_time_s:.2f}s - val_time: {val_time_s:.2f}s "
+                f"- preloaded: {preloaded_in_gpu} - preload_time: {preload_time_s:.2f}s "
                 f"- max_cuda_mem: {mem_mb:.2f} MB"
             )
 
@@ -584,6 +668,22 @@ def train_model(
     plt.savefig(resolved_plot_path, dpi=150)
     print(f"Saved training curves to {resolved_plot_path}")
 
+    if verbose:
+        total_data_wait_s = float(sum(history["data_wait_time"]))
+        total_h2d_s = float(sum(history["h2d_time"]))
+        total_compute_s = float(sum(history["compute_time"]))
+        total_val_s = float(sum(history["val_time"]))
+        total_train_epoch_s = total_data_wait_s + total_h2d_s + total_compute_s
+        total_wall_estimate_s = preload_time_s + total_train_epoch_s + total_val_s
+        print("\nTiming summary (cumulative):")
+        print(f"  preload_time: {preload_time_s:.2f}s")
+        print(f"  train_data_wait_time: {total_data_wait_s:.2f}s")
+        print(f"  train_h2d_time: {total_h2d_s:.2f}s")
+        print(f"  train_compute_time: {total_compute_s:.2f}s")
+        print(f"  train_epoch_time_total: {total_train_epoch_s:.2f}s")
+        print(f"  val_time_total: {total_val_s:.2f}s")
+        print(f"  estimated_total_time: {total_wall_estimate_s:.2f}s")
+
     return model, history, resolved_plot_path
 
 
@@ -599,6 +699,8 @@ def train_with_fallback(
     fc_hidden: tuple[int, ...] = (64,),
     learning_rate: float = 1e-3,
     prefer_gpu: bool = True,
+    preload_train_to_device: bool = False,
+    deterministic_seed: int | None = None,
 ) -> tuple[nn.Module, dict[str, list[float]], torch.device]:
     """
     Try GPU first (if prefer_gpu). If anything fails, retry on CPU.
@@ -622,6 +724,8 @@ def train_with_fallback(
             n_fc=n_fc,
             fc_hidden=fc_hidden,
             learning_rate=learning_rate,
+            preload_train_to_device=preload_train_to_device,
+            deterministic_seed=deterministic_seed,
         )
         return model, history, preferred
     except Exception as e:
@@ -641,6 +745,8 @@ def train_with_fallback(
         n_fc=n_fc,
         fc_hidden=fc_hidden,
         learning_rate=learning_rate,
+        preload_train_to_device=False,
+        deterministic_seed=deterministic_seed,
     )
     return model, history, torch.device("cpu")
 
@@ -1065,7 +1171,16 @@ class LSTMPipeline:
             self.build()
         inspect_dataset_shapes(self.datasets)
 
-    def train(self, *, epochs: int = DEFAULT_EPOCHS, out_dir: Path = Path("outputs"), prefer_gpu: bool = True):
+    def train(
+        self,
+        *,
+        epochs: int = DEFAULT_EPOCHS,
+        out_dir: Path = Path("outputs"),
+        prefer_gpu: bool = True,
+        preload_train_to_device: bool = False,
+        deterministic_seed: int | None = None,
+    ):
+
         if self.datasets is None:
             self.build()
         return train_with_fallback(
@@ -1079,6 +1194,8 @@ class LSTMPipeline:
             fc_hidden=self.config.fc_hidden,
             learning_rate=self.config.learning_rate,
             prefer_gpu=prefer_gpu,
+            preload_train_to_device=preload_train_to_device,
+            deterministic_seed=self.config.seed if deterministic_seed is None else deterministic_seed,
         )
 
     def sample_test_profile(self):
