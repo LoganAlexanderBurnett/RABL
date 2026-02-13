@@ -552,6 +552,8 @@ def train_model(
     n_fc: int = 1,
     fc_hidden: tuple[int, ...] = (64,),
     learning_rate: float = 1e-3,
+    step_lr_step_size: int = 30,
+    step_lr_gamma: float = 0.5,
     verbose: int = 1,
     preload_train_to_device: bool = False,
     deterministic_seed: int | None = None,
@@ -594,11 +596,17 @@ def train_model(
         fc_hidden=fc_hidden,
     ).to(training_device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=step_lr_step_size,
+        gamma=step_lr_gamma,
+    )
     loss_fn = nn.MSELoss()
 
     history = {
         "loss": [],
         "val_loss": [],
+        "lr": [],
         "data_wait_time": [],
         "h2d_time": [],
         "compute_time": [],
@@ -656,9 +664,13 @@ def train_model(
         if training_device.type == "cuda":
             torch.cuda.synchronize(training_device)
         val_time_s = perf_counter() - val_start
+
+        scheduler.step()
+        current_lr = float(optimizer.param_groups[0]["lr"])
         
         history["loss"].append(train_loss)
         history["val_loss"].append(val_loss)
+        history["lr"].append(current_lr)
         history["data_wait_time"].append(data_wait_time_s)
         history["h2d_time"].append(h2d_time_s)
         history["compute_time"].append(compute_time_s)
@@ -667,6 +679,7 @@ def train_model(
             mem_mb = max_mem / (1024**2)
             print(
                 f"Epoch {epoch}/{epochs} - loss: {train_loss:.9f} - val_loss: {val_loss:.9f} "
+                f"- lr: {current_lr:.3e} "
                 f"- data_wait: {data_wait_time_s:.2f}s - h2d: {h2d_time_s:.2f}s "
                 f"- compute: {compute_time_s:.2f}s - val_time: {val_time_s:.2f}s "
                 f"- preloaded: {preloaded_in_gpu} - preload_time: {preload_time_s:.2f}s "
@@ -722,6 +735,19 @@ def train_model(
     plt.savefig(resolved_plot_path, dpi=150)
     print(f"Saved training curves to {resolved_plot_path}")
 
+    resolved_lr_plot_path = resolved_plot_path.with_name("lstm_lr_curve.png")
+    epochs_range = range(1, len(history["lr"]) + 1)
+    plt.figure(figsize=(10, 6))
+    plt.plot(epochs_range, history["lr"], label="Learning Rate")
+    plt.xlabel("Epoch")
+    plt.ylabel("Learning Rate")
+    plt.title("Learning Rate Schedule (StepLR)")
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+    plt.savefig(resolved_lr_plot_path, dpi=150)
+    print(f"Saved learning-rate curve to {resolved_lr_plot_path}")
+
     if verbose:
         total_data_wait_s = float(sum(history["data_wait_time"]))
         total_h2d_s = float(sum(history["h2d_time"]))
@@ -752,6 +778,8 @@ def train_with_fallback(
     n_fc: int = 1,
     fc_hidden: tuple[int, ...] = (64,),
     learning_rate: float = 1e-3,
+    step_lr_step_size: int = 30,
+    step_lr_gamma: float = 0.5,
     prefer_gpu: bool = True,
     preload_train_to_device: bool = False,
     deterministic_seed: int | None = None,
@@ -781,6 +809,8 @@ def train_with_fallback(
             n_fc=n_fc,
             fc_hidden=fc_hidden,
             learning_rate=learning_rate,
+            step_lr_step_size=step_lr_step_size,
+            step_lr_gamma=step_lr_gamma,
             preload_train_to_device=preload_train_to_device,
             deterministic_seed=deterministic_seed,
             early_stopping_patience=early_stopping_patience,
@@ -805,6 +835,8 @@ def train_with_fallback(
         n_fc=n_fc,
         fc_hidden=fc_hidden,
         learning_rate=learning_rate,
+        step_lr_step_size=step_lr_step_size,
+        step_lr_gamma=step_lr_gamma,
         preload_train_to_device=False,
         deterministic_seed=deterministic_seed,
         early_stopping_patience=early_stopping_patience,
@@ -1245,6 +1277,8 @@ class LSTMPipeline:
         early_stopping_patience: int | None = None,
         early_stopping_min_delta: float = 0.0,
         restore_best_weights: bool = True,
+        step_lr_step_size: int = 30,
+        step_lr_gamma: float = 0.5,
     ):
 
         if self.datasets is None:
@@ -1259,6 +1293,8 @@ class LSTMPipeline:
             n_fc=self.config.n_fc,
             fc_hidden=self.config.fc_hidden,
             learning_rate=self.config.learning_rate,
+            step_lr_step_size=step_lr_step_size,
+            step_lr_gamma=step_lr_gamma,
             prefer_gpu=prefer_gpu,
             preload_train_to_device=preload_train_to_device,
             deterministic_seed=self.config.seed if deterministic_seed is None else deterministic_seed,
