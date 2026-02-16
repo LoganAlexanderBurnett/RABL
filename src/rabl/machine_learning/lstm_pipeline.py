@@ -46,6 +46,7 @@ from typing import Any, Callable, Iterable
 
 import os
 import random
+import gc
 
 import h5py
 import matplotlib.pyplot as plt
@@ -124,6 +125,30 @@ def clear_cuda_cache() -> None:
     """
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def cleanup_cuda(model: nn.Module | None, used_device: torch.device | str | None = None) -> None:
+    """
+    Release model references and aggressively clean CUDA memory.
+
+    This should be called only after caller-side references are dropped as well
+    (for example, caller does ``del model`` immediately after calling this helper).
+    """
+    del model
+    gc.collect()
+
+    device_str = "" if used_device is None else str(used_device).lower()
+    if "cuda" in device_str and torch.cuda.is_available():
+        torch.cuda.synchronize()
+        clear_cuda_cache()
+        torch.cuda.ipc_collect()
+        gc.collect()
+        clear_cuda_cache()
+
+
+def clean_cuda(model: nn.Module | None, used_device: torch.device | str | None = None) -> None:
+    """Backward-compatible alias for :func:`cleanup_cuda`."""
+    cleanup_cuda(model, used_device)
 
 
 # --------------------------------------------------------------------------------------
@@ -780,6 +805,7 @@ def train_with_fallback(
     learning_rate: float = 1e-3,
     step_lr_step_size: int = 30,
     step_lr_gamma: float = 0.5,
+    verbose: int = 1,
     prefer_gpu: bool = True,
     preload_train_to_device: bool = False,
     deterministic_seed: int | None = None,
@@ -811,6 +837,7 @@ def train_with_fallback(
             learning_rate=learning_rate,
             step_lr_step_size=step_lr_step_size,
             step_lr_gamma=step_lr_gamma,
+            verbose=verbose,
             preload_train_to_device=preload_train_to_device,
             deterministic_seed=deterministic_seed,
             early_stopping_patience=early_stopping_patience,
@@ -837,6 +864,7 @@ def train_with_fallback(
         learning_rate=learning_rate,
         step_lr_step_size=step_lr_step_size,
         step_lr_gamma=step_lr_gamma,
+        verbose=verbose,
         preload_train_to_device=False,
         deterministic_seed=deterministic_seed,
         early_stopping_patience=early_stopping_patience,
@@ -1288,6 +1316,7 @@ class LSTMPipeline:
         restore_best_weights: bool = True,
         step_lr_step_size: int = 30,
         step_lr_gamma: float = 0.5,
+        verbose: int = 1,
     ):
 
         if self.datasets is None:
@@ -1304,6 +1333,7 @@ class LSTMPipeline:
             learning_rate=self.config.learning_rate,
             step_lr_step_size=step_lr_step_size,
             step_lr_gamma=step_lr_gamma,
+            verbose=verbose,
             prefer_gpu=prefer_gpu,
             preload_train_to_device=preload_train_to_device,
             deterministic_seed=self.config.seed if deterministic_seed is None else deterministic_seed,
