@@ -13,7 +13,7 @@ from itertools import product
 from pathlib import Path
 from typing import Any
 
-from rabl.machine_learning.lstm_pipeline import build_datasets, train_with_fallback
+from rabl.machine_learning.lstm_pipeline import build_datasets, cleanup_cuda, train_with_fallback
 
 
 @dataclass(slots=True)
@@ -174,6 +174,8 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
             trial_dir=str(trial_dir),
         )
         results.append(result)
+
+        cleanup_cuda(_model, used_device)
 
     best_result = min(results, key=lambda item: item.best_val_loss)
 
