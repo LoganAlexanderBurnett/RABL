@@ -126,6 +126,12 @@ def clear_cuda_cache() -> None:
         torch.cuda.empty_cache()
 
 
+def cleanup_cuda_after_model_release(used_device: torch.device | str) -> None:
+    """Clear CUDA cache after model references are dropped (e.g., call ``del model`` first)."""
+    if "cuda" in str(used_device).lower():
+        clear_cuda_cache()
+
+
 # --------------------------------------------------------------------------------------
 # HDF5 helpers
 # --------------------------------------------------------------------------------------
@@ -786,6 +792,7 @@ def train_with_fallback(
     early_stopping_patience: int | None = None,
     early_stopping_min_delta: float = 0.0,
     restore_best_weights: bool = True,
+    verbose: int = 1,
 ) -> tuple[nn.Module, dict[str, list[float]], torch.device]:
     """
     Try GPU first (if prefer_gpu). If anything fails, retry on CPU.
@@ -811,6 +818,7 @@ def train_with_fallback(
             learning_rate=learning_rate,
             step_lr_step_size=step_lr_step_size,
             step_lr_gamma=step_lr_gamma,
+            verbose=verbose,
             preload_train_to_device=preload_train_to_device,
             deterministic_seed=deterministic_seed,
             early_stopping_patience=early_stopping_patience,
@@ -837,6 +845,7 @@ def train_with_fallback(
         learning_rate=learning_rate,
         step_lr_step_size=step_lr_step_size,
         step_lr_gamma=step_lr_gamma,
+        verbose=verbose,
         preload_train_to_device=False,
         deterministic_seed=deterministic_seed,
         early_stopping_patience=early_stopping_patience,
@@ -1279,6 +1288,7 @@ class LSTMPipeline:
         restore_best_weights: bool = True,
         step_lr_step_size: int = 30,
         step_lr_gamma: float = 0.5,
+        verbose: int = 1,
     ):
 
         if self.datasets is None:
@@ -1295,6 +1305,7 @@ class LSTMPipeline:
             learning_rate=self.config.learning_rate,
             step_lr_step_size=step_lr_step_size,
             step_lr_gamma=step_lr_gamma,
+            verbose=verbose,
             prefer_gpu=prefer_gpu,
             preload_train_to_device=preload_train_to_device,
             deterministic_seed=self.config.seed if deterministic_seed is None else deterministic_seed,
