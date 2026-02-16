@@ -943,7 +943,9 @@ def save_rolling_forecasts_hdf5(
         for entry in forecasts:
             group = h5f.create_group(entry["profile"])
             group.create_dataset("data", data=entry["table"])
-            group.create_dataset("mse", data=entry["mse"])
+            group.create_dataset("mae", data=entry["mae"])
+            group.create_dataset("rmse", data=entry["rmse"])
+            group.create_dataset("mape", data=entry["mape"])
             group.attrs["columns"] = column_attr
 
 
@@ -997,13 +999,20 @@ def test_and_save_forecasts(
             control_idx = state_dim + control_channel
             u_series = _descale_feature_from_stats(scaling_stats, u_series, control_idx)
         table = _assemble_forecast_table(t_series, u_series, y_true, y_pred_out)
-        mse = float(np.mean((y_true - y_pred_out) ** 2))
+        abs_error = np.abs(y_true - y_pred_out)
+        mae = np.mean(abs_error, axis=0).astype(np.float32)
+        rmse = np.sqrt(np.mean((y_true - y_pred_out) ** 2, axis=0)).astype(np.float32)
+        denominator = np.where(np.abs(y_true) > 1e-8, np.abs(y_true), np.nan)
+        mape = np.nanmean(abs_error / denominator, axis=0)
+        mape = np.nan_to_num(mape, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32) * 100.0
 
         forecasts.append(
             {
                 "profile": str(profile_name),
                 "table": table,
-                "mse": mse,
+                "mae": mae,
+                "rmse": rmse,
+                "mape": mape,
             }
         )
         if plot_callback is not None and len(forecasts) <= max_plots:
@@ -1022,7 +1031,7 @@ def test_and_save_forecasts(
                 title=f"Rolling Forecast - {profile_name}",
                 save_path=save_path,
             )
-        progress.set_postfix(mse=f"{mse:.6e}")
+        progress.set_postfix(mae_avg=f"{float(np.mean(mae)):.6e}")
     progress.close()
 
     save_start = perf_counter()

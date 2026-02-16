@@ -13,7 +13,14 @@ from itertools import product
 from pathlib import Path
 from typing import Any
 
-from rabl.machine_learning.lstm_pipeline import build_datasets, train_with_fallback
+import torch
+
+from rabl.machine_learning.lstm_pipeline import (
+    build_datasets,
+    build_model,
+    test_and_save_forecasts,
+    train_with_fallback,
+)
 
 
 @dataclass(slots=True)
@@ -33,6 +40,7 @@ class GridSearchConfig:
     early_stopping_patience: int | None = None
     early_stopping_min_delta: float = 0.0
     restore_best_weights: bool = True
+    test_output_dirname: str = "best_model_test"
 
 
 @dataclass(slots=True)
@@ -48,6 +56,7 @@ class TrialResult:
     final_val_loss: float
     used_device: str
     trial_dir: str
+    weights_path: str
 
 
 def _parse_lookback_entry(raw: str) -> tuple[int, Path]:
@@ -133,7 +142,7 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
         )
 
         datasets = build_datasets(h5_path=dataset_path, batch_size=batch_size, seed=config.seed)
-        _model, history, used_device = train_with_fallback(
+        model, history, used_device = train_with_fallback(
             datasets,
             epochs=config.epochs,
             out_dir=trial_dir,
@@ -151,6 +160,9 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
             restore_best_weights=config.restore_best_weights,
         )
 
+        weights_path = trial_dir / "best_model_weights.pt"
+        torch.save(model.state_dict(), weights_path)
+
         best_val_loss = min(history["val_loss"])
         final_val_loss = history["val_loss"][-1]
         result = TrialResult(
@@ -165,6 +177,7 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
             final_val_loss=float(final_val_loss),
             used_device=str(used_device),
             trial_dir=str(trial_dir),
+            weights_path=str(weights_path),
         )
         results.append(result)
 
@@ -188,6 +201,47 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
     print(f"Saved tuning summary to: {config.out_dir / 'grid_search_results.json'}")
 
     return results, best_result
+
+
+def test_best_model(config: GridSearchConfig, best_result: TrialResult) -> dict[str, float]:
+    """Load the best model weights and run test-time rolling forecasts."""
+    dataset_path = Path(best_result.dataset_path)
+    weights_path = Path(best_result.weights_path)
+    if not dataset_path.exists():
+        raise FileNotFoundError(f"Best-trial dataset path not found: {dataset_path}")
+    if not weights_path.exists():
+        raise FileNotFoundError(f"Best-model weights path not found: {weights_path}")
+
+    datasets = build_datasets(
+        h5_path=dataset_path,
+        batch_size=best_result.batch_size,
+        seed=config.seed,
+    )
+    timesteps, num_features = datasets["sample_shape"]
+    num_targets = datasets["target_shape"][-1]
+
+    model = build_model(
+        timesteps=timesteps,
+        num_features=num_features,
+        num_targets=num_targets,
+        n_lstm=best_result.n_lstm,
+        lstm_hidden=best_result.hidden_lstm,
+        lstm_dropout=config.lstm_dropout,
+        n_fc=1,
+        fc_hidden=(best_result.hidden_fc,),
+    )
+    state_dict = torch.load(weights_path, map_location="cpu")
+    model.load_state_dict(state_dict)
+
+    test_out_dir = Path(best_result.trial_dir) / config.test_output_dirname
+    test_metrics = test_and_save_forecasts(
+        model,
+        datasets["test_profile_ds"],
+        out_dir=test_out_dir,
+        h5_path=datasets["h5_path"],
+    )
+    print(f"Saved best-model test outputs to: {test_out_dir}")
+    return test_metrics
 
 
 def parse_args() -> argparse.Namespace:
@@ -248,6 +302,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Only print the number of combinations and exit.",
     )
+    parser.add_argument(
+        "--test-output-dirname",
+        type=str,
+        default="best_model_test",
+        help="Subdirectory under the best trial folder where test forecasts are saved.",
+    )
     return parser.parse_args()
 
 
@@ -271,6 +331,7 @@ def main() -> None:
         early_stopping_patience=args.early_stopping_patience,
         early_stopping_min_delta=args.early_stopping_min_delta,
         restore_best_weights=not args.no_restore_best_weights,
+        test_output_dirname=args.test_output_dirname,
     )
 
     num_combinations = count_grid_combinations(config)
@@ -278,7 +339,8 @@ def main() -> None:
     if args.count_only:
         return
 
-    run_grid_search(config)
+    _results, best_result = run_grid_search(config)
+    test_best_model(config, best_result)
 
 
 if __name__ == "__main__":
