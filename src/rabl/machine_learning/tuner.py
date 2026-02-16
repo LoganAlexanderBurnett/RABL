@@ -13,7 +13,7 @@ from itertools import product
 from pathlib import Path
 from typing import Any
 
-from rabl.machine_learning.lstm_pipeline import build_datasets, cleanup_cuda, train_with_fallback
+from rabl.machine_learning.lstm_pipeline import build_datasets, train_with_fallback
 
 
 @dataclass(slots=True)
@@ -24,19 +24,15 @@ class GridSearchConfig:
     n_lstm_values: list[int]
     hidden_lstm_values: list[int]
     hidden_fc_values: list[int]
-    n_fc: int = 1
     epochs: int = 20
     seed: int = 123
     out_dir: Path = Path("outputs") / "ml_tuning"
     prefer_gpu: bool = True
-    verbose: int = 1
     lstm_dropout: float = 0.0
     preload_train_to_device: bool = False
     early_stopping_patience: int | None = None
     early_stopping_min_delta: float = 0.0
     restore_best_weights: bool = True
-    step_lr_step_size: int = 30
-    step_lr_gamma: float = 0.5
 
 
 @dataclass(slots=True)
@@ -144,12 +140,9 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
             n_lstm=n_lstm,
             lstm_hidden=hidden_lstm,
             lstm_dropout=config.lstm_dropout,
-            n_fc=config.n_fc,
+            n_fc=1,
             fc_hidden=(hidden_fc,),
             learning_rate=learning_rate,
-            step_lr_step_size=config.step_lr_step_size,
-            step_lr_gamma=config.step_lr_gamma,
-            verbose=config.verbose,
             prefer_gpu=config.prefer_gpu,
             preload_train_to_device=config.preload_train_to_device,
             deterministic_seed=config.seed,
@@ -174,8 +167,6 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
             trial_dir=str(trial_dir),
         )
         results.append(result)
-
-        cleanup_cuda(_model, used_device)
 
     best_result = min(results, key=lambda item: item.best_val_loss)
 
@@ -216,11 +207,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-lstm", type=int, nargs="+", required=True, dest="n_lstm_values")
     parser.add_argument("--hidden-lstm", type=int, nargs="+", required=True, dest="hidden_lstm_values")
     parser.add_argument("--hidden-fc", type=int, nargs="+", required=True, dest="hidden_fc_values")
-    parser.add_argument("--n-fc", type=int, default=1, help="Number of fully connected layers in the model head.")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--out-dir", type=Path, default=Path("outputs") / "ml_tuning")
-    parser.add_argument("--verbose", type=int, default=1, help="Verbosity passed through to training.")
     parser.add_argument(
         "--lstm-dropout",
         type=float,
@@ -249,8 +238,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not restore best validation-loss weights at the end of training.",
     )
-    parser.add_argument("--step-lr-step-size", type=int, default=30, help="StepLR step_size.")
-    parser.add_argument("--step-lr-gamma", type=float, default=0.5, help="StepLR gamma.")
     parser.add_argument(
         "--cpu-only",
         action="store_true",
@@ -275,19 +262,15 @@ def main() -> None:
         n_lstm_values=list(args.n_lstm_values),
         hidden_lstm_values=list(args.hidden_lstm_values),
         hidden_fc_values=list(args.hidden_fc_values),
-        n_fc=args.n_fc,
         epochs=args.epochs,
         seed=args.seed,
         out_dir=args.out_dir,
         prefer_gpu=not args.cpu_only,
-        verbose=args.verbose,
         lstm_dropout=args.lstm_dropout,
         preload_train_to_device=args.preload_train_to_device,
         early_stopping_patience=args.early_stopping_patience,
         early_stopping_min_delta=args.early_stopping_min_delta,
         restore_best_weights=not args.no_restore_best_weights,
-        step_lr_step_size=args.step_lr_step_size,
-        step_lr_gamma=args.step_lr_gamma,
     )
 
     num_combinations = count_grid_combinations(config)
