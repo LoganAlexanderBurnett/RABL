@@ -1,0 +1,242 @@
+"""Grid-search tuner for the LSTM training pipeline.
+
+This module performs a Cartesian-product hyperparameter search over pre-built
+LSTM datasets keyed by lookback window size.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from dataclasses import asdict, dataclass
+from itertools import product
+from pathlib import Path
+from typing import Any
+
+from rabl.machine_learning.lstm_pipeline import build_datasets, train_with_fallback
+
+
+@dataclass(slots=True)
+class GridSearchConfig:
+    lookback_datasets: dict[int, Path]
+    learning_rates: list[float]
+    batch_sizes: list[int]
+    n_lstm_values: list[int]
+    hidden_lstm_values: list[int]
+    hidden_fc_values: list[int]
+    epochs: int = 20
+    seed: int = 123
+    out_dir: Path = Path("outputs") / "ml_tuning"
+    prefer_gpu: bool = True
+
+
+@dataclass(slots=True)
+class TrialResult:
+    lookback: int
+    dataset_path: str
+    learning_rate: float
+    batch_size: int
+    n_lstm: int
+    hidden_lstm: int
+    hidden_fc: int
+    best_val_loss: float
+    final_val_loss: float
+    used_device: str
+    trial_dir: str
+
+
+def _parse_lookback_entry(raw: str) -> tuple[int, Path]:
+    """Parse one lookback mapping entry in the form ``LOOKBACK=DATASET_PATH``."""
+    if "=" not in raw:
+        raise ValueError(
+            f"Invalid lookback mapping '{raw}'. Use LOOKBACK=DATASET_PATH (e.g. 8=data/lookback8.h5)."
+        )
+    lookback_str, path_str = raw.split("=", 1)
+    lookback = int(lookback_str)
+    dataset_path = Path(path_str).expanduser().resolve()
+    return lookback, dataset_path
+
+
+def _parse_lookback_mapping(values: list[str]) -> dict[int, Path]:
+    mapping: dict[int, Path] = {}
+    for raw in values:
+        lookback, dataset_path = _parse_lookback_entry(raw)
+        if lookback in mapping:
+            raise ValueError(f"Duplicate lookback entry for {lookback}.")
+        mapping[lookback] = dataset_path
+    return mapping
+
+
+def count_grid_combinations(config: GridSearchConfig) -> int:
+    """Return the total number of grid-search trials."""
+    return (
+        len(config.lookback_datasets)
+        * len(config.learning_rates)
+        * len(config.batch_sizes)
+        * len(config.n_lstm_values)
+        * len(config.hidden_lstm_values)
+        * len(config.hidden_fc_values)
+    )
+
+
+def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialResult]:
+    """Run all tuning trials and return all trial metrics plus the best trial."""
+    total_trials = count_grid_combinations(config)
+    if total_trials <= 0:
+        raise ValueError("Grid search has zero combinations. Please provide non-empty parameter lists.")
+
+    config.out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Total combinations: {total_trials}")
+
+    trial_grid = product(
+        sorted(config.lookback_datasets.items(), key=lambda item: item[0]),
+        config.learning_rates,
+        config.batch_sizes,
+        config.n_lstm_values,
+        config.hidden_lstm_values,
+        config.hidden_fc_values,
+    )
+
+    results: list[TrialResult] = []
+
+    for trial_index, (
+        (lookback, dataset_path),
+        learning_rate,
+        batch_size,
+        n_lstm,
+        hidden_lstm,
+        hidden_fc,
+    ) in enumerate(trial_grid, start=1):
+        if not dataset_path.exists():
+            raise FileNotFoundError(f"Dataset path not found for lookback={lookback}: {dataset_path}")
+
+        trial_name = (
+            f"trial_{trial_index:04d}"
+            f"_lb{lookback}"
+            f"_lr{learning_rate:g}"
+            f"_bs{batch_size}"
+            f"_nl{n_lstm}"
+            f"_hl{hidden_lstm}"
+            f"_hf{hidden_fc}"
+        )
+        trial_dir = config.out_dir / trial_name
+        trial_dir.mkdir(parents=True, exist_ok=True)
+
+        print(
+            f"[{trial_index}/{total_trials}] lookback={lookback}, lr={learning_rate:g}, "
+            f"batch_size={batch_size}, n_lstm={n_lstm}, hidden_lstm={hidden_lstm}, hidden_fc={hidden_fc}"
+        )
+
+        datasets = build_datasets(h5_path=dataset_path, batch_size=batch_size, seed=config.seed)
+        _model, history, used_device = train_with_fallback(
+            datasets,
+            epochs=config.epochs,
+            out_dir=trial_dir,
+            n_lstm=n_lstm,
+            lstm_hidden=hidden_lstm,
+            n_fc=1,
+            fc_hidden=(hidden_fc,),
+            learning_rate=learning_rate,
+            prefer_gpu=config.prefer_gpu,
+            deterministic_seed=config.seed,
+        )
+
+        best_val_loss = min(history["val_loss"])
+        final_val_loss = history["val_loss"][-1]
+        result = TrialResult(
+            lookback=lookback,
+            dataset_path=str(dataset_path),
+            learning_rate=learning_rate,
+            batch_size=batch_size,
+            n_lstm=n_lstm,
+            hidden_lstm=hidden_lstm,
+            hidden_fc=hidden_fc,
+            best_val_loss=float(best_val_loss),
+            final_val_loss=float(final_val_loss),
+            used_device=str(used_device),
+            trial_dir=str(trial_dir),
+        )
+        results.append(result)
+
+    best_result = min(results, key=lambda item: item.best_val_loss)
+
+    summary_payload = {
+        "config": {
+            **asdict(config),
+            "lookback_datasets": {k: str(v) for k, v in config.lookback_datasets.items()},
+            "out_dir": str(config.out_dir),
+        },
+        "num_trials": len(results),
+        "best_trial": asdict(best_result),
+        "results": [asdict(item) for item in results],
+    }
+    with (config.out_dir / "grid_search_results.json").open("w", encoding="utf-8") as fp:
+        json.dump(summary_payload, fp, indent=2)
+
+    print("\nBest trial:")
+    print(json.dumps(asdict(best_result), indent=2))
+    print(f"Saved tuning summary to: {config.out_dir / 'grid_search_results.json'}")
+
+    return results, best_result
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Grid-search tuner for rabl.machine_learning.lstm_pipeline")
+    parser.add_argument(
+        "--lookback-dataset",
+        nargs="+",
+        required=True,
+        metavar="LOOKBACK=H5_PATH",
+        help=(
+            "Lookback-to-dataset mapping entries. "
+            "Example: --lookback-dataset 4=data/lb4.h5 8=data/lb8.h5 12=data/lb12.h5"
+        ),
+    )
+    parser.add_argument("--learning-rates", type=float, nargs="+", required=True)
+    parser.add_argument("--batch-sizes", type=int, nargs="+", required=True)
+    parser.add_argument("--n-lstm", type=int, nargs="+", required=True, dest="n_lstm_values")
+    parser.add_argument("--hidden-lstm", type=int, nargs="+", required=True, dest="hidden_lstm_values")
+    parser.add_argument("--hidden-fc", type=int, nargs="+", required=True, dest="hidden_fc_values")
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument("--out-dir", type=Path, default=Path("outputs") / "ml_tuning")
+    parser.add_argument(
+        "--cpu-only",
+        action="store_true",
+        help="Force CPU training for all trials.",
+    )
+    parser.add_argument(
+        "--count-only",
+        action="store_true",
+        help="Only print the number of combinations and exit.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    lookback_datasets = _parse_lookback_mapping(args.lookback_dataset)
+
+    config = GridSearchConfig(
+        lookback_datasets=lookback_datasets,
+        learning_rates=list(args.learning_rates),
+        batch_sizes=list(args.batch_sizes),
+        n_lstm_values=list(args.n_lstm_values),
+        hidden_lstm_values=list(args.hidden_lstm_values),
+        hidden_fc_values=list(args.hidden_fc_values),
+        epochs=args.epochs,
+        seed=args.seed,
+        out_dir=args.out_dir,
+        prefer_gpu=not args.cpu_only,
+    )
+
+    num_combinations = count_grid_combinations(config)
+    print(f"Total combinations: {num_combinations}")
+    if args.count_only:
+        return
+
+    run_grid_search(config)
+
+
+if __name__ == "__main__":
+    main()
