@@ -44,6 +44,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Iterable
 
+import gc
 import os
 import random
 
@@ -126,10 +127,14 @@ def clear_cuda_cache() -> None:
         torch.cuda.empty_cache()
 
 
-def cleanup_cuda_after_model_release(used_device: torch.device | str) -> None:
-    """Clear CUDA cache after model references are dropped (e.g., call ``del model`` first)."""
-    if "cuda" in str(used_device).lower():
+def cleanup_cuda(model: nn.Module | None, used_device: torch.device | str) -> None:
+    """Drop model ref and run a stronger CUDA cleanup sequence when using a CUDA device."""
+    del model
+    gc.collect()
+    if "cuda" in str(used_device).lower() and torch.cuda.is_available():
+        torch.cuda.synchronize()
         clear_cuda_cache()
+        torch.cuda.ipc_collect()
 
 
 # --------------------------------------------------------------------------------------

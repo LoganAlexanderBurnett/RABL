@@ -9,7 +9,7 @@ from rabl.machine_learning.lstm_pipeline import (
     LSTMPipeline,
     LSTMPipelineConfig,
     test_and_save_forecasts,
-    clear_cuda_cache
+    cleanup_cuda,
 )
 
 
@@ -133,10 +133,9 @@ def main() -> None:
         h5_path=args.h5_path
     )
 
-    if "cuda" in str(used_device):
+    if "cuda" in str(used_device).lower():
         print(f"Clearing {used_device}...")
-        del model
-        clear_cuda_cache()
+        cleanup_cuda(model, used_device)
 
 
 if __name__ == "__main__":
