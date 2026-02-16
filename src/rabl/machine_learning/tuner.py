@@ -28,6 +28,11 @@ class GridSearchConfig:
     seed: int = 123
     out_dir: Path = Path("outputs") / "ml_tuning"
     prefer_gpu: bool = True
+    lstm_dropout: float = 0.0
+    preload_train_to_device: bool = False
+    early_stopping_patience: int | None = None
+    early_stopping_min_delta: float = 0.0
+    restore_best_weights: bool = True
 
 
 @dataclass(slots=True)
@@ -134,11 +139,16 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
             out_dir=trial_dir,
             n_lstm=n_lstm,
             lstm_hidden=hidden_lstm,
+            lstm_dropout=config.lstm_dropout,
             n_fc=1,
             fc_hidden=(hidden_fc,),
             learning_rate=learning_rate,
             prefer_gpu=config.prefer_gpu,
+            preload_train_to_device=config.preload_train_to_device,
             deterministic_seed=config.seed,
+            early_stopping_patience=config.early_stopping_patience,
+            early_stopping_min_delta=config.early_stopping_min_delta,
+            restore_best_weights=config.restore_best_weights,
         )
 
         best_val_loss = min(history["val_loss"])
@@ -201,6 +211,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--out-dir", type=Path, default=Path("outputs") / "ml_tuning")
     parser.add_argument(
+        "--lstm-dropout",
+        type=float,
+        default=0.0,
+        help="Dropout between stacked LSTM layers (ignored when n_lstm=1).",
+    )
+    parser.add_argument(
+        "--preload-train-to-device",
+        action="store_true",
+        help="Preload training batches to the selected training device.",
+    )
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=None,
+        help="Enable early stopping with this validation-patience value.",
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=0.0,
+        help="Minimum validation-loss improvement required to reset early-stopping patience.",
+    )
+    parser.add_argument(
+        "--no-restore-best-weights",
+        action="store_true",
+        help="Do not restore best validation-loss weights at the end of training.",
+    )
+    parser.add_argument(
         "--cpu-only",
         action="store_true",
         help="Force CPU training for all trials.",
@@ -228,6 +266,11 @@ def main() -> None:
         seed=args.seed,
         out_dir=args.out_dir,
         prefer_gpu=not args.cpu_only,
+        lstm_dropout=args.lstm_dropout,
+        preload_train_to_device=args.preload_train_to_device,
+        early_stopping_patience=args.early_stopping_patience,
+        early_stopping_min_delta=args.early_stopping_min_delta,
+        restore_best_weights=not args.no_restore_best_weights,
     )
 
     num_combinations = count_grid_combinations(config)
