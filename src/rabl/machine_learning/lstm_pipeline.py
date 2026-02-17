@@ -1242,10 +1242,21 @@ def plot_forecast_vs_truth_grid(
         ax.grid(True)
         ax.legend(fontsize=7, loc="best")
 
-    mse_all = float(np.mean((y_true - y_pred) ** 2))
-    fig.suptitle(f"{title} | MSE(all dims) = {mse_all:.6e}", y=1.02, fontsize=14)
+    abs_error = np.abs(y_true - y_pred)
+    mae_all = float(np.mean(abs_error))
+    rmse_all = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+    denominator = np.where(np.abs(y_true) > 1e-8, np.abs(y_true), np.nan)
+    mape_all = float(np.nanmean(abs_error / denominator) * 100.0)
+    if not np.isfinite(mape_all):
+        mape_all = 0.0
 
-    plt.tight_layout()
+    fig.suptitle(
+        f"{title} | MAE(all dims) = {mae_all:.6e} | RMSE(all dims) = {rmse_all:.6e} | MAPE(all dims) = {mape_all:.3f}%",
+        y=0.98,
+        fontsize=14,
+    )
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
 
     if save_path is not None:
         save_path = Path(save_path)
