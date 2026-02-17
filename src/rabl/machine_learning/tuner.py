@@ -228,8 +228,10 @@ def test_best_model(config: GridSearchConfig, best_result: TrialResult) -> dict[
         batch_size=best_result.batch_size,
         seed=config.seed,
     )
-    timesteps, num_features = datasets["sample_shape"]
-    num_targets = datasets["target_shape"][-1]
+    timesteps = int(datasets["sample_shape"][1])
+    num_features = int(datasets["sample_shape"][2])
+    num_targets = int(datasets["target_shape"][1])
+
 
     model = build_model(
         timesteps=timesteps,
