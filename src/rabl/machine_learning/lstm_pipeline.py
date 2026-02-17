@@ -1296,7 +1296,11 @@ def save_forecast_profiles_pdf(
 
     with h5py.File(forecast_h5_path, "r") as h5f, PdfPages(output_pdf_path) as pdf:
         profile_names = sorted(h5f.keys())
+        i = 0
         for profile_name in profile_names:
+            i += 1
+            if i % 10 == 0:
+                print(f"Plotted {i}/{len(profile_names)}")
             group = h5f[profile_name]
             if "data" not in group:
                 raise KeyError(f"Profile '{profile_name}' is missing required dataset 'data'.")
