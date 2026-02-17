@@ -52,6 +52,7 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib.backends.backend_pdf import PdfPages
 from tqdm import tqdm
 from torch import nn
 from torch.utils.data import DataLoader, IterableDataset
@@ -1178,7 +1179,8 @@ def plot_forecast_vs_truth_grid(
     control_name: str = "drumAngleDeg",
     state_dim: int = STATE_DIM,
     control_channel: int = 0,
-) -> None:
+    close_figure: bool = True,
+) -> plt.Figure:
     """
     2x7 grid (14 plots total):
       - [0] control profile across all forecast steps
@@ -1251,7 +1253,85 @@ def plot_forecast_vs_truth_grid(
         plt.savefig(save_path, dpi=150)
         print(f"Saved forecast plot to: {save_path}")
 
-    plt.close(fig)
+    if close_figure:
+        plt.close(fig)
+
+    return fig
+
+
+def save_forecast_profiles_pdf(
+    *,
+    forecast_h5_path: Path,
+    output_pdf_path: Path,
+    target_names: list[str] | None = None,
+    control_name: str = "drumAngleDeg",
+    state_dim: int = STATE_DIM,
+    control_channel: int = 0,
+) -> None:
+    """
+    Render one 2x7 forecast-vs-truth page per profile from a forecast HDF5 file.
+
+    The HDF5 file must be in the format produced by :func:`test_and_save_forecasts`.
+    Each profile group is expected to contain a ``data`` dataset with columns:
+        [t, u(t), x(t)_..., x^~(t)_...]
+    where the number of targets is inferred from the table shape.
+    """
+    if target_names is None:
+        target_names = list(TARGET_NAMES)
+
+    forecast_h5_path = Path(forecast_h5_path)
+    output_pdf_path = Path(output_pdf_path)
+    output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with h5py.File(forecast_h5_path, "r") as h5f, PdfPages(output_pdf_path) as pdf:
+        profile_names = sorted(h5f.keys())
+        for profile_name in profile_names:
+            group = h5f[profile_name]
+            if "data" not in group:
+                raise KeyError(f"Profile '{profile_name}' is missing required dataset 'data'.")
+
+            table = group["data"][...].astype(np.float32)
+            if table.ndim != 2 or table.shape[1] < 4:
+                raise ValueError(
+                    f"Profile '{profile_name}' has invalid table shape {table.shape}; expected 2D with >=4 columns."
+                )
+
+            num_targets = (table.shape[1] - 2) // 2
+            if 2 + (2 * num_targets) != table.shape[1] or num_targets <= 0:
+                raise ValueError(
+                    f"Profile '{profile_name}' has invalid column count {table.shape[1]} for forecast format."
+                )
+
+            if len(target_names) != num_targets:
+                raise ValueError(
+                    f"target_names length ({len(target_names)}) does not match inferred target count ({num_targets}) "
+                    f"for profile '{profile_name}'."
+                )
+
+            u_series = table[:, 1]
+            y_true = table[:, 2:2 + num_targets]
+            y_pred = table[:, 2 + num_targets:2 + (2 * num_targets)]
+
+            control_idx = state_dim + control_channel
+            x_profile = np.zeros((table.shape[0], 1, control_idx + 1), dtype=np.float32)
+            x_profile[:, 0, control_idx] = u_series
+
+            fig = plot_forecast_vs_truth_grid(
+                x_profile=x_profile,
+                y_true=y_true,
+                y_pred=y_pred,
+                target_names=target_names,
+                title=f"Rolling Forecast - {profile_name}",
+                save_path=None,
+                control_name=control_name,
+                state_dim=state_dim,
+                control_channel=control_channel,
+                close_figure=False,
+            )
+            pdf.savefig(fig, orientation="landscape")
+            plt.close(fig)
+
+    print(f"Saved forecast PDF to: {output_pdf_path}")
 
 
 # --------------------------------------------------------------------------------------
