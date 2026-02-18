@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import h5py
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -278,6 +279,7 @@ def _save_ensemble_rolling_forecasts_hdf5(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     column_names = (
         ["t", "u(t)"]
+        + [f"x_true(t)_{name}" for name in target_names]
         + [f"x_mean(t)_{name}" for name in target_names]
         + [f"x_2sigma(t)_{name}" for name in target_names]
     )
@@ -306,8 +308,9 @@ def ensemble_rolling_forecast_and_save(
     scaling_stats = _load_scaling_stats(h5_path)
     forecasts: list[dict[str, Any]] = []
 
-    for profile_name, x_profile, _y_profile in profile_ds:
+    for profile_name, x_profile, y_profile in profile_ds:
         x_np = x_profile.numpy()
+        y_true = _descale_targets_from_stats(scaling_stats, y_profile.numpy())
 
         per_model_preds: list[np.ndarray] = []
         for model in models:
@@ -324,7 +327,7 @@ def ensemble_rolling_forecast_and_save(
         control_idx = state_dim + control_channel
         u_series = _descale_feature_from_stats(scaling_stats, u_series, control_idx)
 
-        table = np.column_stack([t_series, u_series, y_mean, y_two_sigma]).astype(np.float32)
+        table = np.column_stack([t_series, u_series, y_true, y_mean, y_two_sigma]).astype(np.float32)
         forecasts.append({"profile": str(profile_name), "table": table})
 
     _save_ensemble_rolling_forecasts_hdf5(
@@ -332,6 +335,108 @@ def ensemble_rolling_forecast_and_save(
         output_path=output_path,
         target_names=target_names,
     )
+
+
+def _decode_columns(columns_attr: np.ndarray | list[Any]) -> list[str]:
+    decoded: list[str] = []
+    for item in columns_attr:
+        if isinstance(item, bytes):
+            decoded.append(item.decode("utf-8"))
+        else:
+            decoded.append(str(item))
+    return decoded
+
+
+def plot_ensemble_forecast_profile_grid(
+    forecast_h5_path: Path,
+    *,
+    profile_name: str,
+    save_path: Path | None = None,
+    control_name: str = "drumAngleDeg",
+    target_names: list[str] | None = None,
+    close_figure: bool = True,
+) -> plt.Figure:
+    """
+    Plot one ensemble forecast profile in a 2x7 grid.
+
+    Grid layout mirrors the existing pipeline visualization style:
+      - subplot [0,0]: control variable u(t)
+      - remaining 13 subplots: state targets with ground truth, mean prediction,
+        and mean ± 2sigma uncertainty bounds.
+    """
+    if target_names is None:
+        target_names = list(TARGET_NAMES)
+
+    forecast_h5_path = Path(forecast_h5_path)
+    with h5py.File(forecast_h5_path, "r") as h5f:
+        if profile_name not in h5f:
+            raise KeyError(f"Profile '{profile_name}' not found in {forecast_h5_path}.")
+        group = h5f[profile_name]
+        table = group["data"][...].astype(np.float32)
+        columns = _decode_columns(group.attrs.get("columns", []))
+
+    if table.ndim != 2:
+        raise ValueError(f"Expected 2D forecast table, got shape {table.shape}.")
+
+    try:
+        t_idx = columns.index("t")
+        u_idx = columns.index("u(t)")
+    except ValueError as exc:
+        raise ValueError("Forecast HDF5 columns are missing required 't' or 'u(t)' fields.") from exc
+
+    t_series = table[:, t_idx]
+    u_series = table[:, u_idx]
+
+    y_true = np.column_stack([table[:, columns.index(f"x_true(t)_{name}")] for name in target_names])
+    y_mean = np.column_stack([table[:, columns.index(f"x_mean(t)_{name}")] for name in target_names])
+    y_2sigma = np.column_stack([table[:, columns.index(f"x_2sigma(t)_{name}")] for name in target_names])
+    y_upper = y_mean + y_2sigma
+    y_lower = y_mean - y_2sigma
+
+    fig, axes = plt.subplots(2, 7, figsize=(26, 8), sharex=True)
+    axes_flat = axes.flatten()
+
+    axes_flat[0].plot(t_series, u_series, linewidth=1.5, color="black")
+    axes_flat[0].set_title(control_name)
+    axes_flat[0].grid(True, alpha=0.3)
+
+    for target_idx, target_name in enumerate(target_names):
+        ax = axes_flat[target_idx + 1]
+        ax.plot(t_series, y_true[:, target_idx], label="Ground truth", linewidth=1.6, color="C0")
+        ax.plot(t_series, y_mean[:, target_idx], label="Mean prediction", linewidth=1.6, color="C3")
+        ax.plot(t_series, y_upper[:, target_idx], linestyle="--", linewidth=1.0, color="C1", label="Mean + 2σ")
+        ax.plot(t_series, y_lower[:, target_idx], linestyle="--", linewidth=1.0, color="C2", label="Mean - 2σ")
+        ax.fill_between(
+            t_series,
+            y_lower[:, target_idx],
+            y_upper[:, target_idx],
+            color="C1",
+            alpha=0.15,
+            linewidth=0,
+        )
+        ax.set_title(target_name)
+        ax.grid(True, alpha=0.3)
+
+    for idx in range(7, 14):
+        axes_flat[idx].set_xlabel("Time step")
+    axes_flat[0].set_ylabel("u(t)")
+    for idx in range(1, 14):
+        axes_flat[idx].set_ylabel("State")
+
+    handles, labels = axes_flat[1].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=4, frameon=False, bbox_to_anchor=(0.5, 1.02))
+    fig.suptitle(f"Ensemble Rolling Forecast - {profile_name}", y=1.06, fontsize=16)
+    fig.tight_layout()
+
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    if close_figure:
+        plt.close(fig)
+
+    return fig
 
 
 def run_bagging_ensemble(
