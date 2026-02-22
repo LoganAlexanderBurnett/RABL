@@ -243,8 +243,10 @@ def test_best_model(config: GridSearchConfig, best_result: TrialResult) -> dict[
         n_fc=config.n_fc,
         fc_hidden=(best_result.hidden_fc,),
     )
-    state_dict = torch.load(weights_path, map_location="cpu")
+    inference_device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    state_dict = torch.load(weights_path, map_location=inference_device)
     model.load_state_dict(state_dict)
+    model = model.to(inference_device)
 
     test_out_dir = Path(best_result.trial_dir) / config.test_output_dirname
     test_metrics = test_and_save_forecasts(
@@ -253,6 +255,7 @@ def test_best_model(config: GridSearchConfig, best_result: TrialResult) -> dict[
         out_dir=test_out_dir,
         h5_path=datasets["h5_path"],
     )
+    cleanup_cuda(model, inference_device)
     print(f"Saved best-model test outputs to: {test_out_dir}")
     return test_metrics
 
