@@ -897,24 +897,25 @@ def rolling_forecast(model: nn.Module, x_profile: np.ndarray, *, state_dim: int 
         raise ValueError("Expected control features appended to state features.")
     control_dim = num_features - state_dim
 
-    window_states = x_profile[0, :, :state_dim].copy()
-    preds: list[np.ndarray] = []
-
     model.eval()
     device = next(model.parameters()).device
+    x_profile_t = torch.from_numpy(x_profile).to(device)
+    window_states = x_profile_t[0, :, :state_dim].clone()
+    preds: list[torch.Tensor] = []
+
     with torch.no_grad():
-        for step in range(x_profile.shape[0]):
-            control_window = x_profile[step, :, state_dim : state_dim + control_dim]
-            input_window = np.concatenate([window_states, control_window], axis=1)
-            input_tensor = torch.from_numpy(input_window[None, ...]).to(device)
-            pred = model(input_tensor).cpu().numpy()[0]
+        num_steps = x_profile_t.shape[0]
+        for step in range(num_steps):
+            control_window = x_profile_t[step, :, state_dim : state_dim + control_dim]
+            input_window = torch.cat([window_states, control_window], dim=1)
+            pred = model(input_window.unsqueeze(0)).squeeze(0)
             preds.append(pred)
 
             # Slide state window forward by 1 (append prediction)
-            if step + 1 < x_profile.shape[0]:
-                window_states = np.vstack([window_states[1:], pred])
+            if step + 1 < num_steps:
+                window_states = torch.cat([window_states[1:], pred.unsqueeze(0)], dim=0)
 
-    return np.asarray(preds, dtype=np.float32)
+    return torch.stack(preds).cpu().numpy().astype(np.float32)
 
 
 def _extract_control_series(
