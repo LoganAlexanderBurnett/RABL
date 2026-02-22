@@ -55,6 +55,7 @@ import torch
 from matplotlib.backends.backend_pdf import PdfPages
 from tqdm import tqdm
 from torch import nn
+from torch.profiler import ProfilerActivity
 from torch.utils.data import DataLoader, IterableDataset
 
 # --------------------------------------------------------------------------------------
@@ -463,6 +464,7 @@ def _train_one_epoch(
     epoch: int,
     total_epochs: int,
     data_already_on_device: bool = False,
+    profiler: torch.profiler.profile | None = None,
 ) -> tuple[float, float, float, float, int]:
     model.train()
     total_loss = 0.0
@@ -500,6 +502,8 @@ def _train_one_epoch(
         loss = loss_fn(preds, y_batch)
         loss.backward()
         optimizer.step()
+        if profiler is not None:
+            profiler.step()
 
         if device.type == "cuda":
             torch.cuda.synchronize(device)
@@ -586,6 +590,12 @@ def train_model(
     early_stopping_patience: int | None = None,
     early_stopping_min_delta: float = 0.0,
     restore_best_weights: bool = True,
+    enable_torch_profiler: bool = False,
+    profiler_wait_steps: int = 1,
+    profiler_warmup_steps: int = 1,
+    profiler_active_steps: int = 3,
+    profiler_repeat: int = 1,
+    profiler_row_limit: int = 30,
 ) -> tuple[nn.Module, dict[str, list[float]], Path]:
     """
     Train the LSTM and save a train/val curve plot.
@@ -662,90 +672,125 @@ def train_model(
                 f"Preloaded {len(train_source)} training batches to {training_device} in {preload_time_s:.2f}s."
             )
 
-    for epoch in range(1, epochs + 1):
-        train_loss, data_wait_time_s, h2d_time_s, compute_time_s, max_mem = _train_one_epoch(
-            model,
-            train_source,
-            optimizer,
-            loss_fn,
-            training_device,
-            epoch=epoch,
-            total_epochs=epochs,
-            data_already_on_device=preloaded_in_gpu,
+    resolved_plot_path = Path(plot_path) if plot_path is not None else Path("outputs") / "plots" / "lstm_training_curves.png"
+
+    profiler: torch.profiler.profile | None = None
+    profiler_trace_dir = resolved_plot_path.parent / "torch_profiler_traces" if enable_torch_profiler else None
+    if enable_torch_profiler:
+        if min(profiler_wait_steps, profiler_warmup_steps, profiler_active_steps, profiler_repeat) < 1:
+            raise ValueError("Profiler wait/warmup/active/repeat steps must be >= 1.")
+        assert profiler_trace_dir is not None
+        profiler_trace_dir.mkdir(parents=True, exist_ok=True)
+        activities = [ProfilerActivity.CPU]
+        if training_device.type == "cuda" and torch.cuda.is_available():
+            activities.append(ProfilerActivity.CUDA)
+        profiler = torch.profiler.profile(
+            activities=activities,
+            schedule=torch.profiler.schedule(
+                wait=profiler_wait_steps,
+                warmup=profiler_warmup_steps,
+                active=profiler_active_steps,
+                repeat=profiler_repeat,
+            ),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(str(profiler_trace_dir)),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=False,
         )
+        profiler.start()
 
-        if training_device.type =="cuda":
-            torch.cuda.synchronize(training_device)
-        
-        val_start = perf_counter()
-        val_loss = _evaluate(
-            model,
-            datasets["val_samples"],
-            loss_fn,
-            training_device,
-            epoch=epoch,
-            total_epochs=epochs,
-        )
-
-        if training_device.type == "cuda":
-            torch.cuda.synchronize(training_device)
-        val_time_s = perf_counter() - val_start
-
-        scheduler.step()
-        current_lr = float(optimizer.param_groups[0]["lr"])
-        
-        history["loss"].append(train_loss)
-        history["val_loss"].append(val_loss)
-        history["lr"].append(current_lr)
-        history["data_wait_time"].append(data_wait_time_s)
-        history["h2d_time"].append(h2d_time_s)
-        history["compute_time"].append(compute_time_s)
-        history["val_time"].append(val_time_s)
-        if verbose:
-            mem_mb = max_mem / (1024**2)
-            print(
-                f"Epoch {epoch}/{epochs} - loss: {train_loss:.5e} - val_loss: {val_loss:.5e} "
-                f"- lr: {current_lr:.3e} "
-                f"- data_wait: {data_wait_time_s:.2f}s - h2d: {h2d_time_s:.2f}s "
-                f"- compute: {compute_time_s:.2f}s - val_time: {val_time_s:.2f}s "
-                f"- preloaded: {preloaded_in_gpu} - preload_time: {preload_time_s:.2f}s "
-                f"- max_cuda_mem: {mem_mb:.2f} MB"
+    try:
+        for epoch in range(1, epochs + 1):
+            train_loss, data_wait_time_s, h2d_time_s, compute_time_s, max_mem = _train_one_epoch(
+                model,
+                train_source,
+                optimizer,
+                loss_fn,
+                training_device,
+                epoch=epoch,
+                total_epochs=epochs,
+                data_already_on_device=preloaded_in_gpu,
+                profiler=profiler,
             )
 
-        if early_stopping_patience is not None:
-            if val_loss < (best_val_loss - early_stopping_min_delta):
-                best_val_loss = val_loss
-                best_epoch = epoch
-                epochs_without_improvement = 0
-                if restore_best_weights:
-                    best_state_dict = {
-                        key: value.detach().cpu().clone() for key, value in model.state_dict().items()
-                    }
-            else:
-                epochs_without_improvement += 1
-                if verbose:
-                    print(
-                        "Early stopping check: "
-                        f"{epochs_without_improvement}/{early_stopping_patience} "
-                        "epochs without validation improvement."
-                    )
-                if epochs_without_improvement >= early_stopping_patience:
+            if training_device.type =="cuda":
+                torch.cuda.synchronize(training_device)
+
+            val_start = perf_counter()
+            val_loss = _evaluate(
+                model,
+                datasets["val_samples"],
+                loss_fn,
+                training_device,
+                epoch=epoch,
+                total_epochs=epochs,
+            )
+
+            if training_device.type == "cuda":
+                torch.cuda.synchronize(training_device)
+            val_time_s = perf_counter() - val_start
+
+            scheduler.step()
+            current_lr = float(optimizer.param_groups[0]["lr"])
+
+            history["loss"].append(train_loss)
+            history["val_loss"].append(val_loss)
+            history["lr"].append(current_lr)
+            history["data_wait_time"].append(data_wait_time_s)
+            history["h2d_time"].append(h2d_time_s)
+            history["compute_time"].append(compute_time_s)
+            history["val_time"].append(val_time_s)
+            if verbose:
+                mem_mb = max_mem / (1024**2)
+                print(
+                    f"Epoch {epoch}/{epochs} - loss: {train_loss:.5e} - val_loss: {val_loss:.5e} "
+                    f"- lr: {current_lr:.3e} "
+                    f"- data_wait: {data_wait_time_s:.2f}s - h2d: {h2d_time_s:.2f}s "
+                    f"- compute: {compute_time_s:.2f}s - val_time: {val_time_s:.2f}s "
+                    f"- preloaded: {preloaded_in_gpu} - preload_time: {preload_time_s:.2f}s "
+                    f"- max_cuda_mem: {mem_mb:.2f} MB"
+                )
+
+            if early_stopping_patience is not None:
+                if val_loss < (best_val_loss - early_stopping_min_delta):
+                    best_val_loss = val_loss
+                    best_epoch = epoch
+                    epochs_without_improvement = 0
+                    if restore_best_weights:
+                        best_state_dict = {
+                            key: value.detach().cpu().clone() for key, value in model.state_dict().items()
+                        }
+                else:
+                    epochs_without_improvement += 1
                     if verbose:
                         print(
-                            "Early stopping triggered at "
-                            f"epoch {epoch}; best validation loss was {best_val_loss:.5e} "
-                            f"at epoch {best_epoch}."
+                            "Early stopping check: "
+                            f"{epochs_without_improvement}/{early_stopping_patience} "
+                            "epochs without validation improvement."
                         )
-                    break
+                    if epochs_without_improvement >= early_stopping_patience:
+                        if verbose:
+                            print(
+                                "Early stopping triggered at "
+                                f"epoch {epoch}; best validation loss was {best_val_loss:.5e} "
+                                f"at epoch {best_epoch}."
+                            )
+                        break
+    finally:
+        if profiler is not None:
+            profiler.stop()
+            summary_text = profiler.key_averages().table(sort_by="self_cpu_time_total", row_limit=profiler_row_limit)
+            summary_path = resolved_plot_path.parent / "torch_profiler_summary.txt"
+            summary_path.write_text(summary_text + "\n", encoding="utf-8")
+            if verbose:
+                print(f"Saved PyTorch profiler summary to {summary_path}")
+                print(f"Saved PyTorch profiler traces to {profiler_trace_dir}")
 
     if early_stopping_patience is not None and restore_best_weights and best_state_dict is not None:
         model.load_state_dict(best_state_dict)
         if verbose:
             print(f"Restored best model weights from epoch {best_epoch}.")
 
-    resolved_plot_path = Path(plot_path) if plot_path is not None else None
-    if resolved_plot_path is None:
-        resolved_plot_path = Path("outputs") / "plots" / "lstm_training_curves.png"
     resolved_plot_path.parent.mkdir(parents=True, exist_ok=True)
 
     epochs_range = range(1, len(history["loss"]) + 1)
@@ -814,6 +859,12 @@ def train_with_fallback(
     early_stopping_patience: int | None = None,
     early_stopping_min_delta: float = 0.0,
     restore_best_weights: bool = True,
+    enable_torch_profiler: bool = False,
+    profiler_wait_steps: int = 1,
+    profiler_warmup_steps: int = 1,
+    profiler_active_steps: int = 3,
+    profiler_repeat: int = 1,
+    profiler_row_limit: int = 30,
 ) -> tuple[nn.Module, dict[str, list[float]], torch.device]:
     """
     Try GPU first (if prefer_gpu). If anything fails, retry on CPU.
@@ -845,6 +896,12 @@ def train_with_fallback(
             early_stopping_patience=early_stopping_patience,
             early_stopping_min_delta=early_stopping_min_delta,
             restore_best_weights=restore_best_weights,
+            enable_torch_profiler=enable_torch_profiler,
+            profiler_wait_steps=profiler_wait_steps,
+            profiler_warmup_steps=profiler_warmup_steps,
+            profiler_active_steps=profiler_active_steps,
+            profiler_repeat=profiler_repeat,
+            profiler_row_limit=profiler_row_limit,
         )
         return model, history, preferred
     except Exception as e:
@@ -872,6 +929,12 @@ def train_with_fallback(
         early_stopping_patience=early_stopping_patience,
         early_stopping_min_delta=early_stopping_min_delta,
         restore_best_weights=restore_best_weights,
+        enable_torch_profiler=enable_torch_profiler,
+        profiler_wait_steps=profiler_wait_steps,
+        profiler_warmup_steps=profiler_warmup_steps,
+        profiler_active_steps=profiler_active_steps,
+        profiler_repeat=profiler_repeat,
+        profiler_row_limit=profiler_row_limit,
     )
     return model, history, torch.device("cpu")
 
@@ -1413,6 +1476,12 @@ class LSTMPipeline:
         step_lr_step_size: int = 30,
         step_lr_gamma: float = 0.5,
         verbose: int = 1,
+        enable_torch_profiler: bool = False,
+        profiler_wait_steps: int = 1,
+        profiler_warmup_steps: int = 1,
+        profiler_active_steps: int = 3,
+        profiler_repeat: int = 1,
+        profiler_row_limit: int = 30,
     ):
 
         if self.datasets is None:
@@ -1436,6 +1505,12 @@ class LSTMPipeline:
             early_stopping_patience=early_stopping_patience,
             early_stopping_min_delta=early_stopping_min_delta,
             restore_best_weights=restore_best_weights,
+            enable_torch_profiler=enable_torch_profiler,
+            profiler_wait_steps=profiler_wait_steps,
+            profiler_warmup_steps=profiler_warmup_steps,
+            profiler_active_steps=profiler_active_steps,
+            profiler_repeat=profiler_repeat,
+            profiler_row_limit=profiler_row_limit,
         )
 
     def sample_test_profile(self):
