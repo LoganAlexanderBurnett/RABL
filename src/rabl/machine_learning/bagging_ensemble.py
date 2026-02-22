@@ -524,7 +524,7 @@ def run_bagging_ensemble(
             step_lr_gamma=config.step_lr_gamma,
             verbose=config.verbose,
             prefer_gpu=config.prefer_gpu,
-            preload_train_to_device=False,
+            preload_train_to_device=True,
             deterministic_seed=config.seed + model_idx,
             early_stopping_patience=config.early_stopping_patience,
             early_stopping_min_delta=config.early_stopping_min_delta,
