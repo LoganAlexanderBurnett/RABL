@@ -704,7 +704,7 @@ def train_model(
         if verbose:
             mem_mb = max_mem / (1024**2)
             print(
-                f"Epoch {epoch}/{epochs} - loss: {train_loss:.9f} - val_loss: {val_loss:.9f} "
+                f"Epoch {epoch}/{epochs} - loss: {train_loss:.0e} - val_loss: {val_loss:.0e} "
                 f"- lr: {current_lr:.3e} "
                 f"- data_wait: {data_wait_time_s:.2f}s - h2d: {h2d_time_s:.2f}s "
                 f"- compute: {compute_time_s:.2f}s - val_time: {val_time_s:.2f}s "
@@ -733,7 +733,7 @@ def train_model(
                     if verbose:
                         print(
                             "Early stopping triggered at "
-                            f"epoch {epoch}; best validation loss was {best_val_loss:.9f} "
+                            f"epoch {epoch}; best validation loss was {best_val_loss:.0e} "
                             f"at epoch {best_epoch}."
                         )
                     break
