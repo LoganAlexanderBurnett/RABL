@@ -507,7 +507,7 @@ def _train_one_epoch(
         total_loss += float(loss.item())
         compute_time_s += perf_counter() - compute_start
         num_batches += 1
-        progress.set_postfix(loss=f"{loss.item():.9f}")
+        progress.set_postfix(loss=f"{loss.item():.5e}")
         fetch_start = perf_counter()
     progress.close()
     max_mem = 0
@@ -704,7 +704,7 @@ def train_model(
         if verbose:
             mem_mb = max_mem / (1024**2)
             print(
-                f"Epoch {epoch}/{epochs} - loss: {train_loss:.0e} - val_loss: {val_loss:.0e} "
+                f"Epoch {epoch}/{epochs} - loss: {train_loss:.5e} - val_loss: {val_loss:.5e} "
                 f"- lr: {current_lr:.3e} "
                 f"- data_wait: {data_wait_time_s:.2f}s - h2d: {h2d_time_s:.2f}s "
                 f"- compute: {compute_time_s:.2f}s - val_time: {val_time_s:.2f}s "
@@ -733,7 +733,7 @@ def train_model(
                     if verbose:
                         print(
                             "Early stopping triggered at "
-                            f"epoch {epoch}; best validation loss was {best_val_loss:.0e} "
+                            f"epoch {epoch}; best validation loss was {best_val_loss:.5e} "
                             f"at epoch {best_epoch}."
                         )
                     break
@@ -754,7 +754,7 @@ def train_model(
     plt.plot(epochs_range, history["val_loss"], label="Val Loss (MSE)")
     plt.yscale("log")
     plt.xlabel("Epoch")
-    plt.ylabel("Loss (log scale)")
+    plt.ylabel("Loss")
     plt.title("Training and Validation Loss")
     plt.legend()
     plt.grid()
