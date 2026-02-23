@@ -76,7 +76,7 @@ class LSTMDatasetScalerSplitter:
         return output_path
 
     def _resolve_output_path(self) -> Path:
-        base_dir = self.output_dir or self.input_path.parents[2] / "outputs" / "datasets"
+        base_dir = self.output_dir or self.input_path.parents[2] / "datasets" / "scaled_split"
         base_dir = Path(base_dir)
         base_dir.mkdir(parents=True, exist_ok=True)
         if self.output_name:

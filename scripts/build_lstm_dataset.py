@@ -8,7 +8,7 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     default_config = repo_root / "scripts" / "config.py"
     default_sim_root = repo_root / "outputs" / "sim_profiles"
-    default_output_dir = repo_root / "outputs" / "datasets"
+    default_output_dir = repo_root / "outputs" / "datasets" / "unscaled_unsplit"
 
     parser = argparse.ArgumentParser(
         description="Build an LSTM-ready dataset from simulation outputs."
