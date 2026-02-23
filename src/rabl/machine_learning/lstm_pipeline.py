@@ -53,10 +53,43 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib.backends.backend_pdf import PdfPages
-from tqdm import tqdm
 from torch import nn
 from torch.profiler import ProfilerActivity
 from torch.utils.data import DataLoader, IterableDataset
+
+try:
+    from tqdm import tqdm
+    _TQDM_AVAILABLE = True
+except ImportError:
+    tqdm = None
+    _TQDM_AVAILABLE = False
+
+_TQDM_WARNED = False
+
+
+def _iter_with_optional_tqdm(
+    iterable: Iterable[Any],
+    *,
+    use_tqdm: bool,
+    verbose: int = 1,
+    **kwargs: Any,
+) -> Iterable[Any]:
+    global _TQDM_WARNED
+    if use_tqdm and _TQDM_AVAILABLE and tqdm is not None:
+        return tqdm(iterable, **kwargs)
+    if use_tqdm and not _TQDM_AVAILABLE and verbose and not _TQDM_WARNED:
+        print("tqdm is not installed; continuing without progress bars.")
+        _TQDM_WARNED = True
+    return iterable
+
+
+def _init_io_stats() -> dict[str, float]:
+    return {
+        "h5_read_s": 0.0,
+        "astype_s": 0.0,
+        "profiles_read": 0.0,
+        "samples_yielded": 0.0,
+    }
 
 # --------------------------------------------------------------------------------------
 # Defaults / naming
@@ -248,29 +281,68 @@ def _descale_feature_from_stats(stats: dict[str, Any], values: np.ndarray, featu
 
 
 def _train_sample_generator(
-    h5_path: Path, profile_names: list[str], split: str, seed: int
+    h5_path: Path,
+    profile_names: list[str],
+    split: str,
+    seed: int,
+    io_stats: dict[str, float] | None = None,
 ) -> Iterable[tuple[np.ndarray, np.ndarray]]:
     rng = np.random.default_rng(seed)
     with h5py.File(h5_path, "r") as h5f:
         files_group = h5f[split]["files"]
         for profile_name in profile_names:
             group = files_group[profile_name]
-            x_data = group["X"][...].astype(np.float32)
-            y_data = group["Y"][...].astype(np.float32)
+            read_start = perf_counter()
+            x_raw = group["X"][...]
+            y_raw = group["Y"][...]
+            read_elapsed = perf_counter() - read_start
+
+            cast_start = perf_counter()
+            x_data = x_raw.astype(np.float32)
+            y_data = y_raw.astype(np.float32)
+            cast_elapsed = perf_counter() - cast_start
+
+            if io_stats is not None:
+                io_stats["h5_read_s"] += read_elapsed
+                io_stats["astype_s"] += cast_elapsed
+                io_stats["profiles_read"] += 1
+
             indices = np.arange(x_data.shape[0])
             rng.shuffle(indices)
             for idx in indices:
+                if io_stats is not None:
+                    io_stats["samples_yielded"] += 1
                 yield x_data[idx], y_data[idx]
 
 
-def _sample_generator(h5_path: Path, profile_names: list[str], split: str) -> Iterable[tuple[np.ndarray, np.ndarray]]:
+def _sample_generator(
+    h5_path: Path,
+    profile_names: list[str],
+    split: str,
+    io_stats: dict[str, float] | None = None,
+) -> Iterable[tuple[np.ndarray, np.ndarray]]:
     with h5py.File(h5_path, "r") as h5f:
         files_group = h5f[split]["files"]
         for profile_name in profile_names:
             group = files_group[profile_name]
-            x_data = group["X"][...].astype(np.float32)
-            y_data = group["Y"][...].astype(np.float32)
+            read_start = perf_counter()
+            x_raw = group["X"][...]
+            y_raw = group["Y"][...]
+            read_elapsed = perf_counter() - read_start
+
+            cast_start = perf_counter()
+            x_data = x_raw.astype(np.float32)
+            y_data = y_raw.astype(np.float32)
+            cast_elapsed = perf_counter() - cast_start
+
+            if io_stats is not None:
+                io_stats["h5_read_s"] += read_elapsed
+                io_stats["astype_s"] += cast_elapsed
+                io_stats["profiles_read"] += 1
+
             for idx in range(x_data.shape[0]):
+                if io_stats is not None:
+                    io_stats["samples_yielded"] += 1
                 yield x_data[idx], y_data[idx]
 
 
@@ -290,12 +362,24 @@ class SampleDataset(IterableDataset):
         self.profile_names = list(profile_names)
         self.split = split
         self.seed = seed
+        self.io_stats = _init_io_stats()
+
+    def get_and_reset_io_stats(self) -> dict[str, float]:
+        snapshot = dict(self.io_stats)
+        self.io_stats = _init_io_stats()
+        return snapshot
 
     def __iter__(self) -> Iterable[tuple[torch.Tensor, torch.Tensor]]:
         if self.seed is None:
-            generator = _sample_generator(self.h5_path, self.profile_names, self.split)
+            generator = _sample_generator(self.h5_path, self.profile_names, self.split, io_stats=self.io_stats)
         else:
-            generator = _train_sample_generator(self.h5_path, self.profile_names, self.split, self.seed)
+            generator = _train_sample_generator(
+                self.h5_path,
+                self.profile_names,
+                self.split,
+                self.seed,
+                io_stats=self.io_stats,
+            )
         for x_data, y_data in generator:
             yield torch.from_numpy(x_data), torch.from_numpy(y_data)
 
@@ -338,11 +422,13 @@ def build_datasets(h5_path: Path, batch_size: int, seed: int) -> dict[str, Any]:
 
     # Train dataset: shuffled sample order per profile
     train_ds = SampleDataset(h5_path, train_profiles, "train", seed=seed)
-    train_loader = DataLoader(train_ds, batch_size=batch_size, pin_memory=True)
+    # NOTE: keep num_workers=0 while diagnosing HDF5 I/O timing. If num_workers>0,
+    # each worker has its own dataset instance and per-dataset counters are not aggregated.
+    train_loader = DataLoader(train_ds, batch_size=batch_size, pin_memory=True, num_workers=0)
 
     # Validation samples dataset (flat)
     val_sample_ds = SampleDataset(h5_path, val_profiles, "val")
-    val_sample_loader = DataLoader(val_sample_ds, batch_size=batch_size, pin_memory=True)
+    val_sample_loader = DataLoader(val_sample_ds, batch_size=batch_size, pin_memory=True, num_workers=0)
 
     # Profile datasets: yields entire profile arrays
     val_profile_ds = ProfileDataset(h5_path, val_profiles, "val")
@@ -351,7 +437,9 @@ def build_datasets(h5_path: Path, batch_size: int, seed: int) -> dict[str, Any]:
     return {
         # datasets
         "train": train_loader,
+        "train_ds": train_ds,
         "val_samples": val_sample_loader,
+        "val_sample_ds": val_sample_ds,
         "val_profile_ds": val_profile_ds,
         "test_profile_ds": test_profile_ds,
         # metadata
@@ -465,6 +553,8 @@ def _train_one_epoch(
     total_epochs: int,
     data_already_on_device: bool = False,
     profiler: torch.profiler.profile | None = None,
+    use_tqdm: bool = True,
+    verbose: int = 1,
 ) -> tuple[float, float, float, float, int]:
     model.train()
     total_loss = 0.0
@@ -478,8 +568,10 @@ def _train_one_epoch(
         total_batches = len(loader)
     except TypeError:
         total_batches = None
-    progress = tqdm(
+    progress = _iter_with_optional_tqdm(
         loader,
+        use_tqdm=use_tqdm,
+        verbose=verbose,
         total=total_batches,
         desc=f"Train {epoch}/{total_epochs}",
         unit="batch",
@@ -511,9 +603,11 @@ def _train_one_epoch(
         total_loss += float(loss.item())
         compute_time_s += perf_counter() - compute_start
         num_batches += 1
-        progress.set_postfix(loss=f"{loss.item():.5e}")
+        if use_tqdm and _TQDM_AVAILABLE and hasattr(progress, "set_postfix"):
+            progress.set_postfix(loss=f"{loss.item():.5e}")
         fetch_start = perf_counter()
-    progress.close()
+    if use_tqdm and _TQDM_AVAILABLE and hasattr(progress, "close"):
+        progress.close()
     max_mem = 0
     if device.type == "cuda":
         max_mem = int(torch.cuda.max_memory_allocated(device))
@@ -523,6 +617,9 @@ def _train_one_epoch(
 def _preload_train_batches_to_device(
     loader: DataLoader,
     device: torch.device,
+    *,
+    use_tqdm: bool = True,
+    verbose: int = 1,
 ) -> tuple[list[tuple[torch.Tensor, torch.Tensor]], float]:
     """
     Materialize training batches onto `device` once so subsequent epochs avoid per-batch H2D copies.
@@ -530,7 +627,14 @@ def _preload_train_batches_to_device(
     """
     preloaded_batches: list[tuple[torch.Tensor, torch.Tensor]] = []
     preload_start = perf_counter()
-    for x_batch, y_batch in tqdm(loader, desc="Preloading train batches", unit="batch"):
+    preload_iter = _iter_with_optional_tqdm(
+        loader,
+        use_tqdm=use_tqdm,
+        verbose=verbose,
+        desc="Preloading train batches",
+        unit="batch",
+    )
+    for x_batch, y_batch in preload_iter:
         preloaded_batches.append((x_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True)))
     if device.type == "cuda":
         torch.cuda.synchronize(device)
@@ -546,6 +650,8 @@ def _evaluate(
     *,
     epoch: int,
     total_epochs: int,
+    use_tqdm: bool = True,
+    verbose: int = 1,
 ) -> float:
     model.eval()
     total_loss = 0.0
@@ -555,12 +661,15 @@ def _evaluate(
             total_batches = len(loader)
         except TypeError:
             total_batches = None
-        for x_batch, y_batch in tqdm(
+        val_iter = _iter_with_optional_tqdm(
             loader,
+            use_tqdm=use_tqdm,
+            verbose=verbose,
             total=total_batches,
             desc=f"Val {epoch}/{total_epochs}",
             unit="batch",
-        ):
+        )
+        for x_batch, y_batch in val_iter:
             x_batch = x_batch.to(device)
             y_batch = y_batch.to(device)
             preds = model(x_batch)
@@ -596,6 +705,7 @@ def train_model(
     profiler_active_steps: int = 3,
     profiler_repeat: int = 1,
     profiler_row_limit: int = 30,
+    use_tqdm: bool = True,
 ) -> tuple[nn.Module, dict[str, list[float]], Path]:
     """
     Train the LSTM and save a train/val curve plot.
@@ -615,6 +725,10 @@ def train_model(
 
     if training_device is None:
         training_device = choose_device_prefer_gpu()
+
+    if use_tqdm and not _TQDM_AVAILABLE and verbose:
+        _iter_with_optional_tqdm([], use_tqdm=True, verbose=verbose)
+        use_tqdm = False
 
     resolved_seed = int(datasets.get("seed", 0)) if deterministic_seed is None else int(deterministic_seed)
     set_global_determinism(resolved_seed)
@@ -666,7 +780,12 @@ def train_model(
         if training_device.type != "cuda":
             print("preload_train_to_device=True requested, but training device is CPU. Skipping preload.")
         else:
-            train_source, preload_time_s = _preload_train_batches_to_device(datasets["train"], training_device)
+            train_source, preload_time_s = _preload_train_batches_to_device(
+                datasets["train"],
+                training_device,
+                use_tqdm=use_tqdm,
+                verbose=verbose,
+            )
             preloaded_in_gpu = True
             print(
                 f"Preloaded {len(train_source)} training batches to {training_device} in {preload_time_s:.2f}s."
@@ -711,6 +830,8 @@ def train_model(
                 total_epochs=epochs,
                 data_already_on_device=preloaded_in_gpu,
                 profiler=profiler,
+                use_tqdm=use_tqdm,
+                verbose=verbose,
             )
 
             if training_device.type =="cuda":
@@ -724,6 +845,8 @@ def train_model(
                 training_device,
                 epoch=epoch,
                 total_epochs=epochs,
+                use_tqdm=use_tqdm,
+                verbose=verbose,
             )
 
             if training_device.type == "cuda":
@@ -740,15 +863,31 @@ def train_model(
             history["h2d_time"].append(h2d_time_s)
             history["compute_time"].append(compute_time_s)
             history["val_time"].append(val_time_s)
-            if verbose:
+            train_io_stats = datasets.get("train_ds").get_and_reset_io_stats() if datasets.get("train_ds") is not None else None
+            if verbose or not use_tqdm:
                 mem_mb = max_mem / (1024**2)
+                io_msg = ""
+                if train_io_stats is not None:
+                    io_total_s = float(train_io_stats["h5_read_s"] + train_io_stats["astype_s"])
+                    samples = float(train_io_stats["samples_yielded"])
+                    io_tput = samples / io_total_s if io_total_s > 0 else 0.0
+                    io_frac = io_total_s / data_wait_time_s if data_wait_time_s > 0 else 0.0
+                    io_msg = (
+                        f" - io_h5: {train_io_stats['h5_read_s']:.2f}s"
+                        f" - io_cast: {train_io_stats['astype_s']:.2f}s"
+                        f" - io_profiles: {int(train_io_stats['profiles_read'])}"
+                        f" - io_samples: {int(samples)}"
+                        f" - io_tput: {io_tput:.2f} samp/s"
+                        f" - io_frac_of_data_wait: {io_frac:.2%}"
+                    )
+
                 print(
                     f"Epoch {epoch}/{epochs} - loss: {train_loss:.5e} - val_loss: {val_loss:.5e} "
-                    f"- lr: {current_lr:.3e} "
-                    f"- data_wait: {data_wait_time_s:.2f}s - h2d: {h2d_time_s:.2f}s "
-                    f"- compute: {compute_time_s:.2f}s - val_time: {val_time_s:.2f}s "
-                    f"- preloaded: {preloaded_in_gpu} - preload_time: {preload_time_s:.2f}s "
-                    f"- max_cuda_mem: {mem_mb:.2f} MB"
+                    f"- lr: {current_lr:.3e} - data_wait: {data_wait_time_s:.2f}s "
+                    f"- h2d: {h2d_time_s:.2f}s - compute: {compute_time_s:.2f}s "
+                    f"- val_time: {val_time_s:.2f}s - preloaded: {preloaded_in_gpu} "
+                    f"- preload_time: {preload_time_s:.2f}s - max_cuda_mem: {mem_mb:.2f} MB"
+                    f"{io_msg}"
                 )
 
             if early_stopping_patience is not None:
@@ -865,6 +1004,7 @@ def train_with_fallback(
     profiler_active_steps: int = 3,
     profiler_repeat: int = 1,
     profiler_row_limit: int = 30,
+    use_tqdm: bool = True,
 ) -> tuple[nn.Module, dict[str, list[float]], torch.device]:
     """
     Try GPU first (if prefer_gpu). If anything fails, retry on CPU.
@@ -902,6 +1042,7 @@ def train_with_fallback(
             profiler_active_steps=profiler_active_steps,
             profiler_repeat=profiler_repeat,
             profiler_row_limit=profiler_row_limit,
+            use_tqdm=use_tqdm,
         )
         return model, history, preferred
     except Exception as e:
@@ -935,6 +1076,7 @@ def train_with_fallback(
         profiler_active_steps=profiler_active_steps,
         profiler_repeat=profiler_repeat,
         profiler_row_limit=profiler_row_limit,
+        use_tqdm=use_tqdm,
     )
     return model, history, torch.device("cpu")
 
@@ -1054,6 +1196,8 @@ def test_and_save_forecasts(
     output_name: str = "rolling_forecasts.h5",
     max_plots: int = 0,
     plot_callback: Callable[..., None] | None = None,
+    use_tqdm: bool = True,
+    verbose: int = 1,
 ) -> dict[str, float]:
     if target_names is None:
         target_names = list(TARGET_NAMES)
@@ -1069,7 +1213,14 @@ def test_and_save_forecasts(
         total_profiles = len(profile_ds)
     except TypeError:
         total_profiles = None
-    progress = tqdm(profile_ds, total=total_profiles, desc="Forecast profiles", unit="profile")
+    progress = _iter_with_optional_tqdm(
+        profile_ds,
+        use_tqdm=use_tqdm,
+        verbose=verbose,
+        total=total_profiles,
+        desc="Forecast profiles",
+        unit="profile",
+    )
     for profile_name, x_profile, y_profile in progress:
         fetch_start = perf_counter()
         fetch_times.append(perf_counter() - fetch_start)
@@ -1124,8 +1275,10 @@ def test_and_save_forecasts(
                 title=f"Rolling Forecast - {profile_name}",
                 save_path=save_path,
             )
-        progress.set_postfix(mae_avg=f"{float(np.mean(mae)):.6e}")
-    progress.close()
+        if use_tqdm and _TQDM_AVAILABLE and hasattr(progress, "set_postfix"):
+            progress.set_postfix(mae_avg=f"{float(np.mean(mae)):.6e}")
+    if use_tqdm and _TQDM_AVAILABLE and hasattr(progress, "close"):
+        progress.close()
 
     save_start = perf_counter()
     save_rolling_forecasts_hdf5(
@@ -1432,6 +1585,7 @@ class LSTMPipelineConfig:
     n_fc: int = 1
     fc_hidden: tuple[int, ...] = (64,)
     learning_rate: float = 1e-3
+    use_tqdm: bool = True
 
     def __post_init__(self) -> None:
         if self.target_names is None:
@@ -1482,10 +1636,12 @@ class LSTMPipeline:
         profiler_active_steps: int = 3,
         profiler_repeat: int = 1,
         profiler_row_limit: int = 30,
+        use_tqdm: bool | None = None,
     ):
 
         if self.datasets is None:
             self.build()
+        resolved_use_tqdm = self.config.use_tqdm if use_tqdm is None else bool(use_tqdm)
         return train_with_fallback(
             self.datasets,
             epochs=epochs,
@@ -1511,6 +1667,7 @@ class LSTMPipeline:
             profiler_active_steps=profiler_active_steps,
             profiler_repeat=profiler_repeat,
             profiler_row_limit=profiler_row_limit,
+            use_tqdm=resolved_use_tqdm,
         )
 
     def sample_test_profile(self):
