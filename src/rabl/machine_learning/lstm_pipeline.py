@@ -53,33 +53,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib.backends.backend_pdf import PdfPages
+from tqdm import tqdm
 from torch import nn
 from torch.profiler import ProfilerActivity
 from torch.utils.data import DataLoader, IterableDataset
-
-try:
-    from tqdm import tqdm
-    _TQDM_AVAILABLE = True
-except ImportError:
-    tqdm = None
-    _TQDM_AVAILABLE = False
-
-_TQDM_WARNED = False
 
 
 def _iter_with_optional_tqdm(
     iterable: Iterable[Any],
     *,
     use_tqdm: bool,
-    verbose: int = 1,
     **kwargs: Any,
 ) -> Iterable[Any]:
-    global _TQDM_WARNED
-    if use_tqdm and _TQDM_AVAILABLE and tqdm is not None:
+    if use_tqdm:
         return tqdm(iterable, **kwargs)
-    if use_tqdm and not _TQDM_AVAILABLE and verbose and not _TQDM_WARNED:
-        print("tqdm is not installed; continuing without progress bars.")
-        _TQDM_WARNED = True
     return iterable
 
 
@@ -571,7 +558,6 @@ def _train_one_epoch(
     progress = _iter_with_optional_tqdm(
         loader,
         use_tqdm=use_tqdm,
-        verbose=verbose,
         total=total_batches,
         desc=f"Train {epoch}/{total_epochs}",
         unit="batch",
@@ -603,10 +589,10 @@ def _train_one_epoch(
         total_loss += float(loss.item())
         compute_time_s += perf_counter() - compute_start
         num_batches += 1
-        if use_tqdm and _TQDM_AVAILABLE and hasattr(progress, "set_postfix"):
+        if use_tqdm and hasattr(progress, "set_postfix"):
             progress.set_postfix(loss=f"{loss.item():.5e}")
         fetch_start = perf_counter()
-    if use_tqdm and _TQDM_AVAILABLE and hasattr(progress, "close"):
+    if use_tqdm and hasattr(progress, "close"):
         progress.close()
     max_mem = 0
     if device.type == "cuda":
@@ -630,7 +616,6 @@ def _preload_train_batches_to_device(
     preload_iter = _iter_with_optional_tqdm(
         loader,
         use_tqdm=use_tqdm,
-        verbose=verbose,
         desc="Preloading train batches",
         unit="batch",
     )
@@ -664,7 +649,6 @@ def _evaluate(
         val_iter = _iter_with_optional_tqdm(
             loader,
             use_tqdm=use_tqdm,
-            verbose=verbose,
             total=total_batches,
             desc=f"Val {epoch}/{total_epochs}",
             unit="batch",
@@ -725,10 +709,6 @@ def train_model(
 
     if training_device is None:
         training_device = choose_device_prefer_gpu()
-
-    if use_tqdm and not _TQDM_AVAILABLE and verbose:
-        _iter_with_optional_tqdm([], use_tqdm=True, verbose=verbose)
-        use_tqdm = False
 
     resolved_seed = int(datasets.get("seed", 0)) if deterministic_seed is None else int(deterministic_seed)
     set_global_determinism(resolved_seed)
@@ -1216,7 +1196,6 @@ def test_and_save_forecasts(
     progress = _iter_with_optional_tqdm(
         profile_ds,
         use_tqdm=use_tqdm,
-        verbose=verbose,
         total=total_profiles,
         desc="Forecast profiles",
         unit="profile",
@@ -1275,9 +1254,9 @@ def test_and_save_forecasts(
                 title=f"Rolling Forecast - {profile_name}",
                 save_path=save_path,
             )
-        if use_tqdm and _TQDM_AVAILABLE and hasattr(progress, "set_postfix"):
+        if use_tqdm and hasattr(progress, "set_postfix"):
             progress.set_postfix(mae_avg=f"{float(np.mean(mae)):.6e}")
-    if use_tqdm and _TQDM_AVAILABLE and hasattr(progress, "close"):
+    if use_tqdm and hasattr(progress, "close"):
         progress.close()
 
     save_start = perf_counter()
