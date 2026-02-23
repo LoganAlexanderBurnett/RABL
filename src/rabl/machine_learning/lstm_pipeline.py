@@ -870,6 +870,7 @@ def train_model(
                 f"- preload_time: {preload_time_s:.2f}s - max_cuda_mem: {mem_mb:.2f} MB"
                 f"{io_msg}"
             )
+            print(f"Epoch {epoch}/{epochs} total_time_s: {epoch_total_time_s:.2f}")
 
             if early_stopping_patience is not None:
                 if val_loss < (best_val_loss - early_stopping_min_delta):
