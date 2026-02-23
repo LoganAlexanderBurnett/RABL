@@ -844,31 +844,30 @@ def train_model(
             history["compute_time"].append(compute_time_s)
             history["val_time"].append(val_time_s)
             train_io_stats = datasets.get("train_ds").get_and_reset_io_stats() if datasets.get("train_ds") is not None else None
-            if verbose or not use_tqdm:
-                mem_mb = max_mem / (1024**2)
-                io_msg = ""
-                if train_io_stats is not None:
-                    io_total_s = float(train_io_stats["h5_read_s"] + train_io_stats["astype_s"])
-                    samples = float(train_io_stats["samples_yielded"])
-                    io_tput = samples / io_total_s if io_total_s > 0 else 0.0
-                    io_frac = io_total_s / data_wait_time_s if data_wait_time_s > 0 else 0.0
-                    io_msg = (
-                        f" - io_h5: {train_io_stats['h5_read_s']:.2f}s"
-                        f" - io_cast: {train_io_stats['astype_s']:.2f}s"
-                        f" - io_profiles: {int(train_io_stats['profiles_read'])}"
-                        f" - io_samples: {int(samples)}"
-                        f" - io_tput: {io_tput:.2f} samp/s"
-                        f" - io_frac_of_data_wait: {io_frac:.2%}"
-                    )
-
-                print(
-                    f"Epoch {epoch}/{epochs} - loss: {train_loss:.5e} - val_loss: {val_loss:.5e} "
-                    f"- lr: {current_lr:.3e} - data_wait: {data_wait_time_s:.2f}s "
-                    f"- h2d: {h2d_time_s:.2f}s - compute: {compute_time_s:.2f}s "
-                    f"- val_time: {val_time_s:.2f}s - preloaded: {preloaded_in_gpu} "
-                    f"- preload_time: {preload_time_s:.2f}s - max_cuda_mem: {mem_mb:.2f} MB"
-                    f"{io_msg}"
+            mem_mb = max_mem / (1024**2)
+            io_msg = ""
+            if train_io_stats is not None:
+                io_total_s = float(train_io_stats["h5_read_s"] + train_io_stats["astype_s"])
+                samples = float(train_io_stats["samples_yielded"])
+                io_tput = samples / io_total_s if io_total_s > 0 else 0.0
+                io_frac = io_total_s / data_wait_time_s if data_wait_time_s > 0 else 0.0
+                io_msg = (
+                    f" - io_h5: {train_io_stats['h5_read_s']:.2f}s"
+                    f" - io_cast: {train_io_stats['astype_s']:.2f}s"
+                    f" - io_profiles: {int(train_io_stats['profiles_read'])}"
+                    f" - io_samples: {int(samples)}"
+                    f" - io_tput: {io_tput:.2f} samp/s"
+                    f" - io_frac_of_data_wait: {io_frac:.2%}"
                 )
+
+            print(
+                f"Epoch {epoch}/{epochs} - loss: {train_loss:.5e} - val_loss: {val_loss:.5e} "
+                f"- lr: {current_lr:.3e} - data_wait: {data_wait_time_s:.2f}s "
+                f"- h2d: {h2d_time_s:.2f}s - compute: {compute_time_s:.2f}s "
+                f"- val_time: {val_time_s:.2f}s - preloaded: {preloaded_in_gpu} "
+                f"- preload_time: {preload_time_s:.2f}s - max_cuda_mem: {mem_mb:.2f} MB"
+                f"{io_msg}"
+            )
 
             if early_stopping_patience is not None:
                 if val_loss < (best_val_loss - early_stopping_min_delta):
