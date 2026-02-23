@@ -832,6 +832,7 @@ def train_model(
             if training_device.type == "cuda":
                 torch.cuda.synchronize(training_device)
             val_time_s = perf_counter() - val_start
+            epoch_total_time_s = data_wait_time_s + h2d_time_s + compute_time_s + val_time_s
 
             scheduler.step()
             current_lr = float(optimizer.param_groups[0]["lr"])
@@ -864,7 +865,8 @@ def train_model(
                 f"Epoch {epoch}/{epochs} - loss: {train_loss:.5e} - val_loss: {val_loss:.5e} "
                 f"- lr: {current_lr:.3e} - data_wait: {data_wait_time_s:.2f}s "
                 f"- h2d: {h2d_time_s:.2f}s - compute: {compute_time_s:.2f}s "
-                f"- val_time: {val_time_s:.2f}s - preloaded: {preloaded_in_gpu} "
+                f"- val_time: {val_time_s:.2f}s - epoch_total: {epoch_total_time_s:.2f}s "
+                f"- preloaded: {preloaded_in_gpu} "
                 f"- preload_time: {preload_time_s:.2f}s - max_cuda_mem: {mem_mb:.2f} MB"
                 f"{io_msg}"
             )
