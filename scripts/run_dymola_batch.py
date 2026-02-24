@@ -31,6 +31,7 @@ def _load_config(config_path: Path) -> dict:
         "batch_number": getattr(config_module, "BATCH_NUMBER", None),
         "num_profiles": getattr(config_module, "NUM_PROFILES", None),
         "seed": getattr(config_module, "SEED", None),
+        "dymola_output_interval": getattr(config_module, "DYMOLA_OUTPUT_INTERVAL", 0.1),
     }
 
 
@@ -57,6 +58,8 @@ def _validate_config(config: dict) -> dict:
         raise SystemExit("BASELINE_ANGLE_DEG must be > 0 and < 180 in config.py.")
     if not isinstance(config["seed"], int):
         raise SystemExit("SEED must be an integer in config.py.")
+    if not isinstance(config["dymola_output_interval"], (int, float)) or config["dymola_output_interval"] <= 0:
+        raise SystemExit("DYMOLA_OUTPUT_INTERVAL must be a positive number in config.py.")
 
     return config
 
@@ -154,6 +157,7 @@ def main() -> None:
     cfg = BatchConfig(
         profiles_dir=str(variography_dir),
         out_dir=str(sim_dir),
+        output_interval=float(config["dymola_output_interval"]),
     )
 
     runner = DymolaBatchRunner(cfg)
