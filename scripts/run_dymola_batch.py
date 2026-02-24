@@ -157,7 +157,7 @@ def main() -> None:
     cfg = BatchConfig(
         profiles_dir=str(variography_dir),
         out_dir=str(sim_dir),
-        output_interval=float(config["dymola_output_interval"]),
+        output_interval=config["dymola_output_interval"],
     )
 
     runner = DymolaBatchRunner(cfg)

@@ -6,7 +6,7 @@ from pathlib import Path
 from time import sleep, time
 
 import numpy as np
-from scipy.io import loadmat
+from scipy.io import loadmat, savemat
 from dymola.dymola_interface import DymolaInterface
 
 
@@ -102,6 +102,29 @@ class DymolaBatchRunner:
         mask = np.ones_like(t, dtype=bool)
         mask[:-1] = (t[:-1] != t[1:])
         return [col[mask] for col in cols]
+
+    @staticmethod
+    def _resample_to_uniform_grid(cols: list[np.ndarray], output_interval: float, stop_time: float) -> list[np.ndarray]:
+        t_raw = np.asarray(cols[0], dtype=float)
+        if t_raw.size < 2:
+            return cols
+
+        start_time = float(t_raw[0])
+        stop_time = float(stop_time)
+        dt = float(output_interval)
+
+        t_uniform = np.arange(start_time, stop_time + 0.5 * dt, dt, dtype=float)
+        if t_uniform.size == 0:
+            t_uniform = np.array([start_time], dtype=float)
+        if t_uniform[-1] < stop_time:
+            t_uniform = np.append(t_uniform, stop_time)
+
+        out = [t_uniform]
+        for series in cols[1:]:
+            y = np.asarray(series, dtype=float)
+            out.append(np.interp(t_uniform, t_raw, y))
+
+        return out
 
     # -----------------------------
     # Dymola lifecycle
@@ -238,6 +261,8 @@ class DymolaBatchRunner:
             if self.cfg.keep_last_duplicate_time:
                 cols = self._dedupe_time_keep_last(cols)
 
+            cols = self._resample_to_uniform_grid(cols, self.cfg.output_interval, stop_time)
+
             t_extract = time() - t_ext0
             self._extract_times.append(t_extract)
 
@@ -247,6 +272,14 @@ class DymolaBatchRunner:
                 w = csv.writer(fp)
                 w.writerow(self.cfg.vars_to_pull)
                 w.writerows(zip(*cols))
+
+            mat_out = csv_out.with_suffix('.mat')
+            table = np.column_stack(cols)
+            savemat(str(mat_out), {
+                "table": table,
+                "columns": np.array(self.cfg.vars_to_pull, dtype=object),
+            })
+
             t_write = time() - t_write0
             self._write_times.append(t_write)
 
