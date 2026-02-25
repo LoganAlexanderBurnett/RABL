@@ -27,7 +27,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-HP_KEYS = ["lookback", "learning_rate", "batch_size", "n_lstm", "hidden_lstm", "hidden_fc"]
+HP_KEYS = ["trial_number", "lookback", "learning_rate", "batch_size", "n_lstm", "hidden_lstm", "hidden_fc"]
 
 
 def fmt(x: Any) -> str:
@@ -51,7 +51,14 @@ def main() -> int:
     args = ap.parse_args()
 
     data = json.loads(args.results_json.read_text(encoding="utf-8"))
-    results: List[Dict[str, Any]] = data["results"]
+    raw_results: List[Dict[str, Any]] = data["results"]
+    results = [
+        {
+            "trial_number": index + 1,
+            **result,
+        }
+        for index, result in enumerate(raw_results)
+    ]
 
     results_sorted = sorted(results, key=lambda r: r["best_val_loss"])
     n = max(1, args.n_rows)

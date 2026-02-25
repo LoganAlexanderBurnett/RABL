@@ -45,6 +45,7 @@ class GridSearchConfig:
     test_output_dirname: str = "best_model_test"
     step_lr_step_size: int = 30
     step_lr_gamma: float = 0.5
+    use_tqdm: bool = True
     verbose: int = 1
 
 
@@ -166,6 +167,7 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
             early_stopping_patience=config.early_stopping_patience,
             early_stopping_min_delta=config.early_stopping_min_delta,
             restore_best_weights=config.restore_best_weights,
+            use_tqdm=config.use_tqdm,
         )
 
         weights_path = trial_dir / "best_model_weights.pt"
@@ -252,9 +254,38 @@ def test_best_model(config: GridSearchConfig, best_result: TrialResult) -> dict[
         datasets["test_profile_ds"],
         out_dir=test_out_dir,
         h5_path=datasets["h5_path"],
+        use_tqdm=config.use_tqdm,
     )
     print(f"Saved best-model test outputs to: {test_out_dir}")
     return test_metrics
+
+
+def _load_trial_result_from_summary(config: GridSearchConfig, trial_dir: Path) -> tuple[int, TrialResult]:
+    summary_path = config.out_dir / "grid_search_results.json"
+    if not summary_path.exists():
+        raise FileNotFoundError(f"Grid-search summary not found: {summary_path}")
+
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    trial_dir_resolved = str(trial_dir.resolve())
+    for trial_idx, raw_result in enumerate(payload.get("results", []), start=1):
+        raw_trial_dir = str(raw_result.get("trial_dir", ""))
+        if str(Path(raw_trial_dir).resolve()) == trial_dir_resolved:
+            return trial_idx, TrialResult(**raw_result)
+
+    raise ValueError(
+        f"Trial folder '{trial_dir}' was not found in summary results at {summary_path}."
+    )
+
+
+def test_model_from_trial_dir(config: GridSearchConfig, trial_dir: Path) -> dict[str, float]:
+    """Load a specific trial folder model and run test-time rolling forecasts."""
+    resolved_trial_dir = Path(trial_dir).expanduser().resolve()
+    trial_number, trial_result = _load_trial_result_from_summary(config, resolved_trial_dir)
+    print(
+        f"Testing trial #{trial_number}: {resolved_trial_dir} "
+        f"(lookback={trial_result.lookback})"
+    )
+    return test_best_model(config, trial_result)
 
 
 def parse_args() -> argparse.Namespace:
@@ -295,6 +326,11 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.5,
         help="StepLR gamma passed to train_with_fallback/train_model.",
+    )
+    parser.add_argument(
+        "--no-tqdm",
+        action="store_true",
+        help="Disable tqdm progress bars for training and evaluation.",
     )
     parser.add_argument(
         "--verbose",
@@ -340,6 +376,15 @@ def parse_args() -> argparse.Namespace:
         default="best_model_test",
         help="Subdirectory under the best trial folder where test forecasts are saved.",
     )
+    parser.add_argument(
+        "--test-trial-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Test a specific trial directory from an existing tuning run. "
+            "When provided, grid search is skipped and weights are loaded from this trial folder."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -362,6 +407,7 @@ def main() -> None:
         lstm_dropout=args.lstm_dropout,
         step_lr_step_size=args.step_lr_step_size,
         step_lr_gamma=args.step_lr_gamma,
+        use_tqdm=not args.no_tqdm,
         verbose=args.verbose,
         preload_train_to_device=args.preload_train_to_device,
         early_stopping_patience=args.early_stopping_patience,
@@ -373,6 +419,10 @@ def main() -> None:
     num_combinations = count_grid_combinations(config)
     print(f"Total combinations: {num_combinations}")
     if args.count_only:
+        return
+
+    if args.test_trial_dir is not None:
+        test_model_from_trial_dir(config, args.test_trial_dir)
         return
 
     _results, best_result = run_grid_search(config)
