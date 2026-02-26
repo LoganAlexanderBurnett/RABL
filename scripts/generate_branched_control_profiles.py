@@ -10,7 +10,7 @@ Workflow implemented:
 
 Notes:
 - This script plots profiles and can optionally save the figure via --save_as.
-- The original profile is black, and each branch interval I_k has a unique color.
+- The original profile is black, each branch interval I_k has a unique color, and child lines are shown only after their branch point.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ class BranchedProfileRecord:
     interval_index: int | None
     branch_time_s: float | None
     color: str
+    generation: int
 
 
 def _interval_bounds(T: float, N_k: int) -> np.ndarray:
@@ -125,6 +126,7 @@ def generate_branched_profiles(
             interval_index=None,
             branch_time_s=None,
             color="black",
+            generation=0,
         )
     ]
 
@@ -161,6 +163,7 @@ def generate_branched_profiles(
                         interval_index=k,
                         branch_time_s=t_b,
                         color=colors[k],
+                        generation=record.generation + 1,
                     )
                 )
 
@@ -180,18 +183,28 @@ def plot_control_profiles(
     branch_x: List[float] = []
     branch_y: List[float] = []
 
-    for record in U_n:
+    ordered_records = sorted(U_n, key=lambda rec: rec.generation, reverse=True)
+
+    for record in ordered_records:
         t = record.profile.t
         u = record.profile.theta_deg
 
         if record.is_original:
             ax.plot(t, u, color="black", linewidth=2.0, alpha=1.0, zorder=3)
-        else:
-            ax.plot(t, u, color=record.color, linewidth=1.0, alpha=0.7, zorder=2)
-            if record.branch_time_s is not None:
-                idx = int(np.argmin(np.abs(t - record.branch_time_s)))
-                branch_x.append(float(t[idx]))
-                branch_y.append(float(u[idx]))
+            continue
+
+        if record.branch_time_s is None:
+            continue
+
+        visible = t >= float(record.branch_time_s)
+        if not np.any(visible):
+            continue
+
+        ax.plot(t[visible], u[visible], color=record.color, linewidth=1.0, alpha=0.7, zorder=2)
+
+        idx = int(np.argmin(np.abs(t - record.branch_time_s)))
+        branch_x.append(float(t[idx]))
+        branch_y.append(float(u[idx]))
 
     if branch_x:
         ax.scatter(branch_x, branch_y, color="black", s=14, zorder=4)
