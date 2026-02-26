@@ -218,6 +218,7 @@ def plot_control_profiles(
     save_as: str | None = None,
     N_k: int | None = None,
     N_b: int | None = None,
+    branching_time_mode: str = "midpoint",
 ) -> None:
     """Plot all control profiles in U_n and optionally save the figure."""
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -226,6 +227,15 @@ def plot_control_profiles(
     branch_y: List[float] = []
 
     ordered_records = sorted(U_n, key=lambda rec: rec.generation, reverse=True)
+
+    # In midpoint mode, use one canonical branch time per interval for rendering,
+    # so all branch-point markers in the same I_k are vertically aligned.
+    interval_canonical_branch_time: dict[int, float] = {}
+    if branching_time_mode == "midpoint":
+        for rec in U_n:
+            if rec.interval_index is None or rec.branch_time_s is None:
+                continue
+            interval_canonical_branch_time.setdefault(rec.interval_index, float(rec.branch_time_s))
 
     for record in ordered_records:
         t = record.profile.t
@@ -238,13 +248,17 @@ def plot_control_profiles(
         if record.branch_time_s is None:
             continue
 
-        visible = t >= float(record.branch_time_s)
+        t_b = float(record.branch_time_s)
+        if branching_time_mode == "midpoint" and record.interval_index is not None:
+            t_b = interval_canonical_branch_time.get(record.interval_index, t_b)
+
+        visible = t >= t_b
         if not np.any(visible):
             continue
 
         ax.plot(t[visible], u[visible], color=record.color, linewidth=1.0, alpha=0.7, zorder=2)
 
-        idx = int(np.argmin(np.abs(t - record.branch_time_s)))
+        idx = int(np.argmin(np.abs(t - t_b)))
         branch_x.append(float(t[idx]))
         branch_y.append(float(u[idx]))
 
@@ -327,6 +341,7 @@ def main() -> None:
         save_as=save_as,
         N_k=args.Nk,
         N_b=args.Nb,
+        branching_time_mode=args.branching_time_mode,
     )
 
 
