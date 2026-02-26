@@ -148,6 +148,17 @@ def generate_branched_profiles(
     colors = _interval_colors(N_k=N_k)
     rng = np.random.default_rng(seed)
 
+    # Precompute one branch time per interval for midpoint mode so every profile
+    # branched in the same interval I_k uses the exact same t_b.
+    interval_branch_times = {
+        k: _branch_time_for_interval_midpoint(
+            t_grid=t_grid,
+            interval_start=float(interval_edges[k]),
+            interval_end=float(interval_edges[k + 1]),
+        )
+        for k in range(N_k)
+    }
+
     for k in range(N_k):
         start = float(interval_edges[k])
         end = float(interval_edges[k + 1])
@@ -155,15 +166,9 @@ def generate_branched_profiles(
         # Snapshot so appends do not mutate current pass iteration.
         current_profiles = list(U_n)
 
-        interval_midpoint_branch_time = _branch_time_for_interval_midpoint(
-            t_grid=t_grid,
-            interval_start=start,
-            interval_end=end,
-        )
-
         for record in current_profiles:
             if branching_time_mode == "midpoint":
-                t_b = interval_midpoint_branch_time
+                t_b = interval_branch_times[k]
             else:
                 t_b = _sample_branch_time_on_grid(
                     t_grid=t_grid,
@@ -189,6 +194,19 @@ def generate_branched_profiles(
                         color=colors[k],
                         generation=record.generation + 1,
                     )
+                )
+
+    # Safety check: midpoint mode must yield exactly one branch time per interval.
+    if branching_time_mode == "midpoint":
+        for k in range(N_k):
+            times_k = {
+                float(rec.branch_time_s)
+                for rec in U_n
+                if (rec.interval_index == k and rec.branch_time_s is not None)
+            }
+            if len(times_k) > 1:
+                raise RuntimeError(
+                    f"Midpoint mode violated in interval k={k}: found {sorted(times_k)}"
                 )
 
     return U_n, interval_edges
