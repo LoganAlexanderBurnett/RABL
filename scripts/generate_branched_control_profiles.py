@@ -23,7 +23,6 @@ from typing import List, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib import colormaps
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = REPO_ROOT / "src"
@@ -54,9 +53,9 @@ def _interval_bounds(T: float, N_k: int) -> np.ndarray:
 
 
 def _interval_colors(N_k: int) -> List[str]:
-    # Use a high-contrast categorical palette for more vibrant interval colors.
-    cmap = colormaps["tab10"]
-    return [cmap(i % cmap.N) for i in range(N_k)]
+    # Fixed vibrant palette requested by user; cycle through as needed.
+    palette = ["blue", "purple", "pink", "cyan"]
+    return [palette[i % len(palette)] for i in range(N_k)]
 
 
 def _sample_branch_time_on_grid(
