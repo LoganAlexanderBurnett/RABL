@@ -177,6 +177,9 @@ def plot_control_profiles(
     """Plot all control profiles in U_n and optionally save the figure."""
     fig, ax = plt.subplots(figsize=(10, 6))
 
+    branch_x: List[float] = []
+    branch_y: List[float] = []
+
     for record in U_n:
         t = record.profile.t
         u = record.profile.theta_deg
@@ -185,6 +188,13 @@ def plot_control_profiles(
             ax.plot(t, u, color="black", linewidth=2.0, alpha=1.0, zorder=3)
         else:
             ax.plot(t, u, color=record.color, linewidth=1.0, alpha=0.7, zorder=2)
+            if record.branch_time_s is not None:
+                idx = int(np.argmin(np.abs(t - record.branch_time_s)))
+                branch_x.append(float(t[idx]))
+                branch_y.append(float(u[idx]))
+
+    if branch_x:
+        ax.scatter(branch_x, branch_y, color="black", s=14, zorder=4)
 
     for edge in interval_edges[1:-1]:
         ax.axvline(edge, color="gray", linestyle="--", linewidth=0.8, alpha=0.4, zorder=1)
