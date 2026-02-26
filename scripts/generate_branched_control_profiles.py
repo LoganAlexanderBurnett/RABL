@@ -9,9 +9,8 @@ Workflow implemented:
    create u_k(t), then append all branches to U_n.
 
 Notes:
-- This script does not save profiles or plot by default.
-- It tracks interval/color metadata so plotting can be done later with
-  unique colors by interval and black for the original profile.
+- This script plots profiles and does not save outputs.
+- The original profile is black, and each branch interval I_k has a unique color.
 """
 
 from __future__ import annotations
@@ -23,6 +22,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
+import matplotlib.pyplot as plt
 from matplotlib import colormaps
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -167,6 +167,32 @@ def generate_branched_profiles(
     return U_n, interval_edges
 
 
+def plot_control_profiles(U_n: List[BranchedProfileRecord], interval_edges: np.ndarray) -> None:
+    """Plot all control profiles in U_n without saving the figure."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    for record in U_n:
+        t = record.profile.t
+        u = record.profile.theta_deg
+
+        if record.is_original:
+            ax.plot(t, u, color="black", linewidth=2.0, alpha=1.0, zorder=3)
+        else:
+            ax.plot(t, u, color=record.color, linewidth=1.0, alpha=0.7, zorder=2)
+
+    for edge in interval_edges[1:-1]:
+        ax.axvline(edge, color="gray", linestyle="--", linewidth=0.8, alpha=0.4, zorder=1)
+
+    ax.set_title("Branched control profiles u(t)")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Control profile u(t) [deg]")
+    ax.grid(True, alpha=0.25)
+
+    plt.tight_layout()
+    plt.show()
+
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate branched drum-control profiles.")
     parser.add_argument("--T", type=float, default=200.0, help="Final time horizon in seconds.")
@@ -188,6 +214,8 @@ def main() -> None:
     print(f"Interval edges: {interval_edges}")
     print("Original profile color: black")
     print("Branched profile colors are assigned uniquely by I_k interval.")
+
+    plot_control_profiles(U_n=U_n, interval_edges=interval_edges)
 
 
 if __name__ == "__main__":
