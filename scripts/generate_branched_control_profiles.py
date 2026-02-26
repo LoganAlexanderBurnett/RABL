@@ -10,7 +10,7 @@ Workflow implemented:
 
 Notes:
 - This script plots profiles and can optionally save the figure via --save_as.
-- The original profile is black, each branch interval I_k has a unique color, and child lines are shown only after their branch point.
+- The original profile is black, each branch interval I_k has a unique color, and child lines are shown only after their branch point; branch timing can be midpoint or random.
 """
 
 from __future__ import annotations
@@ -82,6 +82,17 @@ def _sample_branch_time_on_grid(
     return float(candidate_nodes[idx])
 
 
+def _branch_time_for_interval_midpoint(
+    t_grid: np.ndarray,
+    interval_start: float,
+    interval_end: float,
+) -> float:
+    """Pick the branch time at interval midpoint, snapped to nearest time-grid node."""
+    midpoint = 0.5 * (interval_start + interval_end)
+    idx = int(np.argmin(np.abs(t_grid - midpoint)))
+    return float(t_grid[idx])
+
+
 def generate_branched_profiles(
     T: float = 200.0,
     dt: float = 1.0,
@@ -93,12 +104,15 @@ def generate_branched_profiles(
     ell: float = 7.0,
     sill_v_deg2_s2: float = 0.02,
     nugget_v_deg2_s2: float = 0.0,
+    branching_time_mode: str = "midpoint",
 ) -> Tuple[List[BranchedProfileRecord], np.ndarray]:
     """Generate branched control profiles and return records + interval edges."""
     if dt <= 0:
         raise ValueError("dt must be positive.")
     if N_b <= 0:
         raise ValueError("N_b must be a positive integer.")
+    if branching_time_mode not in {"midpoint", "random"}:
+        raise ValueError("branching_time_mode must be one of: {'midpoint', 'random'}")
 
     t_grid = np.arange(0.0, T + dt, dt, dtype=float)
     if not np.isclose(t_grid[-1], T):
@@ -140,13 +154,23 @@ def generate_branched_profiles(
 
         # Snapshot so appends do not mutate current pass iteration.
         current_profiles = list(U_n)
+
+        interval_midpoint_branch_time = _branch_time_for_interval_midpoint(
+            t_grid=t_grid,
+            interval_start=start,
+            interval_end=end,
+        )
+
         for record in current_profiles:
-            t_b = _sample_branch_time_on_grid(
-                t_grid=t_grid,
-                interval_start=start,
-                interval_end=end,
-                rng=rng,
-            )
+            if branching_time_mode == "midpoint":
+                t_b = interval_midpoint_branch_time
+            else:
+                t_b = _sample_branch_time_on_grid(
+                    t_grid=t_grid,
+                    interval_start=start,
+                    interval_end=end,
+                    rng=rng,
+                )
 
             # Unique deterministic branch seed per (k, profile, branch)
             for b in range(N_b):
@@ -240,6 +264,16 @@ def main() -> None:
     parser.add_argument("--Nb", type=int, default=2, help="Number of branches per (I_k, profile).")
     parser.add_argument("--seed", type=int, default=1234, help="Random seed.")
     parser.add_argument(
+        "--branching_time_mode",
+        type=str,
+        choices=["midpoint", "random"],
+        default="midpoint",
+        help=(
+            "Branch-time strategy per interval I_k: 'midpoint' uses one shared midpoint "
+            "branch time for all profiles in I_k; 'random' samples per profile as before."
+        ),
+    )
+    parser.add_argument(
         "--save_as",
         type=str,
         default="../misc/branched_Nk{Nk}Nb{Nb}.png",
@@ -256,12 +290,14 @@ def main() -> None:
         N_k=args.Nk,
         N_b=args.Nb,
         seed=args.seed,
+        branching_time_mode=args.branching_time_mode,
     )
 
     print(f"Generated {len(U_n)} total control profiles in U_n.")
     print(f"Interval edges: {interval_edges}")
     print("Original profile color: black")
     print("Branched profile colors are assigned uniquely by I_k interval.")
+    print(f"Branching-time mode: {args.branching_time_mode}")
 
     save_as = args.save_as.strip() if isinstance(args.save_as, str) else None
     if save_as == "":
