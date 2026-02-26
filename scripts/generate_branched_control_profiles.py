@@ -54,7 +54,8 @@ def _interval_bounds(T: float, N_k: int) -> np.ndarray:
 
 
 def _interval_colors(N_k: int) -> List[str]:
-    cmap = colormaps["tab20"]
+    # Use a high-contrast categorical palette for more vibrant interval colors.
+    cmap = colormaps["tab10"]
     return [cmap(i % cmap.N) for i in range(N_k)]
 
 
@@ -256,7 +257,7 @@ def plot_control_profiles(
         if not np.any(visible):
             continue
 
-        ax.plot(t[visible], u[visible], color=record.color, linewidth=1.0, alpha=0.7, zorder=2)
+        ax.plot(t[visible], u[visible], color=record.color, linewidth=1.6, alpha=0.95, zorder=2)
 
         idx = int(np.argmin(np.abs(t - t_b)))
         branch_x.append(float(t[idx]))
