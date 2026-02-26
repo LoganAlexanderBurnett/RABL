@@ -9,7 +9,7 @@ Workflow implemented:
    create u_k(t), then append all branches to U_n.
 
 Notes:
-- This script plots profiles and does not save outputs.
+- This script plots profiles and can optionally save the figure via --save_as.
 - The original profile is black, and each branch interval I_k has a unique color.
 """
 
@@ -167,8 +167,14 @@ def generate_branched_profiles(
     return U_n, interval_edges
 
 
-def plot_control_profiles(U_n: List[BranchedProfileRecord], interval_edges: np.ndarray) -> None:
-    """Plot all control profiles in U_n without saving the figure."""
+def plot_control_profiles(
+    U_n: List[BranchedProfileRecord],
+    interval_edges: np.ndarray,
+    save_as: str | None = None,
+    N_k: int | None = None,
+    N_b: int | None = None,
+) -> None:
+    """Plot all control profiles in U_n and optionally save the figure."""
     fig, ax = plt.subplots(figsize=(10, 6))
 
     for record in U_n:
@@ -189,6 +195,16 @@ def plot_control_profiles(U_n: List[BranchedProfileRecord], interval_edges: np.n
     ax.grid(True, alpha=0.25)
 
     plt.tight_layout()
+
+    if save_as:
+        save_path = save_as
+        if N_k is not None and N_b is not None:
+            save_path = save_path.format(Nk=N_k, Nb=N_b)
+        output_path = (Path(__file__).resolve().parent / save_path).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_path, dpi=200, bbox_inches="tight")
+        print(f"Saved plot to: {output_path}")
+
     plt.show()
 
 
@@ -200,6 +216,15 @@ def main() -> None:
     parser.add_argument("--Nk", type=int, default=5, help="Number of subintervals I_k.")
     parser.add_argument("--Nb", type=int, default=2, help="Number of branches per (I_k, profile).")
     parser.add_argument("--seed", type=int, default=1234, help="Random seed.")
+    parser.add_argument(
+        "--save_as",
+        type=str,
+        default="../misc/branched_Nk{Nk}Nb{Nb}.png",
+        help=(
+            "Optional figure output path, relative to scripts/. Supports {Nk} and {Nb} "
+            "format fields. Set to empty string to disable saving."
+        ),
+    )
     args = parser.parse_args()
 
     U_n, interval_edges = generate_branched_profiles(
@@ -215,7 +240,17 @@ def main() -> None:
     print("Original profile color: black")
     print("Branched profile colors are assigned uniquely by I_k interval.")
 
-    plot_control_profiles(U_n=U_n, interval_edges=interval_edges)
+    save_as = args.save_as.strip() if isinstance(args.save_as, str) else None
+    if save_as == "":
+        save_as = None
+
+    plot_control_profiles(
+        U_n=U_n,
+        interval_edges=interval_edges,
+        save_as=save_as,
+        N_k=args.Nk,
+        N_b=args.Nb,
+    )
 
 
 if __name__ == "__main__":
