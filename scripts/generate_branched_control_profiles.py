@@ -23,7 +23,7 @@ from typing import List, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation, writers
+from matplotlib.animation import FuncAnimation
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = REPO_ROOT / "src"
@@ -314,7 +314,8 @@ def save_branching_video(
     progression_frames_per_interval: int = 18,
     interval_edge_frames: int = 8,
     video_dpi: int = 160,
-    video_bitrate_kbps: int = 1800,
+    N_k: int | None = None,
+    N_b: int | None = None,
 ) -> None:
     """Render a staged animation of branching progression and save it as a video."""
     N_k = len(interval_edges) - 1
@@ -414,29 +415,19 @@ def save_branching_video(
         ax.set_ylabel("Control profile u(t) [deg]")
         ax.grid(True, alpha=0.25)
 
-    animation = FuncAnimation(fig, _update, frames=total_frames, interval=int(1000 / max(fps, 1)))
-
-    output_path = (Path(__file__).resolve().parent / save_as).resolve()
+    save_path = save_as
+    if N_k is not None and N_b is not None:
+        save_path = save_path.format(Nk=N_k, Nb=N_b)
+    output_path = (Path(__file__).resolve().parent / save_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     suffix = output_path.suffix.lower()
-    if suffix == ".gif":
-        animation.save(output_path, writer="pillow", fps=fps, dpi=max(video_dpi, 1))
-    else:
-        # For mp4/video formats, ffmpeg is required.
-        if not writers.is_available("ffmpeg"):
-            raise RuntimeError(
-                "ffmpeg writer is not available in this environment. "
-                "Use --save_video_as with a .gif extension or install ffmpeg."
-            )
+    if suffix != ".gif":
+        plt.close(fig)
+        raise ValueError("Video output currently supports only .gif files.")
 
-        animation.save(
-            output_path,
-            writer="ffmpeg",
-            fps=fps,
-            dpi=max(video_dpi, 1),
-            bitrate=max(video_bitrate_kbps, 1),
-        )
+    animation = FuncAnimation(fig, _update, frames=total_frames, interval=int(1000 / max(fps, 1)))
+    animation.save(output_path, writer="pillow", fps=fps, dpi=max(video_dpi, 1))
 
     plt.close(fig)
     print(f"Saved branching video to: {output_path}")
@@ -445,7 +436,7 @@ def save_branching_video(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate branched drum-control profiles.")
-    parser.add_argument("--T", type=float, default=1000.0, help="Final time horizon in seconds.")
+    parser.add_argument("--T", type=float, default=200.0, help="Final time horizon in seconds.")
     parser.add_argument("--dt", type=float, default=0.4, help="Time-step for control profile grid.")
     parser.add_argument("--Nk", type=int, default=3, help="Number of subintervals I_k.")
     parser.add_argument("--Nb", type=int, default=2, help="Number of branches per (I_k, profile).")
@@ -472,10 +463,10 @@ def main() -> None:
     parser.add_argument(
         "--save_video_as",
         type=str,
-        default="",
+        default="../misc/branched_Nk{Nk}Nb{Nb}.gif",
         help=(
-            "Optional video output path, relative to scripts/. Supports common video formats "
-            "such as .mp4 or .gif. Leave empty to disable video export."
+            "Optional GIF output path, relative to scripts/. Supports {Nk} and {Nb} "
+            "format fields. Set to empty string to disable video export."
         ),
     )
     parser.add_argument(
@@ -501,12 +492,6 @@ def main() -> None:
         type=int,
         default=160,
         help="Video DPI (higher increases resolution/quality and file size).",
-    )
-    parser.add_argument(
-        "--video_bitrate_kbps",
-        type=int,
-        default=1800,
-        help="Video bitrate in kbps for ffmpeg outputs such as .mp4.",
     )
     args = parser.parse_args()
 
@@ -548,7 +533,8 @@ def main() -> None:
             progression_frames_per_interval=args.video_progression_frames,
             interval_edge_frames=args.video_interval_edge_frames,
             video_dpi=args.video_dpi,
-            video_bitrate_kbps=args.video_bitrate_kbps,
+            N_k=args.Nk,
+            N_b=args.Nb,
         )
 
 
