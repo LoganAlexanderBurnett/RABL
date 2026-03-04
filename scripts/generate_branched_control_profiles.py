@@ -23,6 +23,7 @@ from typing import List, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = REPO_ROOT / "src"
@@ -287,6 +288,112 @@ def plot_control_profiles(
     plt.show()
 
 
+def _ordered_interval_children(
+    U_n: List[BranchedProfileRecord],
+    N_k: int,
+) -> List[List[BranchedProfileRecord]]:
+    """Collect child profiles grouped by birth interval and sorted by generation."""
+    grouped: List[List[BranchedProfileRecord]] = [[] for _ in range(N_k)]
+    for record in U_n:
+        if record.is_original or record.interval_index is None:
+            continue
+        if 0 <= record.interval_index < N_k:
+            grouped[record.interval_index].append(record)
+
+    for k in range(N_k):
+        grouped[k] = sorted(grouped[k], key=lambda rec: (rec.generation, rec.branch_time_s or 0.0))
+
+    return grouped
+
+
+def save_branching_video(
+    U_n: List[BranchedProfileRecord],
+    interval_edges: np.ndarray,
+    save_as: str,
+    fps: int = 12,
+    progression_frames_per_interval: int = 18,
+) -> None:
+    """Render a staged animation of branching progression and save it as a video."""
+    N_k = len(interval_edges) - 1
+    base_record = next((record for record in U_n if record.is_original), None)
+    if base_record is None:
+        raise RuntimeError("Unable to render video without a base profile.")
+
+    interval_children = _ordered_interval_children(U_n=U_n, N_k=N_k)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    t_base = base_record.profile.t
+    u_base = base_record.profile.theta_deg
+    x_min = float(np.min(t_base))
+    x_max = float(np.max(t_base))
+    y_min = min(float(np.min(rec.profile.theta_deg)) for rec in U_n)
+    y_max = max(float(np.max(rec.profile.theta_deg)) for rec in U_n)
+    y_pad = 0.05 * (y_max - y_min if y_max > y_min else 1.0)
+
+    # Frame plan:
+    # 0: base profile only
+    # 1: base + interval edges
+    # 2+: one progressive plotting segment per interval
+    interval_frame_meta: List[Tuple[int, int]] = []
+    frame_index = 2
+    for k in range(N_k):
+        interval_frame_meta.append((frame_index, frame_index + progression_frames_per_interval - 1))
+        frame_index += progression_frames_per_interval
+    total_frames = frame_index
+
+    def _draw_interval_group(interval_idx: int, x_cutoff: float) -> None:
+        for record in interval_children[interval_idx]:
+            if record.branch_time_s is None:
+                continue
+            t = record.profile.t
+            u = record.profile.theta_deg
+            visible = (t >= record.branch_time_s) & (t <= x_cutoff)
+            if np.any(visible):
+                ax.plot(t[visible], u[visible], color=record.color, linewidth=1.6, alpha=0.95, zorder=2)
+
+    def _update(frame: int) -> None:
+        ax.clear()
+        ax.plot(t_base, u_base, color="black", linewidth=2.0, alpha=1.0, zorder=3)
+
+        if frame >= 1:
+            for edge in interval_edges[1:-1]:
+                ax.axvline(edge, color="gray", linestyle="--", linewidth=0.8, alpha=0.4, zorder=1)
+
+        for k, (start_frame, end_frame) in enumerate(interval_frame_meta):
+            if frame < start_frame:
+                continue
+
+            if frame >= end_frame:
+                x_cut = x_max
+            else:
+                progress = (frame - start_frame + 1) / progression_frames_per_interval
+                x_cut = x_min + progress * (x_max - x_min)
+
+            _draw_interval_group(interval_idx=k, x_cutoff=x_cut)
+
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+        ax.set_title("Branched control profiles u(t)")
+        ax.set_xlabel("Time [s]")
+        ax.set_ylabel("Control profile u(t) [deg]")
+        ax.grid(True, alpha=0.25)
+
+    animation = FuncAnimation(fig, _update, frames=total_frames, interval=int(1000 / max(fps, 1)))
+
+    output_path = (Path(__file__).resolve().parent / save_as).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    suffix = output_path.suffix.lower()
+    if suffix == ".gif":
+        animation.save(output_path, writer="pillow", fps=fps)
+    else:
+        # For mp4/video formats, use ffmpeg when available.
+        animation.save(output_path, writer="ffmpeg", fps=fps)
+
+    plt.close(fig)
+    print(f"Saved branching video to: {output_path}")
+
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate branched drum-control profiles.")
@@ -313,6 +420,27 @@ def main() -> None:
             "Optional figure output path, relative to scripts/. Supports {Nk} and {Nb} "
             "format fields. Set to empty string to disable saving."
         ),
+    )
+    parser.add_argument(
+        "--save_video_as",
+        type=str,
+        default="",
+        help=(
+            "Optional video output path, relative to scripts/. Supports common video formats "
+            "such as .mp4 or .gif. Leave empty to disable video export."
+        ),
+    )
+    parser.add_argument(
+        "--video_fps",
+        type=int,
+        default=12,
+        help="Frames per second for video output.",
+    )
+    parser.add_argument(
+        "--video_progression_frames",
+        type=int,
+        default=18,
+        help="Number of progressive drawing frames allocated to each interval.",
     )
     args = parser.parse_args()
 
@@ -343,6 +471,16 @@ def main() -> None:
         N_b=args.Nb,
         branching_time_mode=args.branching_time_mode,
     )
+
+    save_video_as = args.save_video_as.strip() if isinstance(args.save_video_as, str) else None
+    if save_video_as:
+        save_branching_video(
+            U_n=U_n,
+            interval_edges=interval_edges,
+            save_as=save_video_as,
+            fps=args.video_fps,
+            progression_frames_per_interval=args.video_progression_frames,
+        )
 
 
 if __name__ == "__main__":
