@@ -23,7 +23,7 @@ from typing import List, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
+from matplotlib.animation import FuncAnimation, writers
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = REPO_ROOT / "src"
@@ -313,6 +313,8 @@ def save_branching_video(
     fps: int = 12,
     progression_frames_per_interval: int = 18,
     interval_edge_frames: int = 8,
+    video_dpi: int = 160,
+    video_bitrate_kbps: int = 1800,
 ) -> None:
     """Render a staged animation of branching progression and save it as a video."""
     N_k = len(interval_edges) - 1
@@ -369,22 +371,8 @@ def save_branching_video(
     def _update(frame: int) -> None:
         ax.clear()
 
-        # Keep the first frame and interval-edge stage as complete base profile,
-        # then progressively reveal it during branch generation frames.
-        if frame <= interval_edge_end:
-            base_visible = np.ones_like(t_base, dtype=bool)
-        else:
-            first_interval_start = interval_frame_meta[0][0] if interval_frame_meta else (interval_edge_end + 1)
-            first_interval_end = interval_frame_meta[0][1] if interval_frame_meta else (interval_edge_end + 1)
-            if frame >= first_interval_end:
-                x_cut_base = x_max
-            else:
-                progress_base = (frame - first_interval_start + 1) / progression_frames_per_interval
-                x_cut_base = x_min + max(0.0, min(1.0, progress_base)) * (x_max - x_min)
-            base_visible = t_base <= x_cut_base
-
-        if np.any(base_visible):
-            ax.plot(t_base[base_visible], u_base[base_visible], color="black", linewidth=2.0, alpha=1.0, zorder=3)
+        # Keep base trajectory fully visible in every frame.
+        ax.plot(t_base, u_base, color="black", linewidth=2.0, alpha=1.0, zorder=3)
 
         if frame >= interval_edge_start:
             y0 = y_min - y_pad
@@ -433,10 +421,22 @@ def save_branching_video(
 
     suffix = output_path.suffix.lower()
     if suffix == ".gif":
-        animation.save(output_path, writer="pillow", fps=fps)
+        animation.save(output_path, writer="pillow", fps=fps, dpi=max(video_dpi, 1))
     else:
-        # For mp4/video formats, use ffmpeg when available.
-        animation.save(output_path, writer="ffmpeg", fps=fps)
+        # For mp4/video formats, ffmpeg is required.
+        if not writers.is_available("ffmpeg"):
+            raise RuntimeError(
+                "ffmpeg writer is not available in this environment. "
+                "Use --save_video_as with a .gif extension or install ffmpeg."
+            )
+
+        animation.save(
+            output_path,
+            writer="ffmpeg",
+            fps=fps,
+            dpi=max(video_dpi, 1),
+            bitrate=max(video_bitrate_kbps, 1),
+        )
 
     plt.close(fig)
     print(f"Saved branching video to: {output_path}")
@@ -496,6 +496,18 @@ def main() -> None:
         default=8,
         help="Number of frames used to progressively draw interval-bound edges along y.",
     )
+    parser.add_argument(
+        "--video_dpi",
+        type=int,
+        default=160,
+        help="Video DPI (higher increases resolution/quality and file size).",
+    )
+    parser.add_argument(
+        "--video_bitrate_kbps",
+        type=int,
+        default=1800,
+        help="Video bitrate in kbps for ffmpeg outputs such as .mp4.",
+    )
     args = parser.parse_args()
 
     U_n, interval_edges = generate_branched_profiles(
@@ -535,6 +547,8 @@ def main() -> None:
             fps=args.video_fps,
             progression_frames_per_interval=args.video_progression_frames,
             interval_edge_frames=args.video_interval_edge_frames,
+            video_dpi=args.video_dpi,
+            video_bitrate_kbps=args.video_bitrate_kbps,
         )
 
 
