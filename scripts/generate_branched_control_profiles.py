@@ -54,7 +54,7 @@ def _interval_bounds(T: float, N_k: int) -> np.ndarray:
 
 def _interval_colors(N_k: int) -> List[str]:
     # Fixed vibrant palette requested by user; cycle through as needed.
-    palette = ["blue", "purple", "pink", "cyan"]
+    palette = ["darkcyan", "aquamarine", "mediumturquoise"]
     return [palette[i % len(palette)] for i in range(N_k)]
 
 
@@ -95,13 +95,13 @@ def _branch_time_for_interval_midpoint(
 
 def generate_branched_profiles(
     T: float = 200.0,
-    dt: float = 1.0,
-    N_k: int = 5,
+    dt: float = 0.1,
+    N_k: int = 3,
     N_b: int = 2,
     seed: int = 1234,
     baseline_angle_deg: float = 45.0,
     kernel: str = "matern52",
-    ell: float = 7.0,
+    ell: float = 5.0,
     sill_v_deg2_s2: float = 0.02,
     nugget_v_deg2_s2: float = 0.0,
     branching_time_mode: str = "midpoint",
@@ -290,9 +290,9 @@ def plot_control_profiles(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate branched drum-control profiles.")
-    parser.add_argument("--T", type=float, default=200.0, help="Final time horizon in seconds.")
-    parser.add_argument("--dt", type=float, default=1.0, help="Time-step for control profile grid.")
-    parser.add_argument("--Nk", type=int, default=5, help="Number of subintervals I_k.")
+    parser.add_argument("--T", type=float, default=1000.0, help="Final time horizon in seconds.")
+    parser.add_argument("--dt", type=float, default=0.4, help="Time-step for control profile grid.")
+    parser.add_argument("--Nk", type=int, default=3, help="Number of subintervals I_k.")
     parser.add_argument("--Nb", type=int, default=2, help="Number of branches per (I_k, profile).")
     parser.add_argument("--seed", type=int, default=1234, help="Random seed.")
     parser.add_argument(
