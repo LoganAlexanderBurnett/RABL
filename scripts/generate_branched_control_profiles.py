@@ -342,6 +342,9 @@ def save_branching_video(
     total_frames = frame_index
 
     def _draw_interval_group(interval_idx: int, x_cutoff: float) -> None:
+        branch_x: List[float] = []
+        branch_y: List[float] = []
+
         for record in interval_children[interval_idx]:
             if record.branch_time_s is None:
                 continue
@@ -351,9 +354,33 @@ def save_branching_video(
             if np.any(visible):
                 ax.plot(t[visible], u[visible], color=record.color, linewidth=1.6, alpha=0.95, zorder=2)
 
+            if x_cutoff >= record.branch_time_s:
+                idx = int(np.argmin(np.abs(t - record.branch_time_s)))
+                branch_x.append(float(t[idx]))
+                branch_y.append(float(u[idx]))
+
+        if branch_x:
+            ax.scatter(branch_x, branch_y, color="black", s=14, zorder=4)
+
     def _update(frame: int) -> None:
         ax.clear()
-        ax.plot(t_base, u_base, color="black", linewidth=2.0, alpha=1.0, zorder=3)
+
+        # Keep the first frame as the complete base profile, then progressively
+        # reveal it during branch generation frames to mimic real-time creation.
+        if frame <= 1:
+            base_visible = np.ones_like(t_base, dtype=bool)
+        else:
+            first_interval_start = interval_frame_meta[0][0] if interval_frame_meta else 2
+            first_interval_end = interval_frame_meta[0][1] if interval_frame_meta else 2
+            if frame >= first_interval_end:
+                x_cut_base = x_max
+            else:
+                progress_base = (frame - first_interval_start + 1) / progression_frames_per_interval
+                x_cut_base = x_min + max(0.0, min(1.0, progress_base)) * (x_max - x_min)
+            base_visible = t_base <= x_cut_base
+
+        if np.any(base_visible):
+            ax.plot(t_base[base_visible], u_base[base_visible], color="black", linewidth=2.0, alpha=1.0, zorder=3)
 
         if frame >= 1:
             for edge in interval_edges[1:-1]:
