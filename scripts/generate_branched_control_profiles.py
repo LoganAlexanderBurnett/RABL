@@ -472,19 +472,19 @@ def main() -> None:
     parser.add_argument(
         "--video_fps",
         type=int,
-        default=12,
+        default=25,
         help="Frames per second for video output.",
     )
     parser.add_argument(
         "--video_progression_frames",
         type=int,
-        default=18,
+        default=100,
         help="Number of progressive drawing frames allocated to each interval.",
     )
     parser.add_argument(
         "--video_interval_edge_frames",
         type=int,
-        default=8,
+        default=25,
         help="Number of frames used to progressively draw interval-bound edges along y.",
     )
     parser.add_argument(
