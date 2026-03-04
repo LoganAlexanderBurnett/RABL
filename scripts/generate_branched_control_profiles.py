@@ -312,6 +312,7 @@ def save_branching_video(
     save_as: str,
     fps: int = 12,
     progression_frames_per_interval: int = 18,
+    interval_edge_frames: int = 8,
 ) -> None:
     """Render a staged animation of branching progression and save it as a video."""
     N_k = len(interval_edges) - 1
@@ -332,10 +333,13 @@ def save_branching_video(
 
     # Frame plan:
     # 0: base profile only
-    # 1: base + interval edges
-    # 2+: one progressive plotting segment per interval
+    # 1..M: progressively draw interval edges (vertical, bottom-to-top)
+    # then one progressive plotting segment per interval
+    interval_edge_start = 1
+    interval_edge_end = interval_edge_start + max(interval_edge_frames, 1) - 1
+
     interval_frame_meta: List[Tuple[int, int]] = []
-    frame_index = 2
+    frame_index = interval_edge_end + 1
     for k in range(N_k):
         interval_frame_meta.append((frame_index, frame_index + progression_frames_per_interval - 1))
         frame_index += progression_frames_per_interval
@@ -365,13 +369,13 @@ def save_branching_video(
     def _update(frame: int) -> None:
         ax.clear()
 
-        # Keep the first frame as the complete base profile, then progressively
-        # reveal it during branch generation frames to mimic real-time creation.
-        if frame <= 1:
+        # Keep the first frame and interval-edge stage as complete base profile,
+        # then progressively reveal it during branch generation frames.
+        if frame <= interval_edge_end:
             base_visible = np.ones_like(t_base, dtype=bool)
         else:
-            first_interval_start = interval_frame_meta[0][0] if interval_frame_meta else 2
-            first_interval_end = interval_frame_meta[0][1] if interval_frame_meta else 2
+            first_interval_start = interval_frame_meta[0][0] if interval_frame_meta else (interval_edge_end + 1)
+            first_interval_end = interval_frame_meta[0][1] if interval_frame_meta else (interval_edge_end + 1)
             if frame >= first_interval_end:
                 x_cut_base = x_max
             else:
@@ -382,9 +386,26 @@ def save_branching_video(
         if np.any(base_visible):
             ax.plot(t_base[base_visible], u_base[base_visible], color="black", linewidth=2.0, alpha=1.0, zorder=3)
 
-        if frame >= 1:
+        if frame >= interval_edge_start:
+            y0 = y_min - y_pad
+            y1 = y_max + y_pad
+            if frame >= interval_edge_end:
+                edge_top = y1
+            else:
+                edge_progress = (frame - interval_edge_start + 1) / max(interval_edge_frames, 1)
+                edge_progress = max(0.0, min(1.0, edge_progress))
+                edge_top = y0 + edge_progress * (y1 - y0)
+
             for edge in interval_edges[1:-1]:
-                ax.axvline(edge, color="gray", linestyle="--", linewidth=0.8, alpha=0.4, zorder=1)
+                ax.plot(
+                    [edge, edge],
+                    [y0, edge_top],
+                    color="gray",
+                    linestyle="--",
+                    linewidth=0.8,
+                    alpha=0.4,
+                    zorder=1,
+                )
 
         for k, (start_frame, end_frame) in enumerate(interval_frame_meta):
             if frame < start_frame:
@@ -469,6 +490,12 @@ def main() -> None:
         default=18,
         help="Number of progressive drawing frames allocated to each interval.",
     )
+    parser.add_argument(
+        "--video_interval_edge_frames",
+        type=int,
+        default=8,
+        help="Number of frames used to progressively draw interval-bound edges along y.",
+    )
     args = parser.parse_args()
 
     U_n, interval_edges = generate_branched_profiles(
@@ -507,6 +534,7 @@ def main() -> None:
             save_as=save_video_as,
             fps=args.video_fps,
             progression_frames_per_interval=args.video_progression_frames,
+            interval_edge_frames=args.video_interval_edge_frames,
         )
 
 
