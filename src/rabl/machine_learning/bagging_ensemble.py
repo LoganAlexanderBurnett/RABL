@@ -153,16 +153,25 @@ def create_bagged_training_hdf5(
                 f"profiles_per_bag={bag_profile_count}"
             )
 
-        for bag_idx in range(n_models):
-            bag_group = train_dst.create_group(f"bag_{bag_idx}")
-            bag_group.attrs["bag_index"] = bag_idx
-            files_group = bag_group.create_group("files")
-
-            selected_profiles = rng.choice(
+        bag_profile_lists = [
+            rng.choice(
                 train_profile_names,
                 size=bag_profile_count,
                 replace=False,
             ).tolist()
+            for _ in range(n_models)
+        ]
+        bag_profile_sets = [set(selected_profiles) for selected_profiles in bag_profile_lists]
+        shared_profiles_all_bags = set.intersection(*bag_profile_sets) if bag_profile_sets else set()
+        profile_frequency: dict[str, int] = {}
+        for bag_set in bag_profile_sets:
+            for profile_name in bag_set:
+                profile_frequency[profile_name] = profile_frequency.get(profile_name, 0) + 1
+
+        for bag_idx, selected_profiles in enumerate(bag_profile_lists):
+            bag_group = train_dst.create_group(f"bag_{bag_idx}")
+            bag_group.attrs["bag_index"] = bag_idx
+            files_group = bag_group.create_group("files")
 
             used_names: set[str] = set()
             samples_written = 0
@@ -181,10 +190,15 @@ def create_bagged_training_hdf5(
             bag_group.attrs["num_unique_source_profiles"] = len(used_names)
             bag_group.attrs["num_samples"] = samples_written
 
+            shared_profiles_in_bag = len(used_names.intersection(shared_profiles_all_bags))
+            bag_only_profiles = sum(1 for profile_name in used_names if profile_frequency[profile_name] == 1)
+
             if verbose >= 1:
                 print(
                     f"[bagging] bag_{bag_idx}: profiles={len(selected_profiles)} "
-                    f"unique_profiles={len(used_names)} samples={samples_written}"
+                    f"unique_profiles={len(used_names)} samples={samples_written} "
+                    f"shared_across_all_bags={shared_profiles_in_bag} "
+                    f"bag_only_profiles={bag_only_profiles}"
                 )
 
     return output_h5_path
