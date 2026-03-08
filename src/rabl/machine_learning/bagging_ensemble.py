@@ -502,7 +502,7 @@ def run_bagging_ensemble(
             bagged_h5_path,
             train_split=f"train/bag_{model_idx}",
             batch_size=config.batch_size,
-            seed=config.seed + model_idx,
+            seed=config.seed,
         )
 
         model, history, used_device = train_with_fallback(
@@ -520,7 +520,7 @@ def run_bagging_ensemble(
             verbose=config.verbose,
             prefer_gpu=config.prefer_gpu,
             preload_train_to_device=True,
-            deterministic_seed=config.seed + model_idx,
+            deterministic_seed=config.seed,
             early_stopping_patience=config.early_stopping_patience,
             early_stopping_min_delta=config.early_stopping_min_delta,
             restore_best_weights=True,
