@@ -128,6 +128,7 @@ def create_bagged_training_hdf5(
     n_models: int,
     overlap: float = 0.70,
     seed: int = 123,
+    verbose: int = 1,
 ) -> Path:
     """
     Create an HDF5 with train/bag_i subsets and copied val/test/scaling groups.
@@ -180,6 +181,14 @@ def create_bagged_training_hdf5(
         train_dst.attrs["bagging_shared_profile_pool_size"] = shared_pool_size
         train_dst.attrs["bagging_profiles_per_bag"] = bag_profile_count
 
+        if verbose >= 1:
+            print(
+                "[bagging] configured "
+                f"n_models={n_models}, overlap={overlap:.3f}, total_train_profiles={num_profiles}, "
+                f"total_train_samples={total_train_samples}, shared_pool_size={shared_pool_size}, "
+                f"profiles_per_bag={bag_profile_count}"
+            )
+
         for bag_idx in range(n_models):
             bag_group = train_dst.create_group(f"bag_{bag_idx}")
             bag_group.attrs["bag_index"] = bag_idx
@@ -208,6 +217,12 @@ def create_bagged_training_hdf5(
             bag_group.attrs["num_profile_draws"] = len(selected_profiles)
             bag_group.attrs["num_unique_source_profiles"] = len(used_names)
             bag_group.attrs["num_samples"] = samples_written
+
+            if verbose >= 1:
+                print(
+                    f"[bagging] bag_{bag_idx}: profiles={len(selected_profiles)} "
+                    f"unique_profiles={len(used_names)} samples={samples_written}"
+                )
 
     return output_h5_path
 
@@ -488,6 +503,7 @@ def run_bagging_ensemble(
         n_models=config.n_models,
         overlap=config.overlap,
         seed=config.seed,
+        verbose=config.verbose,
     )
 
     models: list[torch.nn.Module] = []
