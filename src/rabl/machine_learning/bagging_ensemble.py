@@ -31,7 +31,7 @@ from .lstm_pipeline import (
 @dataclass(frozen=True)
 class BaggingEnsembleConfig:
     n_models: int
-    overlap: float = 0.70
+    bag_fraction: float = 0.70
     seed: int = 123
     batch_size: int = 64
     epochs: int = 100
@@ -51,8 +51,8 @@ class BaggingEnsembleConfig:
     def validate(self) -> None:
         if self.n_models < 1:
             raise ValueError("n_models must be >= 1.")
-        if not (0.0 <= self.overlap < 1.0):
-            raise ValueError("overlap must be in [0.0, 1.0).")
+        if not (0.0 < self.bag_fraction <= 1.0):
+            raise ValueError("bag_fraction must be in (0.0, 1.0].")
 
 
 def _copy_group_shallow(src: h5py.Group, dst_parent: h5py.Group, name: str) -> h5py.Group:
@@ -88,45 +88,12 @@ def _copy_profile_group(src_profile_group: h5py.Group, dst_profile_group: h5py.G
         dst_profile_group.attrs["truncated_samples"] = limit
 
 
-def _select_profiles_for_bag(
-    profile_names: list[str],
-    *,
-    bag_profile_count: int,
-    rng: np.random.Generator,
-    shared_pool: list[str],
-) -> list[str]:
-    """Select unique profile names for one bag (no within-bag replacement)."""
-    if bag_profile_count < 1:
-        raise ValueError("bag_profile_count must be >= 1.")
-    if bag_profile_count > len(profile_names):
-        raise ValueError("bag_profile_count cannot exceed total number of train profiles.")
-
-    shared_candidates = list(dict.fromkeys(shared_pool))
-    non_shared_candidates = [name for name in profile_names if name not in set(shared_candidates)]
-
-    selected: list[str] = []
-
-    shared_take = min(len(shared_candidates), bag_profile_count)
-    if shared_take > 0:
-        shared_idx = rng.choice(len(shared_candidates), size=shared_take, replace=False)
-        selected.extend(shared_candidates[int(i)] for i in np.atleast_1d(shared_idx))
-
-    remaining = bag_profile_count - len(selected)
-    if remaining > 0:
-        if remaining > len(non_shared_candidates):
-            raise RuntimeError("Unable to complete bag without replacement: insufficient non-shared profiles.")
-        extra_idx = rng.choice(len(non_shared_candidates), size=remaining, replace=False)
-        selected.extend(non_shared_candidates[int(i)] for i in np.atleast_1d(extra_idx))
-
-    return selected
-
-
 def create_bagged_training_hdf5(
     input_h5_path: Path,
     output_h5_path: Path,
     *,
     n_models: int,
-    overlap: float = 0.70,
+    bag_fraction: float = 0.70,
     seed: int = 123,
     verbose: int = 1,
 ) -> Path:
@@ -135,13 +102,13 @@ def create_bagged_training_hdf5(
 
     - Non-train groups are copied byte-for-byte via h5py copy.
     - Each bag samples train profiles without replacement.
-    - `overlap` sets the shared profile fraction across bags; bag size is
-      `round(num_train_profiles * (1 - overlap))` (minimum 1 profile).
+    - `bag_fraction` controls profiles per bag as
+      `round(num_train_profiles * bag_fraction)` (minimum 1 profile).
     """
     if n_models < 1:
         raise ValueError("n_models must be >= 1.")
-    if not (0.0 <= overlap < 1.0):
-        raise ValueError("overlap must be in [0.0, 1.0).")
+    if not (0.0 < bag_fraction <= 1.0):
+        raise ValueError("bag_fraction must be in (0.0, 1.0].")
 
     input_h5_path = Path(input_h5_path)
     output_h5_path = Path(output_h5_path)
@@ -153,7 +120,7 @@ def create_bagged_training_hdf5(
         for attr_key, attr_value in src.attrs.items():
             dst.attrs[attr_key] = attr_value
         dst.attrs["bagging_n_models"] = n_models
-        dst.attrs["bagging_overlap"] = overlap
+        dst.attrs["bagging_bag_fraction"] = bag_fraction
         dst.attrs["bagging_seed"] = seed
 
         for group_name in ("val", "test", "scaling"):
@@ -162,30 +129,27 @@ def create_bagged_training_hdf5(
 
         train_src = src["train"]
         train_files_src = train_src["files"]
-        profile_names = sorted(train_files_src.keys())
-        if not profile_names:
+        train_profile_names = sorted(train_files_src.keys())
+        if not train_profile_names:
             raise ValueError("No profiles found under train/files in source HDF5.")
 
-        profile_sample_counts = {name: int(train_files_src[name]["X"].shape[0]) for name in profile_names}
+        profile_sample_counts = {name: int(train_files_src[name]["X"].shape[0]) for name in train_profile_names}
         total_train_samples = int(sum(profile_sample_counts.values()))
 
-        num_profiles = len(profile_names)
-        shared_pool_size = max(1, int(round(num_profiles * overlap)))
-        shared_pool = list(rng.choice(profile_names, size=shared_pool_size, replace=False))
-        bag_profile_count = max(1, int(round(num_profiles * (1.0 - overlap))))
+        num_train_profiles = len(train_profile_names)
+        bag_profile_count = max(1, int(round(num_train_profiles * bag_fraction)))
 
         train_dst = _copy_group_shallow(train_src, dst, "train")
-        train_dst.attrs["bagging_sampling"] = "profile_no_replacement_with_overlap"
+        train_dst.attrs["bagging_sampling"] = "profile_no_replacement_subsample_bagging"
         train_dst.attrs["bagging_total_train_samples"] = total_train_samples
-        train_dst.attrs["bagging_total_train_profiles"] = num_profiles
-        train_dst.attrs["bagging_shared_profile_pool_size"] = shared_pool_size
+        train_dst.attrs["bagging_total_train_profiles"] = num_train_profiles
         train_dst.attrs["bagging_profiles_per_bag"] = bag_profile_count
 
         if verbose >= 1:
             print(
                 "[bagging] configured "
-                f"n_models={n_models}, overlap={overlap:.3f}, total_train_profiles={num_profiles}, "
-                f"total_train_samples={total_train_samples}, shared_pool_size={shared_pool_size}, "
+                f"n_models={n_models}, bag_fraction={bag_fraction:.3f}, total_train_profiles={num_train_profiles}, "
+                f"total_train_samples={total_train_samples}, "
                 f"profiles_per_bag={bag_profile_count}"
             )
 
@@ -194,12 +158,11 @@ def create_bagged_training_hdf5(
             bag_group.attrs["bag_index"] = bag_idx
             files_group = bag_group.create_group("files")
 
-            selected_profiles = _select_profiles_for_bag(
-                profile_names=profile_names,
-                bag_profile_count=bag_profile_count,
-                rng=rng,
-                shared_pool=shared_pool,
-            )
+            selected_profiles = rng.choice(
+                train_profile_names,
+                size=bag_profile_count,
+                replace=False,
+            ).tolist()
 
             used_names: set[str] = set()
             samples_written = 0
@@ -454,7 +417,7 @@ def run_bagging_ensemble(
     *,
     out_dir: Path,
     n_models: int,
-    overlap: float = 0.70,
+    bag_fraction: float = 0.70,
     seed: int = 123,
     batch_size: int = 64,
     epochs: int = 100,
@@ -473,7 +436,7 @@ def run_bagging_ensemble(
 ) -> dict[str, Any]:
     config = BaggingEnsembleConfig(
         n_models=n_models,
-        overlap=overlap,
+        bag_fraction=bag_fraction,
         seed=seed,
         batch_size=batch_size,
         epochs=epochs,
@@ -501,7 +464,7 @@ def run_bagging_ensemble(
         scaled_h5_path,
         bagged_h5_path,
         n_models=config.n_models,
-        overlap=config.overlap,
+        bag_fraction=config.bag_fraction,
         seed=config.seed,
         verbose=config.verbose,
     )
