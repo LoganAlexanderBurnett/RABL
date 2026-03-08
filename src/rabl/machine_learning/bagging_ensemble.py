@@ -88,41 +88,37 @@ def _copy_profile_group(src_profile_group: h5py.Group, dst_profile_group: h5py.G
         dst_profile_group.attrs["truncated_samples"] = limit
 
 
-def _select_profile_draws(
+def _select_profiles_for_bag(
     profile_names: list[str],
-    profile_sample_counts: dict[str, int],
-    target_samples: int,
-    overlap: float,
+    *,
+    bag_profile_count: int,
     rng: np.random.Generator,
     shared_pool: list[str],
-) -> list[tuple[str, int | None]]:
-    """
-    Return a draw plan as list of tuples: (profile_name, sample_limit).
+) -> list[str]:
+    """Select unique profile names for one bag (no within-bag replacement)."""
+    if bag_profile_count < 1:
+        raise ValueError("bag_profile_count must be >= 1.")
+    if bag_profile_count > len(profile_names):
+        raise ValueError("bag_profile_count cannot exceed total number of train profiles.")
 
-    We keep profiles whole whenever possible and only truncate the final profile draw
-    if needed to hit `target_samples` exactly.
-    """
-    draws: list[tuple[str, int | None]] = []
-    accumulated = 0
+    shared_candidates = list(dict.fromkeys(shared_pool))
+    non_shared_candidates = [name for name in profile_names if name not in set(shared_candidates)]
 
-    shared_target = int(round(target_samples * overlap))
-    while accumulated < shared_target and shared_pool:
-        profile_name = shared_pool[rng.integers(0, len(shared_pool))]
-        draws.append((profile_name, None))
-        accumulated += profile_sample_counts[profile_name]
+    selected: list[str] = []
 
-    while accumulated < target_samples:
-        profile_name = profile_names[rng.integers(0, len(profile_names))]
-        remaining = target_samples - accumulated
-        count = profile_sample_counts[profile_name]
-        if count <= remaining:
-            draws.append((profile_name, None))
-            accumulated += count
-        else:
-            draws.append((profile_name, remaining))
-            accumulated = target_samples
+    shared_take = min(len(shared_candidates), bag_profile_count)
+    if shared_take > 0:
+        shared_idx = rng.choice(len(shared_candidates), size=shared_take, replace=False)
+        selected.extend(shared_candidates[int(i)] for i in np.atleast_1d(shared_idx))
 
-    return draws
+    remaining = bag_profile_count - len(selected)
+    if remaining > 0:
+        if remaining > len(non_shared_candidates):
+            raise RuntimeError("Unable to complete bag without replacement: insufficient non-shared profiles.")
+        extra_idx = rng.choice(len(non_shared_candidates), size=remaining, replace=False)
+        selected.extend(non_shared_candidates[int(i)] for i in np.atleast_1d(extra_idx))
+
+    return selected
 
 
 def create_bagged_training_hdf5(
@@ -137,8 +133,9 @@ def create_bagged_training_hdf5(
     Create an HDF5 with train/bag_i subsets and copied val/test/scaling groups.
 
     - Non-train groups are copied byte-for-byte via h5py copy.
-    - Each bag samples train profiles with replacement.
-    - Each bag contains exactly the same total sample count as the original train split.
+    - Each bag samples train profiles without replacement.
+    - `overlap` sets the shared profile fraction across bags; bag size is
+      `round(num_train_profiles * (1 - overlap))` (minimum 1 profile).
     """
     if n_models < 1:
         raise ValueError("n_models must be >= 1.")
@@ -171,48 +168,46 @@ def create_bagged_training_hdf5(
         profile_sample_counts = {name: int(train_files_src[name]["X"].shape[0]) for name in profile_names}
         total_train_samples = int(sum(profile_sample_counts.values()))
 
-        shared_pool_size = max(1, int(round(len(profile_names) * overlap)))
-        shared_pool = list(rng.choice(profile_names, size=shared_pool_size, replace=True))
+        num_profiles = len(profile_names)
+        shared_pool_size = max(1, int(round(num_profiles * overlap)))
+        shared_pool = list(rng.choice(profile_names, size=shared_pool_size, replace=False))
+        bag_profile_count = max(1, int(round(num_profiles * (1.0 - overlap))))
 
         train_dst = _copy_group_shallow(train_src, dst, "train")
-        train_dst.attrs["bagging_sampling"] = "profile_replacement_with_overlap"
+        train_dst.attrs["bagging_sampling"] = "profile_no_replacement_with_overlap"
         train_dst.attrs["bagging_total_train_samples"] = total_train_samples
+        train_dst.attrs["bagging_total_train_profiles"] = num_profiles
+        train_dst.attrs["bagging_shared_profile_pool_size"] = shared_pool_size
+        train_dst.attrs["bagging_profiles_per_bag"] = bag_profile_count
 
         for bag_idx in range(n_models):
             bag_group = train_dst.create_group(f"bag_{bag_idx}")
             bag_group.attrs["bag_index"] = bag_idx
             files_group = bag_group.create_group("files")
 
-            draws = _select_profile_draws(
+            selected_profiles = _select_profiles_for_bag(
                 profile_names=profile_names,
-                profile_sample_counts=profile_sample_counts,
-                target_samples=total_train_samples,
-                overlap=overlap,
+                bag_profile_count=bag_profile_count,
                 rng=rng,
                 shared_pool=shared_pool,
             )
 
-            used_names: dict[str, int] = {}
+            used_names: set[str] = set()
             samples_written = 0
-            for profile_name, sample_limit in draws:
-                occurrence = used_names.get(profile_name, 0)
-                used_names[profile_name] = occurrence + 1
-                out_name = profile_name if occurrence == 0 else f"{profile_name}__draw{occurrence}"
+            for profile_name in selected_profiles:
+                if profile_name in used_names:
+                    raise RuntimeError(f"Duplicate profile '{profile_name}' encountered within bag {bag_idx}.")
+                used_names.add(profile_name)
 
                 src_profile = train_files_src[profile_name]
-                dst_profile = files_group.create_group(out_name)
-                _copy_profile_group(src_profile, dst_profile, sample_limit=sample_limit)
+                dst_profile = files_group.create_group(profile_name)
+                _copy_profile_group(src_profile, dst_profile)
 
-                written = profile_sample_counts[profile_name] if sample_limit is None else int(sample_limit)
-                samples_written += written
+                samples_written += profile_sample_counts[profile_name]
 
-            bag_group.attrs["num_profile_draws"] = len(draws)
+            bag_group.attrs["num_profile_draws"] = len(selected_profiles)
             bag_group.attrs["num_unique_source_profiles"] = len(used_names)
             bag_group.attrs["num_samples"] = samples_written
-            if samples_written != total_train_samples:
-                raise RuntimeError(
-                    f"Bag {bag_idx} sample count mismatch: {samples_written} != {total_train_samples}."
-                )
 
     return output_h5_path
 
