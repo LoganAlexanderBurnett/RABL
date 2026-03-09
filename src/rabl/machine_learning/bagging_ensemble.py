@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
 import importlib.util
-from collections import defaultdict
 from typing import Any, Iterable
 
 import h5py
@@ -91,12 +90,12 @@ def _copy_profile_group(src_profile_group: h5py.Group, dst_profile_group: h5py.G
 
 
 def _plot_and_save_bag_venn_diagram(
-    bag_sample_sets: list[set[tuple[str, int]]],
+    bag_profile_sets: list[set[str]],
     *,
     save_path: Path,
 ) -> Path | None:
-    """Plot and save a Venn diagram for 3 bag sample sets when supported."""
-    if len(bag_sample_sets) != 3:
+    """Plot and save a Venn diagram for 3 bag profile sets when supported."""
+    if len(bag_profile_sets) != 3:
         return None
     if importlib.util.find_spec("matplotlib_venn") is None:
         return None
@@ -107,8 +106,8 @@ def _plot_and_save_bag_venn_diagram(
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
     fig, _ = plt.subplots(figsize=(7, 7))
-    venn3(subsets=bag_sample_sets, set_labels=("bag_0", "bag_1", "bag_2"))
-    fig.suptitle("Bag sample overlap (3 estimators)")
+    venn3(subsets=bag_profile_sets, set_labels=("bag_0", "bag_1", "bag_2"))
+    fig.suptitle("Bag profile overlap (3 estimators)")
     fig.tight_layout()
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -128,10 +127,9 @@ def create_bagged_training_hdf5(
     Create an HDF5 with train/bag_i subsets and copied val/test/scaling groups.
 
     - Non-train groups are copied byte-for-byte via h5py copy.
-    - For profile-split datasets, each bag samples train profiles without replacement.
-    - For sample-split datasets, each bag samples train samples without replacement,
-      then reconstructs per-profile datasets under each bag.
-    - `bag_fraction` controls draws per bag as rounded fraction of source pool.
+    - Each bag samples train profiles without replacement.
+    - `bag_fraction` controls profiles per bag as
+      `round(num_train_profiles * bag_fraction)` (minimum 1 profile).
     """
     if n_models < 1:
         raise ValueError("n_models must be >= 1.")
@@ -161,71 +159,40 @@ def create_bagged_training_hdf5(
         if not train_profile_names:
             raise ValueError("No profiles found under train/files in source HDF5.")
 
-        split_mode = str(src.attrs.get("split_mode", "profile"))
-        if split_mode not in {"profile", "sample"}:
-            raise ValueError(f"Unsupported split_mode in source HDF5: {split_mode}")
-
         profile_sample_counts = {name: int(train_files_src[name]["X"].shape[0]) for name in train_profile_names}
         total_train_samples = int(sum(profile_sample_counts.values()))
 
         num_train_profiles = len(train_profile_names)
         bag_profile_count = max(1, int(round(num_train_profiles * bag_fraction)))
-        bag_sample_count = max(1, int(round(total_train_samples * bag_fraction)))
 
         train_dst = _copy_group_shallow(train_src, dst, "train")
-        train_dst.attrs["bagging_source_split_mode"] = split_mode
+        train_dst.attrs["bagging_sampling"] = "profile_no_replacement_subsample_bagging"
         train_dst.attrs["bagging_total_train_samples"] = total_train_samples
         train_dst.attrs["bagging_total_train_profiles"] = num_train_profiles
-        if split_mode == "profile":
-            train_dst.attrs["bagging_sampling"] = "profile_no_replacement_subsample_bagging"
-            train_dst.attrs["bagging_profiles_per_bag"] = bag_profile_count
-        else:
-            train_dst.attrs["bagging_sampling"] = "sample_no_replacement_subsample_bagging"
-            train_dst.attrs["bagging_samples_per_bag"] = bag_sample_count
+        train_dst.attrs["bagging_profiles_per_bag"] = bag_profile_count
 
         if verbose >= 1:
             print(
                 "[bagging] configured "
-                f"split_mode={split_mode}, n_models={n_models}, bag_fraction={bag_fraction:.3f}, "
-                f"total_train_profiles={num_train_profiles}, total_train_samples={total_train_samples}, "
-                f"profiles_per_bag={bag_profile_count}, samples_per_bag={bag_sample_count}"
+                f"n_models={n_models}, bag_fraction={bag_fraction:.3f}, total_train_profiles={num_train_profiles}, "
+                f"total_train_samples={total_train_samples}, "
+                f"profiles_per_bag={bag_profile_count}"
             )
 
-        if split_mode == "profile":
-            bag_profile_lists = [
-                rng.choice(
-                    train_profile_names,
-                    size=bag_profile_count,
-                    replace=False,
-                ).tolist()
-                for _ in range(n_models)
-            ]
-            bag_profile_sets = [set(selected_profiles) for selected_profiles in bag_profile_lists]
-            bag_sample_sets = [
-                {
-                    (profile_name, sample_idx)
-                    for profile_name in selected_profiles
-                    for sample_idx in range(profile_sample_counts[profile_name])
-                }
-                for selected_profiles in bag_profile_lists
-            ]
-        else:
-            sample_refs = [
-                (profile_name, sample_idx)
-                for profile_name in train_profile_names
-                for sample_idx in range(profile_sample_counts[profile_name])
-            ]
-            bag_sample_lists = [
-                [sample_refs[idx] for idx in rng.choice(len(sample_refs), size=bag_sample_count, replace=False)]
-                for _ in range(n_models)
-            ]
-            bag_profile_sets = [{profile_name for profile_name, _ in samples} for samples in bag_sample_lists]
-            bag_sample_sets = [set(samples) for samples in bag_sample_lists]
+        bag_profile_lists = [
+            rng.choice(
+                train_profile_names,
+                size=bag_profile_count,
+                replace=False,
+            ).tolist()
+            for _ in range(n_models)
+        ]
+        bag_profile_sets = [set(selected_profiles) for selected_profiles in bag_profile_lists]
 
         venn_plot_path: Path | None = None
         if n_models == 3:
             venn_plot_path = _plot_and_save_bag_venn_diagram(
-                bag_sample_sets,
+                bag_profile_sets,
                 save_path=output_h5_path.with_name(f"{output_h5_path.stem}_bag_overlap_venn.png"),
             )
             if verbose >= 1:
@@ -235,95 +202,42 @@ def create_bagged_training_hdf5(
                     print(f"[bagging] saved venn diagram: {venn_plot_path}")
 
         shared_profiles_all_bags = set.intersection(*bag_profile_sets) if bag_profile_sets else set()
-        shared_samples_all_bags = set.intersection(*bag_sample_sets) if bag_sample_sets else set()
         profile_frequency: dict[str, int] = {}
         for bag_set in bag_profile_sets:
             for profile_name in bag_set:
                 profile_frequency[profile_name] = profile_frequency.get(profile_name, 0) + 1
-        sample_frequency: dict[tuple[str, int], int] = {}
-        for bag_set in bag_sample_sets:
-            for sample_ref in bag_set:
-                sample_frequency[sample_ref] = sample_frequency.get(sample_ref, 0) + 1
 
-        for bag_idx in range(n_models):
+        for bag_idx, selected_profiles in enumerate(bag_profile_lists):
             bag_group = train_dst.create_group(f"bag_{bag_idx}")
             bag_group.attrs["bag_index"] = bag_idx
             files_group = bag_group.create_group("files")
 
+            used_names: set[str] = set()
             samples_written = 0
-            profile_draws = 0
-            if split_mode == "profile":
-                selected_profiles = bag_profile_lists[bag_idx]
-                used_names: set[str] = set()
-                for profile_name in selected_profiles:
-                    if profile_name in used_names:
-                        raise RuntimeError(f"Duplicate profile '{profile_name}' encountered within bag {bag_idx}.")
-                    used_names.add(profile_name)
+            for profile_name in selected_profiles:
+                if profile_name in used_names:
+                    raise RuntimeError(f"Duplicate profile '{profile_name}' encountered within bag {bag_idx}.")
+                used_names.add(profile_name)
 
-                    src_profile = train_files_src[profile_name]
-                    dst_profile = files_group.create_group(profile_name)
-                    _copy_profile_group(src_profile, dst_profile)
-                    samples_written += profile_sample_counts[profile_name]
-                bag_group.attrs["num_profile_draws"] = len(selected_profiles)
-                profile_draws = len(selected_profiles)
-            else:
-                selected_samples = bag_sample_lists[bag_idx]
-                selected_by_profile: defaultdict[str, list[int]] = defaultdict(list)
-                for profile_name, sample_idx in selected_samples:
-                    selected_by_profile[profile_name].append(int(sample_idx))
+                src_profile = train_files_src[profile_name]
+                dst_profile = files_group.create_group(profile_name)
+                _copy_profile_group(src_profile, dst_profile)
 
-                used_names = set(selected_by_profile.keys())
-                for profile_name, sample_indices in selected_by_profile.items():
-                    src_profile = train_files_src[profile_name]
-                    # h5py fancy indexing requires strictly increasing indices.
-                    selected_indices = np.asarray(sample_indices, dtype=np.int64)
-                    order = np.argsort(selected_indices)
-                    sorted_indices = selected_indices[order]
+                samples_written += profile_sample_counts[profile_name]
 
-                    x_data = src_profile["X"][sorted_indices]
-                    y_data = src_profile["Y"][sorted_indices]
-
-                    # Restore original draw order after safe HDF5 reads.
-                    inverse_order = np.empty_like(order)
-                    inverse_order[order] = np.arange(order.size)
-                    x_data = x_data[inverse_order]
-                    y_data = y_data[inverse_order]
-
-                    dst_profile = files_group.create_group(profile_name)
-                    for attr_key, attr_value in src_profile.attrs.items():
-                        dst_profile.attrs[attr_key] = attr_value
-                    dst_profile.attrs["num_samples"] = x_data.shape[0]
-                    dst_profile.attrs["bagging_selected_indices"] = selected_indices
-                    dst_profile.create_dataset("X", data=x_data, compression="gzip")
-                    dst_profile.create_dataset("Y", data=y_data, compression="gzip")
-                    samples_written += x_data.shape[0]
-                bag_group.attrs["num_sample_draws"] = len(selected_samples)
-                profile_draws = len(used_names)
-
+            bag_group.attrs["num_profile_draws"] = len(selected_profiles)
             bag_group.attrs["num_unique_source_profiles"] = len(used_names)
             bag_group.attrs["num_samples"] = samples_written
 
             shared_profiles_in_bag = len(used_names.intersection(shared_profiles_all_bags))
             bag_only_profiles = sum(1 for profile_name in used_names if profile_frequency[profile_name] == 1)
-            if split_mode == "profile":
-                bag_sample_set = {
-                    (profile_name, sample_idx)
-                    for profile_name in selected_profiles
-                    for sample_idx in range(profile_sample_counts[profile_name])
-                }
-            else:
-                bag_sample_set = set(selected_samples)
-            shared_samples_in_bag = len(bag_sample_set.intersection(shared_samples_all_bags))
-            bag_only_samples = sum(1 for sample_ref in bag_sample_set if sample_frequency[sample_ref] == 1)
 
             if verbose >= 1:
                 print(
-                    f"[bagging] bag_{bag_idx}: profiles={profile_draws} "
+                    f"[bagging] bag_{bag_idx}: profiles={len(selected_profiles)} "
                     f"unique_profiles={len(used_names)} samples={samples_written} "
                     f"shared_across_all_bags={shared_profiles_in_bag} "
-                    f"bag_only_profiles={bag_only_profiles} "
-                    f"shared_samples_across_all_bags={shared_samples_in_bag} "
-                    f"bag_only_samples={bag_only_samples}"
+                    f"bag_only_profiles={bag_only_profiles}"
                 )
 
     return output_h5_path
