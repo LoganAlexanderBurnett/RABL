@@ -79,23 +79,6 @@ def _plot_overlay_grid(
         )[0]
         ax2.axhline(0.0, color="0.5", linewidth=0.9, linestyle="--", alpha=0.8)
 
-        positive_indices = np.flatnonzero(deriv_series > 0.0)
-        if positive_indices.size:
-            top_count = min(3, positive_indices.size)
-            ranked = positive_indices[np.argsort(deriv_series[positive_indices])[-top_count:]]
-            ranked = ranked[np.argsort(deriv_series[ranked])[::-1]]
-            for peak_rank, idx_peak in enumerate(ranked, start=1):
-                x_peak = t_series[idx_peak]
-                y_peak = deriv_series[idx_peak]
-                ax2.scatter([x_peak], [y_peak], color="C4", s=14, zorder=4)
-                ax2.annotate(
-                    f"P{peak_rank}",
-                    xy=(x_peak, y_peak),
-                    xytext=(4, 4),
-                    textcoords="offset points",
-                    color="C4",
-                    fontsize=7,
-                )
 
         ax.set_title(target_name)
         ax.grid(True, alpha=0.3)
