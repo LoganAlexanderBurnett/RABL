@@ -20,6 +20,13 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("standard", "minmax", "none"),
         help="Scaling type to apply.",
     )
+    parser.add_argument(
+        "--split-mode",
+        dest="split_mode",
+        default="sample",
+        choices=("sample", "profile"),
+        help="Split strategy used for train/val/test partitioning.",
+    )
     return parser
 
 
@@ -36,6 +43,7 @@ def main() -> None:
     splitter = LSTMDatasetScalerSplitter(
         input_path=input_path,
         scaling_type=args.scaling_type,
+        split_mode=args.split_mode,
     )
     output_path = splitter.run()
     print(f"Saved scaled dataset to {output_path}")

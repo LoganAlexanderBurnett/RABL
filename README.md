@@ -110,6 +110,33 @@ python scripts/build_lstm_dataset.py --help
 
 Use the `--help` flag on each script to see required inputs/outputs and configuration options.
 
+#### Split mode: profile vs sample
+
+`scripts/scale_lstm_dataset.py` now supports choosing how train/validation/test splits are formed:
+
+```bash
+python scripts/scale_lstm_dataset.py <input.h5> --scaling-type standard --split-mode sample
+```
+
+- `--split-mode sample` (default): split at individual `(profile, sample_idx)` level, then write
+  split outputs grouped under `train/files/<profile>`, `val/files/<profile>`, `test/files/<profile>`.
+- `--split-mode profile`: keep the previous behavior where whole profiles are assigned to a split.
+
+The resulting scaled HDF5 includes `split_mode` metadata so downstream tools can detect which
+strategy was used.
+
+#### Bagging with sample-split datasets
+
+`rabl.machine_learning.bagging_ensemble.create_bagged_training_hdf5(...)` supports both split
+modes:
+
+- For profile-split datasets: bags are built by sampling profiles.
+- For sample-split datasets: bags are built by sampling individual train samples and reconstructing
+  per-profile groups inside each bag.
+
+When running with 3 estimators, the generated Venn diagram now visualizes **sample overlap** among
+bags.
+
 ## Configuration notes
 
 - **Profile naming**: The batch runner expects profile filenames like
