@@ -1548,34 +1548,58 @@ def _plot_ensemble_forecast_vs_truth_grid(
     state_dim: int,
     control_channel: int,
 ) -> plt.Figure:
-    """Plot ensemble forecasts with optional shaded mean ± 2σ bands."""
-    fig = plot_forecast_vs_truth_grid(
-        x_profile=x_profile,
-        y_true=y_true,
-        y_pred=y_mean,
-        target_names=target_names,
-        title=title,
-        save_path=None,
-        control_name=control_name,
+    """Plot ensemble forecasts in the same style as bagging ensemble profile plotting."""
+    if x_profile.ndim != 3:
+        raise ValueError(f"x_profile must be 3D (steps,timesteps,features). Got {x_profile.shape}")
+    if y_true.ndim != 2 or y_mean.ndim != 2:
+        raise ValueError(f"y_true/y_mean must be 2D (steps,targets). Got {y_true.shape}, {y_mean.shape}")
+    if y_true.shape != y_mean.shape:
+        raise ValueError(f"y_true and y_mean must match. Got {y_true.shape} vs {y_mean.shape}")
+    if y_2sigma is not None and y_2sigma.shape != y_mean.shape:
+        raise ValueError(f"y_2sigma must match y_mean shape. Got {y_2sigma.shape} vs {y_mean.shape}")
+
+    num_steps, num_targets = y_true.shape
+    if len(target_names) != num_targets:
+        raise ValueError(f"target_names must have length {num_targets}, got {len(target_names)}")
+
+    t_series = np.arange(num_steps, dtype=np.float32)
+    control_series = _extract_control_series(
+        x_profile,
         state_dim=state_dim,
         control_channel=control_channel,
-        close_figure=False,
     )
 
-    if y_2sigma is not None:
-        axes = fig.axes
-        t_series = np.arange(y_mean.shape[0], dtype=np.float32)
-        for target_idx in range(y_mean.shape[1]):
-            ax = axes[target_idx + 1]
-            upper = y_mean[:, target_idx] + y_2sigma[:, target_idx]
-            lower = y_mean[:, target_idx] - y_2sigma[:, target_idx]
-            ax.fill_between(t_series, lower, upper, color="C1", alpha=0.15, linewidth=0, label="mean ± 2σ")
-            handles, labels = ax.get_legend_handles_labels()
-            if labels.count("mean ± 2σ") > 1:
-                first_idx = labels.index("mean ± 2σ")
-                handles = [h for i, h in enumerate(handles) if labels[i] != "mean ± 2σ" or i == first_idx]
-                labels = [l for i, l in enumerate(labels) if l != "mean ± 2σ" or i == first_idx]
-            ax.legend(handles, labels, fontsize=7, loc="best")
+    fig, axes = plt.subplots(2, 7, figsize=(26, 8), sharex=True)
+    axes_flat = axes.flatten()
+
+    axes_flat[0].plot(t_series, control_series, linewidth=1.5, color="black")
+    axes_flat[0].set_title(control_name)
+    axes_flat[0].grid(True, alpha=0.3)
+
+    for target_idx, target_name in enumerate(target_names):
+        ax = axes_flat[target_idx + 1]
+        ax.plot(t_series, y_true[:, target_idx], label="Ground truth", linewidth=1.6, color="C0")
+        ax.plot(t_series, y_mean[:, target_idx], label="Mean prediction", linewidth=1.6, color="C3")
+        if y_2sigma is not None:
+            y_upper = y_mean[:, target_idx] + y_2sigma[:, target_idx]
+            y_lower = y_mean[:, target_idx] - y_2sigma[:, target_idx]
+            ax.plot(t_series, y_upper, linestyle="--", linewidth=1.0, color="C1", label="Mean + 2σ")
+            ax.plot(t_series, y_lower, linestyle="--", linewidth=1.0, color="C2", label="Mean - 2σ")
+            ax.fill_between(t_series, y_lower, y_upper, color="C1", alpha=0.15, linewidth=0)
+        ax.set_title(target_name)
+        ax.grid(True, alpha=0.3)
+
+    for idx in range(7, 14):
+        axes_flat[idx].set_xlabel("Time step")
+    axes_flat[0].set_ylabel("u(t)")
+    for idx in range(1, 14):
+        axes_flat[idx].set_ylabel("State")
+
+    handles, labels = axes_flat[1].get_legend_handles_labels()
+    legend_cols = 4 if y_2sigma is not None else 2
+    fig.legend(handles, labels, loc="upper center", ncol=legend_cols, frameon=False, bbox_to_anchor=(0.5, 1.02))
+    fig.suptitle(title, y=1.06, fontsize=16)
+    fig.tight_layout()
     return fig
 
 
