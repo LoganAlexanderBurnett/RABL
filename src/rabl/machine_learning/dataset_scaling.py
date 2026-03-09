@@ -117,22 +117,34 @@ class LSTMDatasetScalerSplitter:
                 "test": {key: None for key in test_keys},
             }
 
+        # sample mode semantics:
+        # - test split remains profile-disjoint and uses whole, unseen profiles
+        # - only train/val are split at sample level
+        shuffled_keys = rng.permutation(file_keys)
+        test_start = int(len(shuffled_keys) * (1.0 - self.splits.test))
+        train_val_keys = list(shuffled_keys[:test_start])
+        test_keys = list(shuffled_keys[test_start:])
+
         sample_entries: list[tuple[str, int]] = []
-        for key in file_keys:
+        for key in train_val_keys:
             num_samples = int(files_group[key]["X"].shape[0])
             sample_entries.extend((key, idx) for idx in range(num_samples))
 
         if not sample_entries:
-            raise ValueError("No samples found across input profiles.")
+            raise ValueError("No train/val samples found across input profiles.")
 
         perm_indices = rng.permutation(len(sample_entries))
         shuffled_entries = [sample_entries[idx] for idx in perm_indices]
-        train_entries, val_entries, test_entries = self._split_keys(np.asarray(shuffled_entries, dtype=object))
+
+        train_weight = self.splits.train / (self.splits.train + self.splits.val)
+        train_end = int(len(shuffled_entries) * train_weight)
+        train_entries = shuffled_entries[:train_end]
+        val_entries = shuffled_entries[train_end:]
 
         return {
             "train": self._entries_to_indices(train_entries),
             "val": self._entries_to_indices(val_entries),
-            "test": self._entries_to_indices(test_entries),
+            "test": {key: None for key in test_keys},
         }
 
     @staticmethod

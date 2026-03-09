@@ -118,8 +118,9 @@ Use the `--help` flag on each script to see required inputs/outputs and configur
 python scripts/scale_lstm_dataset.py <input.h5> --scaling-type standard --split-mode sample
 ```
 
-- `--split-mode sample` (default): split at individual `(profile, sample_idx)` level, then write
-  split outputs grouped under `train/files/<profile>`, `val/files/<profile>`, `test/files/<profile>`.
+- `--split-mode sample` (default): keep `test` as full unseen profiles (profile-disjoint from
+  train/val), and split only train/val at individual `(profile, sample_idx)` level. Split outputs
+  are written under `train/files/<profile>`, `val/files/<profile>`, `test/files/<profile>`.
 - `--split-mode profile`: keep the previous behavior where whole profiles are assigned to a split.
 
 The resulting scaled HDF5 includes `split_mode` metadata so downstream tools can detect which
@@ -131,8 +132,8 @@ strategy was used.
 modes:
 
 - For profile-split datasets: bags are built by sampling profiles.
-- For sample-split datasets: bags are built by sampling individual train samples and reconstructing
-  per-profile groups inside each bag.
+- For sample-split datasets: bags are built by sampling individual **train** samples and
+  reconstructing per-profile groups inside each bag.
 
 When running with 3 estimators, the generated Venn diagram now visualizes **sample overlap** among
 bags.
