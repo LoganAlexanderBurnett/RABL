@@ -1,4 +1,4 @@
-"""Plot ensemble forecasts with overlaid uncertainty-derivative magnitude."""
+"""Plot ensemble forecasts with overlaid uncertainty derivatives."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def _plot_overlay_grid(
     y_true: np.ndarray,
     y_mean: np.ndarray,
     y_2sigma: np.ndarray,
-    x_sigma_derivative_mag: np.ndarray,
+    dx_sigma_dt: np.ndarray,
     target_names: list[str],
     profile_name: str,
     save_path: Path,
@@ -68,19 +68,39 @@ def _plot_overlay_grid(
             linewidth=0,
         )
 
+        deriv_series = dx_sigma_dt[:, target_idx]
         ax2.plot(
             t_series,
-            x_sigma_derivative_mag[:, target_idx],
+            deriv_series,
             linewidth=1.2,
             color="C4",
             linestyle=":",
-            label="|d(x_sigma)/dt|",
-        )
+            label="d(x_sigma)/dt",
+        )[0]
+        ax2.axhline(0.0, color="0.5", linewidth=0.9, linestyle="--", alpha=0.8)
+
+        positive_indices = np.flatnonzero(deriv_series > 0.0)
+        if positive_indices.size:
+            top_count = min(3, positive_indices.size)
+            ranked = positive_indices[np.argsort(deriv_series[positive_indices])[-top_count:]]
+            ranked = ranked[np.argsort(deriv_series[ranked])[::-1]]
+            for peak_rank, idx_peak in enumerate(ranked, start=1):
+                x_peak = t_series[idx_peak]
+                y_peak = deriv_series[idx_peak]
+                ax2.scatter([x_peak], [y_peak], color="C4", s=14, zorder=4)
+                ax2.annotate(
+                    f"P{peak_rank}",
+                    xy=(x_peak, y_peak),
+                    xytext=(4, 4),
+                    textcoords="offset points",
+                    color="C4",
+                    fontsize=7,
+                )
 
         ax.set_title(target_name)
         ax.grid(True, alpha=0.3)
         ax.set_ylabel("State")
-        ax2.set_ylabel("|d(x_sigma)/dt|")
+        ax2.set_ylabel("d(x_sigma)/dt")
 
     x_min, x_max = float(t_series[0]), float(t_series[-1])
     for ax in axes_flat:
@@ -99,7 +119,7 @@ def _plot_overlay_grid(
         frameon=False,
         bbox_to_anchor=(0.5, 1.02),
     )
-    fig.suptitle(f"Ensemble Forecast + |Uncertainty Derivative| - {profile_name}", y=1.06, fontsize=16)
+    fig.suptitle(f"Ensemble Forecast + Uncertainty Derivative - {profile_name}", y=1.06, fontsize=16)
     fig.tight_layout()
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -109,7 +129,7 @@ def _plot_overlay_grid(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compute/plot 4th-order |d(x_sigma)/dt| overlaid on mean ±2σ ensemble forecast grid."
+        description="Compute/plot 4th-order d(x_sigma)/dt overlaid on mean ±2σ ensemble forecast grid."
     )
     parser.add_argument("forecast_h5_path", type=Path, help="Path to rolling_forecasts.h5.")
     parser.add_argument("--profile", type=str, default=None, help="Profile name to plot. Defaults to first available profile.")
@@ -142,17 +162,17 @@ def main() -> None:
     y_mean = np.column_stack([table[:, columns.index(f"x_mean(t)_{name}")] for name in target_names])
     y_2sigma = np.column_stack([table[:, columns.index(f"x_2sigma(t)_{name}")] for name in target_names])
 
-    x_sigma_derivative_mag = np.abs(finite_difference(y_2sigma, order=4, dt=args.dt))
+    dx_sigma_dt = finite_difference(y_2sigma, order=4, dt=args.dt)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    overlay_path = args.output_dir / f"{profile_name}_ensemble_with_sigma_derivative_magnitude.png"
+    overlay_path = args.output_dir / f"{profile_name}_ensemble_with_sigma_derivative.png"
     _plot_overlay_grid(
         t_series=t_series,
         u_series=u_series,
         y_true=y_true,
         y_mean=y_mean,
         y_2sigma=y_2sigma,
-        x_sigma_derivative_mag=x_sigma_derivative_mag,
+        dx_sigma_dt=dx_sigma_dt,
         target_names=target_names,
         profile_name=profile_name,
         save_path=overlay_path,
