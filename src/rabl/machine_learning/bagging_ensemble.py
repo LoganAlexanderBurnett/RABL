@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
+import importlib.util
 from typing import Any, Iterable
 
 import h5py
@@ -88,6 +89,31 @@ def _copy_profile_group(src_profile_group: h5py.Group, dst_profile_group: h5py.G
         dst_profile_group.attrs["truncated_samples"] = limit
 
 
+def _plot_and_save_bag_venn_diagram(
+    bag_profile_sets: list[set[str]],
+    *,
+    save_path: Path,
+) -> Path | None:
+    """Plot and save a Venn diagram for 3 bag profile sets when supported."""
+    if len(bag_profile_sets) != 3:
+        return None
+    if importlib.util.find_spec("matplotlib_venn") is None:
+        return None
+
+    from matplotlib_venn import venn3
+
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, _ = plt.subplots(figsize=(7, 7))
+    venn3(subsets=bag_profile_sets, set_labels=("bag_0", "bag_1", "bag_2"))
+    fig.suptitle("Bag profile overlap (3 estimators)")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return save_path
+
+
 def create_bagged_training_hdf5(
     input_h5_path: Path,
     output_h5_path: Path,
@@ -162,6 +188,19 @@ def create_bagged_training_hdf5(
             for _ in range(n_models)
         ]
         bag_profile_sets = [set(selected_profiles) for selected_profiles in bag_profile_lists]
+
+        venn_plot_path: Path | None = None
+        if n_models == 3:
+            venn_plot_path = _plot_and_save_bag_venn_diagram(
+                bag_profile_sets,
+                save_path=output_h5_path.with_name(f"{output_h5_path.stem}_bag_overlap_venn.png"),
+            )
+            if verbose >= 1:
+                if venn_plot_path is None:
+                    print("[bagging] venn diagram not created (requires matplotlib_venn).")
+                else:
+                    print(f"[bagging] saved venn diagram: {venn_plot_path}")
+
         shared_profiles_all_bags = set.intersection(*bag_profile_sets) if bag_profile_sets else set()
         profile_frequency: dict[str, int] = {}
         for bag_set in bag_profile_sets:
