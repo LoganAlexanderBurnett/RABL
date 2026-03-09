@@ -275,14 +275,25 @@ def create_bagged_training_hdf5(
                 used_names = set(selected_by_profile.keys())
                 for profile_name, sample_indices in selected_by_profile.items():
                     src_profile = train_files_src[profile_name]
-                    x_data = src_profile["X"][np.asarray(sample_indices, dtype=np.int64)]
-                    y_data = src_profile["Y"][np.asarray(sample_indices, dtype=np.int64)]
+                    # h5py fancy indexing requires strictly increasing indices.
+                    selected_indices = np.asarray(sample_indices, dtype=np.int64)
+                    order = np.argsort(selected_indices)
+                    sorted_indices = selected_indices[order]
+
+                    x_data = src_profile["X"][sorted_indices]
+                    y_data = src_profile["Y"][sorted_indices]
+
+                    # Restore original draw order after safe HDF5 reads.
+                    inverse_order = np.empty_like(order)
+                    inverse_order[order] = np.arange(order.size)
+                    x_data = x_data[inverse_order]
+                    y_data = y_data[inverse_order]
 
                     dst_profile = files_group.create_group(profile_name)
                     for attr_key, attr_value in src_profile.attrs.items():
                         dst_profile.attrs[attr_key] = attr_value
                     dst_profile.attrs["num_samples"] = x_data.shape[0]
-                    dst_profile.attrs["bagging_selected_indices"] = np.asarray(sample_indices, dtype=np.int64)
+                    dst_profile.attrs["bagging_selected_indices"] = selected_indices
                     dst_profile.create_dataset("X", data=x_data, compression="gzip")
                     dst_profile.create_dataset("Y", data=y_data, compression="gzip")
                     samples_written += x_data.shape[0]
