@@ -12,6 +12,8 @@ import numpy as np
 from rabl.machine_learning.bagging_ensemble import TARGET_NAMES, plot_ensemble_forecast_profile_grid
 from rabl.machine_learning.branchpoint_finder import finite_difference
 
+FIGSIZE_2X7 = (26, 8)
+
 
 def _decode_columns(columns_attr: np.ndarray | list[object]) -> list[str]:
     out: list[str] = []
@@ -34,7 +36,7 @@ def _plot_derivative_grid(
     profile_name: str,
     save_path: Path,
 ) -> None:
-    fig, axes = plt.subplots(2, 7, figsize=(26, 8), sharex=True)
+    fig, axes = plt.subplots(2, 7, figsize=FIGSIZE_2X7, sharex=True)
     axes_flat = axes.flatten()
 
     axes_flat[0].plot(t_series, u_series, linewidth=1.5, color="black")
@@ -57,12 +59,16 @@ def _plot_derivative_grid(
             linewidth=1.2,
             color="C4",
             linestyle="--",
-            label="d(x_sigma)/dt",
+            label="|d(x_sigma)/dt|",
         )
         ax.set_title(target_name)
         ax.grid(True, alpha=0.3)
         ax.set_ylabel("State")
-        ax2.set_ylabel("d(x_sigma)/dt")
+        ax2.set_ylabel("|d(x_sigma)/dt|")
+
+    x_min, x_max = float(t_series[0]), float(t_series[-1])
+    for idx in range(14):
+        axes_flat[idx].set_xlim(x_min, x_max)
 
     for idx in range(7, 14):
         axes_flat[idx].set_xlabel("Time step")
@@ -115,6 +121,7 @@ def main() -> None:
 
     # Requested: fourth-order finite differencing of x_sigma for all target variables.
     x_sigma_derivative = finite_difference(x_sigma, order=4, dt=args.dt)
+    x_sigma_derivative = np.abs(x_sigma_derivative)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
