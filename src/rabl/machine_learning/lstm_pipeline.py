@@ -1597,9 +1597,16 @@ def _plot_ensemble_forecast_vs_truth_grid(
 
     handles, labels = axes_flat[1].get_legend_handles_labels()
     legend_cols = 4 if y_2sigma is not None else 2
-    fig.legend(handles, labels, loc="upper center", ncol=legend_cols, frameon=False, bbox_to_anchor=(0.5, 1.0))
-    fig.suptitle(title, y=0.98, fontsize=16)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.suptitle(title, y=0.985, fontsize=16)
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        ncol=legend_cols,
+        frameon=False,
+        bbox_to_anchor=(0.5, 0.965),
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.88])
     return fig
 
 
