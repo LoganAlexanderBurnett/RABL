@@ -267,6 +267,17 @@ def _descale_feature_from_stats(stats: dict[str, Any], values: np.ndarray, featu
     raise ValueError(f"Unsupported scaling type: {scaling_type}")
 
 
+def _decode_columns(columns_attr: np.ndarray | list[Any]) -> list[str]:
+    """Decode HDF5 ``columns`` attrs that may contain raw bytes."""
+    decoded: list[str] = []
+    for item in columns_attr:
+        if isinstance(item, bytes):
+            decoded.append(item.decode("utf-8"))
+        else:
+            decoded.append(str(item))
+    return decoded
+
+
 def _train_sample_generator(
     h5_path: Path,
     profile_names: list[str],
@@ -1468,6 +1479,106 @@ def plot_forecast_vs_truth_grid(
     return fig
 
 
+def _build_profile_control_tensor(
+    u_series: np.ndarray,
+    *,
+    state_dim: int,
+    control_channel: int,
+) -> np.ndarray:
+    """Build a minimal x_profile tensor containing only the requested control channel."""
+    control_idx = state_dim + control_channel
+    x_profile = np.zeros((u_series.shape[0], 1, control_idx + 1), dtype=np.float32)
+    x_profile[:, 0, control_idx] = u_series
+    return x_profile
+
+
+def _resolve_forecast_columns(
+    *,
+    profile_name: str,
+    columns: list[str],
+    target_names: list[str],
+) -> tuple[str, list[str], list[str], list[str]]:
+    """Resolve and validate forecast schema columns for a single profile."""
+    column_set = set(columns)
+    required_base = {"t", "u(t)"}
+    missing_base = sorted(required_base - column_set)
+    if missing_base:
+        raise ValueError(
+            f"Profile '{profile_name}' is missing required base columns {missing_base}; "
+            f"available columns: {columns}."
+        )
+
+    single_truth = [f"x(t)_{name}" for name in target_names]
+    single_pred = [f"x^~(t)_{name}" for name in target_names]
+    if set(single_truth).issubset(column_set) and set(single_pred).issubset(column_set):
+        return "single", single_truth, single_pred, []
+
+    ensemble_truth = [f"x_true(t)_{name}" for name in target_names]
+    ensemble_mean = [f"x_mean(t)_{name}" for name in target_names]
+    ensemble_sigma = [f"x_2sigma(t)_{name}" for name in target_names]
+
+    missing_truth = sorted(set(ensemble_truth) - column_set)
+    missing_mean = sorted(set(ensemble_mean) - column_set)
+    if not missing_truth and not missing_mean:
+        missing_sigma = sorted(set(ensemble_sigma) - column_set)
+        if missing_sigma and len(missing_sigma) != len(target_names):
+            raise ValueError(
+                f"Profile '{profile_name}' has partial ensemble uncertainty columns. "
+                f"Expected all or none of {ensemble_sigma}; missing {missing_sigma}."
+            )
+        sigma_columns = [] if missing_sigma else ensemble_sigma
+        return "ensemble", ensemble_truth, ensemble_mean, sigma_columns
+
+    raise ValueError(
+        f"Profile '{profile_name}' columns do not match a supported forecast schema. "
+        f"Expected single-model keys {single_truth + single_pred} or ensemble keys "
+        f"{ensemble_truth + ensemble_mean} (optionally {ensemble_sigma})."
+    )
+
+
+def _plot_ensemble_forecast_vs_truth_grid(
+    *,
+    x_profile: np.ndarray,
+    y_true: np.ndarray,
+    y_mean: np.ndarray,
+    y_2sigma: np.ndarray | None,
+    target_names: list[str],
+    title: str,
+    control_name: str,
+    state_dim: int,
+    control_channel: int,
+) -> plt.Figure:
+    """Plot ensemble forecasts with optional shaded mean ± 2σ bands."""
+    fig = plot_forecast_vs_truth_grid(
+        x_profile=x_profile,
+        y_true=y_true,
+        y_pred=y_mean,
+        target_names=target_names,
+        title=title,
+        save_path=None,
+        control_name=control_name,
+        state_dim=state_dim,
+        control_channel=control_channel,
+        close_figure=False,
+    )
+
+    if y_2sigma is not None:
+        axes = fig.axes
+        t_series = np.arange(y_mean.shape[0], dtype=np.float32)
+        for target_idx in range(y_mean.shape[1]):
+            ax = axes[target_idx + 1]
+            upper = y_mean[:, target_idx] + y_2sigma[:, target_idx]
+            lower = y_mean[:, target_idx] - y_2sigma[:, target_idx]
+            ax.fill_between(t_series, lower, upper, color="C1", alpha=0.15, linewidth=0, label="mean ± 2σ")
+            handles, labels = ax.get_legend_handles_labels()
+            if labels.count("mean ± 2σ") > 1:
+                first_idx = labels.index("mean ± 2σ")
+                handles = [h for i, h in enumerate(handles) if labels[i] != "mean ± 2σ" or i == first_idx]
+                labels = [l for i, l in enumerate(labels) if l != "mean ± 2σ" or i == first_idx]
+            ax.legend(handles, labels, fontsize=7, loc="best")
+    return fig
+
+
 def save_forecast_profiles_pdf(
     *,
     forecast_h5_path: Path,
@@ -1476,17 +1587,23 @@ def save_forecast_profiles_pdf(
     control_name: str = "drumAngleDeg",
     state_dim: int = STATE_DIM,
     control_channel: int = 0,
+    mode: str = "auto",
 ) -> None:
     """
     Render one 2x7 forecast-vs-truth page per profile from a forecast HDF5 file.
 
-    The HDF5 file must be in the format produced by :func:`test_and_save_forecasts`.
-    Each profile group is expected to contain a ``data`` dataset with columns:
-        [t, u(t), x(t)_..., x^~(t)_...]
-    where the number of targets is inferred from the table shape.
+    Supported per-profile HDF5 schemas are:
+      * Single-model schema from :func:`test_and_save_forecasts`:
+        ``[t, u(t), x(t)_{target}..., x^~(t)_{target}...]``
+      * Ensemble schema from :func:`ensemble_rolling_forecast_and_save`:
+        ``[t, u(t), x_true(t)_{target}..., x_mean(t)_{target}..., [x_2sigma(t)_{target}...]]``
+
+    By default (``mode='auto'``), schema detection uses ``group.attrs['columns']``.
     """
     if target_names is None:
         target_names = list(TARGET_NAMES)
+    if mode not in {"auto", "single", "ensemble"}:
+        raise ValueError(f"Unsupported mode '{mode}'. Expected one of: auto, single, ensemble.")
 
     forecast_h5_path = Path(forecast_h5_path)
     output_pdf_path = Path(output_pdf_path)
@@ -1494,9 +1611,7 @@ def save_forecast_profiles_pdf(
 
     with h5py.File(forecast_h5_path, "r") as h5f, PdfPages(output_pdf_path) as pdf:
         profile_names = sorted(h5f.keys())
-        i = 0
-        for profile_name in profile_names:
-            i += 1
+        for i, profile_name in enumerate(profile_names, start=1):
             if i % 10 == 0:
                 print(f"Plotted {i}/{len(profile_names)}")
             group = h5f[profile_name]
@@ -1509,38 +1624,60 @@ def save_forecast_profiles_pdf(
                     f"Profile '{profile_name}' has invalid table shape {table.shape}; expected 2D with >=4 columns."
                 )
 
-            num_targets = (table.shape[1] - 2) // 2
-            if 2 + (2 * num_targets) != table.shape[1] or num_targets <= 0:
+            columns = _decode_columns(group.attrs.get("columns", []))
+            if len(columns) != table.shape[1]:
                 raise ValueError(
-                    f"Profile '{profile_name}' has invalid column count {table.shape[1]} for forecast format."
+                    f"Profile '{profile_name}' has mismatched metadata: data has {table.shape[1]} columns but "
+                    f"attrs['columns'] has {len(columns)} entries."
                 )
 
-            if len(target_names) != num_targets:
-                raise ValueError(
-                    f"target_names length ({len(target_names)}) does not match inferred target count ({num_targets}) "
-                    f"for profile '{profile_name}'."
-                )
-
-            u_series = table[:, 1]
-            y_true = table[:, 2:2 + num_targets]
-            y_pred = table[:, 2 + num_targets:2 + (2 * num_targets)]
-
-            control_idx = state_dim + control_channel
-            x_profile = np.zeros((table.shape[0], 1, control_idx + 1), dtype=np.float32)
-            x_profile[:, 0, control_idx] = u_series
-
-            fig = plot_forecast_vs_truth_grid(
-                x_profile=x_profile,
-                y_true=y_true,
-                y_pred=y_pred,
+            detected_mode, truth_cols, pred_cols, sigma_cols = _resolve_forecast_columns(
+                profile_name=profile_name,
+                columns=columns,
                 target_names=target_names,
-                title=f"Rolling Forecast - {profile_name}",
-                save_path=None,
-                control_name=control_name,
+            )
+            use_mode = mode if mode != "auto" else detected_mode
+            if mode != "auto" and use_mode != detected_mode:
+                raise ValueError(
+                    f"Profile '{profile_name}' schema is '{detected_mode}', but mode='{mode}' was requested."
+                )
+
+            u_series = table[:, columns.index("u(t)")]
+            y_true = np.column_stack([table[:, columns.index(col)] for col in truth_cols])
+            y_pred_or_mean = np.column_stack([table[:, columns.index(col)] for col in pred_cols])
+            y_2sigma = None if not sigma_cols else np.column_stack([table[:, columns.index(col)] for col in sigma_cols])
+
+            x_profile = _build_profile_control_tensor(
+                u_series,
                 state_dim=state_dim,
                 control_channel=control_channel,
-                close_figure=False,
             )
+
+            if use_mode == "single":
+                fig = plot_forecast_vs_truth_grid(
+                    x_profile=x_profile,
+                    y_true=y_true,
+                    y_pred=y_pred_or_mean,
+                    target_names=target_names,
+                    title=f"Rolling Forecast - {profile_name}",
+                    save_path=None,
+                    control_name=control_name,
+                    state_dim=state_dim,
+                    control_channel=control_channel,
+                    close_figure=False,
+                )
+            else:
+                fig = _plot_ensemble_forecast_vs_truth_grid(
+                    x_profile=x_profile,
+                    y_true=y_true,
+                    y_mean=y_pred_or_mean,
+                    y_2sigma=y_2sigma,
+                    target_names=target_names,
+                    title=f"Rolling Forecast - {profile_name}",
+                    control_name=control_name,
+                    state_dim=state_dim,
+                    control_channel=control_channel,
+                )
             pdf.savefig(fig, orientation="landscape")
             plt.close(fig)
 
