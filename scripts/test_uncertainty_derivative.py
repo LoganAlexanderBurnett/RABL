@@ -26,6 +26,7 @@ def _decode_columns(columns_attr: np.ndarray | list[object]) -> list[str]:
 def _plot_derivative_grid(
     *,
     t_series: np.ndarray,
+    u_series: np.ndarray,
     y_true: np.ndarray,
     y_mean: np.ndarray,
     x_sigma_derivative: np.ndarray,
@@ -36,14 +37,21 @@ def _plot_derivative_grid(
     fig, axes = plt.subplots(2, 7, figsize=(26, 8), sharex=True)
     axes_flat = axes.flatten()
 
-    axes_flat[0].axis("off")
-    axes_flat[0].set_title("(unused)")
+    axes_flat[0].plot(t_series, u_series, linewidth=1.5, color="black")
+    axes_flat[0].set_title("drumAngleDeg")
+    axes_flat[0].set_ylabel("u(t)")
+    axes_flat[0].grid(True, alpha=0.3)
+
+    derivative_axes: list[plt.Axes] = []
 
     for target_idx, target_name in enumerate(target_names):
         ax = axes_flat[target_idx + 1]
+        ax2 = ax.twinx()
+        derivative_axes.append(ax2)
+
         ax.plot(t_series, y_true[:, target_idx], linewidth=1.6, color="C0", label="Ground truth")
         ax.plot(t_series, y_mean[:, target_idx], linewidth=1.6, color="C3", label="Mean prediction")
-        ax.plot(
+        ax2.plot(
             t_series,
             x_sigma_derivative[:, target_idx],
             linewidth=1.2,
@@ -53,13 +61,16 @@ def _plot_derivative_grid(
         )
         ax.set_title(target_name)
         ax.grid(True, alpha=0.3)
+        ax.set_ylabel("State")
+        ax2.set_ylabel("d(x_sigma)/dt")
 
     for idx in range(7, 14):
         axes_flat[idx].set_xlabel("Time step")
-    for idx in range(1, 14):
-        axes_flat[idx].set_ylabel("State / derivative")
 
-    handles, labels = axes_flat[1].get_legend_handles_labels()
+    handles_left, labels_left = axes_flat[1].get_legend_handles_labels()
+    handles_right, labels_right = derivative_axes[0].get_legend_handles_labels()
+    handles = handles_left + handles_right
+    labels = labels_left + labels_right
     fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.02))
     fig.suptitle(f"Ensemble Forecast + Uncertainty Derivative - {profile_name}", y=1.06, fontsize=16)
     fig.tight_layout()
@@ -97,6 +108,7 @@ def main() -> None:
 
     target_names = list(TARGET_NAMES)
     t_series = table[:, columns.index("t")]
+    u_series = table[:, columns.index("u(t)")]
     y_true = np.column_stack([table[:, columns.index(f"x_true(t)_{name}")] for name in target_names])
     y_mean = np.column_stack([table[:, columns.index(f"x_mean(t)_{name}")] for name in target_names])
     x_sigma = np.column_stack([table[:, columns.index(f"x_2sigma(t)_{name}")] for name in target_names])
@@ -117,6 +129,7 @@ def main() -> None:
     derivative_path = args.output_dir / f"{profile_name}_sigma_derivative_grid.png"
     _plot_derivative_grid(
         t_series=t_series,
+        u_series=u_series,
         y_true=y_true,
         y_mean=y_mean,
         x_sigma_derivative=x_sigma_derivative,
