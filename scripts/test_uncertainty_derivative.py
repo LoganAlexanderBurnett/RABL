@@ -112,16 +112,17 @@ def _plot_overlay_grid(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compute/plot 4th-order d(x_sigma)/dt overlaid on mean ±2σ ensemble forecast grid."
+        description="Compute/plot 2nd or 4th-order d(x_sigma)/dt overlaid on mean ±2σ ensemble forecast grid."
     )
     parser.add_argument("forecast_h5_path", type=Path, help="Path to rolling_forecasts.h5.")
     parser.add_argument("--profile", type=str, default=None, help="Profile name to plot. Defaults to first available profile.")
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("outputs/uncertainty_derivative"),
+        default=Path("../misc/"),
         help="Directory where the output plot is saved.",
     )
+    parser.add_argument("--order", type=int, default=4, help="Order of finite-differencing scheme.")
     parser.add_argument("--dt", type=float, default=1.0, help="Time-step spacing used for derivative.")
     args = parser.parse_args()
 
@@ -145,10 +146,13 @@ def main() -> None:
     y_mean = np.column_stack([table[:, columns.index(f"x_mean(t)_{name}")] for name in target_names])
     y_2sigma = np.column_stack([table[:, columns.index(f"x_2sigma(t)_{name}")] for name in target_names])
 
-    dx_sigma_dt = finite_difference(y_2sigma, order=4, dt=args.dt)
+    dx_sigma_dt = finite_difference(y_2sigma, order=args.order, dt=args.dt)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    overlay_path = args.output_dir / f"{profile_name}_ensemble_with_sigma_derivative.png"
+    if args.order == 2:
+        overlay_path = args.output_dir / f"{profile_name}_ensemble_with_sigma_derivative_2ndOrder.png"
+    else:
+        overlay_path = args.output_dir / f"{profile_name}_ensemble_with_sigma_derivative_4thOrder.png"
     _plot_overlay_grid(
         t_series=t_series,
         u_series=u_series,
