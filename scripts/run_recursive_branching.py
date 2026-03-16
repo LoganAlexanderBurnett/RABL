@@ -1,12 +1,22 @@
-"""Programmatic recursive branching runner.
+"""Standalone + programmatic recursive branching runner.
 
-This module is intended for direct Python use (not command-line parsing).
-Import `run_recursive_branching_workflow(...)` from notebooks, services, or
-other scripts to execute the end-to-end recursive branching workflow.
+Usage (standalone):
+    python scripts/run_recursive_branching.py \
+        --model-path outputs/ml_results/ensemble/model_0/model.pt \
+                     outputs/ml_results/ensemble/model_1/model.pt \
+        --x-profile-template outputs/ml_results/template_x_profile.npy \
+        --lstm-hidden 64 \
+        --fc-hidden 64 \
+        --output-dir outputs/recursive_branching
+
+`template_x` is a NumPy `.npy` tensor with shape
+``(n_steps, lookback, n_features)`` matching the model input format used by
+`rolling_forecast(...)`.
 """
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import sys
 from dataclasses import dataclass
@@ -31,19 +41,17 @@ from rabl.machine_learning.recursive_branching import (
 )
 from rabl.variography.DrumVariography import DrumProfile, DrumProfileGenerator
 
-
 DEFAULT_CONFIG_PATH = REPO_ROOT / "scripts" / "config.py"
 
 
 @dataclass(frozen=True)
 class RecursiveBranchingRunConfig:
-    """Programmatic settings for one recursive branching run."""
+    """Settings for one recursive branching run."""
 
     model_paths: tuple[Path, ...]
     x_profile_template_path: Path
     output_dir: Path
 
-    # Horizon/branching defaults
     T: float = 200.0
     dt: float = 0.4
     n_intervals: int = 3
@@ -52,7 +60,6 @@ class RecursiveBranchingRunConfig:
     baseline_angle_deg: float = 45.0
     seed: int = 123
 
-    # LSTM inference shape/options
     state_dim: int = 13
     num_targets: int = 13
     control_channel: int = 0
@@ -64,8 +71,6 @@ class RecursiveBranchingRunConfig:
     finite_difference_order: int = 4
     kernel: str = "matern52"
     device: str = "cpu"
-
-    # Variography config source
     config_path: Path = DEFAULT_CONFIG_PATH
 
 
@@ -100,7 +105,15 @@ def build_profile_to_x_adapter(
     state_dim: int,
     control_channel: int,
 ) -> Callable[[DrumProfile], np.ndarray]:
-    """Build adapter mapping `DrumProfile -> x_profile` for rolling forecast."""
+    """Build adapter mapping `DrumProfile -> x_profile` for rolling forecast.
+
+    Parameters
+    ----------
+    template_x:
+        Numpy tensor of shape ``(n_steps, lookback, n_features)``.
+        Usually this is taken from one concrete profile tensor from your scaled
+        LSTM dataset pipeline and saved once as `.npy`.
+    """
     x_template = np.asarray(template_x, dtype=np.float32)
     if x_template.ndim != 3:
         raise ValueError(f"template_x must be 3D (steps, lookback, features), got {x_template.shape}")
@@ -148,7 +161,7 @@ def _build_time_grid(T: float, dt: float) -> np.ndarray:
 
 
 def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> RecursiveBranchingResult:
-    """Run the recursive branching workflow programmatically and save outputs."""
+    """Run the recursive branching workflow and save outputs."""
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
     cfg = _load_config_module(config.config_path)
@@ -240,8 +253,73 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
     return result
 
 
-if __name__ == "__main__":
-    raise SystemExit(
-        "This module is now intended for programmatic use. "
-        "Import run_recursive_branching_workflow(...) and call it from Python code."
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run recursive branching as a standalone script.",
     )
+    parser.add_argument("--model-path", type=Path, nargs="+", required=True, help="One or more .pt ensemble checkpoints.")
+    parser.add_argument(
+        "--x-profile-template",
+        type=Path,
+        required=True,
+        help=(
+            "Path to template_x .npy file with shape (n_steps, lookback, n_features). "
+            "You can create this from one profile tensor used for LSTM rolling-forecast input."
+        ),
+    )
+    parser.add_argument("--output-dir", type=Path, required=True, help="Directory for profiles.h5 and branch_metadata.json.")
+
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help=f"Path to config.py (default: {DEFAULT_CONFIG_PATH}).")
+
+    parser.add_argument("--T", type=float, default=200.0)
+    parser.add_argument("--dt", type=float, default=0.4)
+    parser.add_argument("--n-intervals", type=int, default=3)
+    parser.add_argument("--n-branches", type=int, default=2)
+
+    parser.add_argument("--baseline-angle-deg", type=float, default=45.0)
+    parser.add_argument("--seed", type=int, default=123)
+
+    parser.add_argument("--state-dim", type=int, default=13)
+    parser.add_argument("--num-targets", type=int, default=13)
+    parser.add_argument("--control-channel", type=int, default=0)
+
+    parser.add_argument("--n-lstm", type=int, default=1)
+    parser.add_argument("--lstm-hidden", type=int, required=True)
+    parser.add_argument("--n-fc", type=int, default=1)
+    parser.add_argument("--fc-hidden", type=int, nargs="+", required=True)
+
+    parser.add_argument("--finite-difference-order", type=int, default=4, choices=[2, 4])
+    parser.add_argument("--kernel", type=str, default="matern52", choices=["matern32", "matern52"])
+    parser.add_argument("--device", type=str, default="cpu")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    run_config = RecursiveBranchingRunConfig(
+        model_paths=tuple(args.model_path),
+        x_profile_template_path=args.x_profile_template,
+        output_dir=args.output_dir,
+        T=args.T,
+        dt=args.dt,
+        n_intervals=args.n_intervals,
+        n_branches=args.n_branches,
+        baseline_angle_deg=args.baseline_angle_deg,
+        seed=args.seed,
+        state_dim=args.state_dim,
+        num_targets=args.num_targets,
+        control_channel=args.control_channel,
+        n_lstm=args.n_lstm,
+        lstm_hidden=args.lstm_hidden,
+        n_fc=args.n_fc,
+        fc_hidden=tuple(args.fc_hidden),
+        finite_difference_order=args.finite_difference_order,
+        kernel=args.kernel,
+        device=args.device,
+        config_path=args.config,
+    )
+    run_recursive_branching_workflow(run_config)
+
+
+if __name__ == "__main__":
+    main()
