@@ -42,7 +42,9 @@ from rabl.machine_learning.recursive_branching import (
     save_recursive_branching_output,
 )
 from rabl.machine_learning.lstm_pipeline import save_forecast_profiles_pdf
+from rabl.machine_learning.lstm_pipeline import _descale_targets_from_stats, _load_scaling_stats
 from rabl.variography.DrumVariography import DrumProfile, DrumProfileGenerator
+from rabl.machine_learning.build_lstm_dataset import CONTROL_COLUMN, STATE_COLUMNS
 
 DEFAULT_CONFIG_PATH = REPO_ROOT / "scripts" / "config.py"
 
@@ -50,6 +52,7 @@ DEFAULT_CONFIG_PATH = REPO_ROOT / "scripts" / "config.py"
 @dataclass(frozen=True)
 class RecursiveBranchingRunConfig:
     model_paths: tuple[Path, ...]
+    bagged_h5_path: Path
     output_dir: Path
 
     T: float = 200.0
@@ -143,12 +146,15 @@ def _steady_state_rows(steady_state: dict, *, state_dim: int, lookback: int) -> 
     if lookback < 1:
         raise ValueError(f"lookback must be >=1, got {lookback}.")
 
-    control_value = steady_state.get("drumAngleDeg")
+    control_value = steady_state.get(CONTROL_COLUMN)
     if control_value is None:
-        raise ValueError("STEADY_STATE must contain key 'drumAngleDeg'.")
+        raise ValueError(f"STEADY_STATE must contain key '{CONTROL_COLUMN}'.")
 
-    state_values = [value for key, value in steady_state.items() if key != "drumAngleDeg"]
-    if len(state_values) < state_dim:
+    missing = [key for key in STATE_COLUMNS if key not in steady_state]
+    if missing:
+        raise ValueError(f"STEADY_STATE is missing required state keys: {missing}")
+    state_values = [steady_state[key] for key in STATE_COLUMNS]
+    if state_dim > len(state_values):
         raise ValueError(
             "STEADY_STATE does not contain enough non-control entries for requested state_dim. "
             f"Found {len(state_values)} non-control entries, state_dim={state_dim}."
@@ -180,6 +186,7 @@ def build_profile_to_x_adapter(
     steady_state: dict,
     state_dim: int,
     control_channel: int,
+    scaling_stats: dict,
 ) -> Callable[[DrumProfile], np.ndarray]:
     if n_steps < 1:
         raise ValueError("n_steps must be >=1.")
@@ -212,6 +219,16 @@ def build_profile_to_x_adapter(
                 lookback,
                 control_steady=control_steady,
             )
+        if scaling_stats["type"] == "standard":
+            mean = scaling_stats["x"]["mean"].astype(np.float32)
+            std = scaling_stats["x"]["std"].astype(np.float32)
+            x_profile = (x_profile - mean[None, None, :]) / std[None, None, :]
+        elif scaling_stats["type"] == "minmax":
+            x_min = scaling_stats["x"]["min"].astype(np.float32)
+            x_span = scaling_stats["x"]["span"].astype(np.float32)
+            x_profile = (x_profile - x_min[None, None, :]) / x_span[None, None, :]
+        else:
+            raise ValueError(f"Unsupported scaling type: {scaling_stats['type']}")
         return x_profile
 
     return _adapter
@@ -287,12 +304,14 @@ def _print_run_summary(
     sill_v: float,
     models: list,
     result: RecursiveBranchingResult,
+    scaling_type: str,
 ) -> None:
     print("=== Recursive Branching Run Configuration ===")
     print(f"Variogram: kernel={config.kernel}, ell={ell}, nugget={nugget_v}, sill={sill_v:.6f}")
     print(f"Time/Grid: n_steps={n_steps}, dt={config.dt}, T={config.T}")
     print(f"Forecast shape: state_dim={state_dim}, num_targets={num_targets}, lookback={config.lookback}, n_features={n_features}")
     print(f"Finite difference order: {config.finite_difference_order}")
+    print(f"Scaling: type={scaling_type}, source={config.bagged_h5_path}")
     print(f"Ensemble members: {len(models)}")
     for idx, path in enumerate(config.model_paths):
         print(
@@ -317,10 +336,15 @@ def _save_branching_ensemble_forecasts(
     target_names: list[str],
     derivative_order: int,
     dt: float,
+    scaling_stats: dict,
 ) -> Path:
     forecasts: list[dict[str, np.ndarray | str]] = []
     for profile_id, node in sorted(result.final_profiles.items()):
-        pred_stack = forecaster.forecast(node.profile)
+        pred_stack_scaled = forecaster.forecast(node.profile)
+        pred_stack = np.stack(
+            [_descale_targets_from_stats(scaling_stats, pred_stack_scaled[i]) for i in range(pred_stack_scaled.shape[0])],
+            axis=0,
+        )
         y_mean = np.mean(pred_stack, axis=0)
         y_two_sigma = 2.0 * np.std(pred_stack, axis=0, ddof=0)
         y_dsigma_dt = finite_difference(y_two_sigma, order=derivative_order, dt=dt)
@@ -354,6 +378,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
     nugget_v = float(cfg.NUGGET_V_DEG2_S2)
     sigma_theta_target = float(cfg.SIGMA_THETA_TARGET)
     steady_state = dict(cfg.STEADY_STATE)
+    scaling_stats = _load_scaling_stats(config.bagged_h5_path)
 
     t_grid = _build_time_grid(config.T, config.dt)
     generator = DrumProfileGenerator(
@@ -395,6 +420,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
         steady_state=steady_state,
         state_dim=state_dim,
         control_channel=config.control_channel,
+        scaling_stats=scaling_stats,
     )
 
     models = load_trained_ensemble(
@@ -433,6 +459,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
         target_names=target_names,
         derivative_order=config.finite_difference_order,
         dt=config.dt,
+        scaling_stats=scaling_stats,
     )
 
     forecast_plot_dir = config.output_dir / "ensemble_forecast_plots"
@@ -470,6 +497,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
         sill_v=sill_v,
         models=models,
         result=result,
+        scaling_type=scaling_stats["type"],
     )
 
     expected_profiles = (config.n_branches + 1) ** config.n_intervals
@@ -485,6 +513,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run recursive branching as a standalone script.")
     parser.add_argument("--model-path", type=Path, nargs="+", required=True, help="One or more .pt ensemble checkpoints.")
+    parser.add_argument("--bagged-h5-path", type=Path, required=True, help="Path to bagged/scaled HDF5 containing 'scaling' group.")
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory for branching outputs and plots.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help=f"Path to config.py (default: {DEFAULT_CONFIG_PATH}).")
 
@@ -517,6 +546,7 @@ def main() -> None:
     args = parse_args()
     run_config = RecursiveBranchingRunConfig(
         model_paths=tuple(args.model_path),
+        bagged_h5_path=args.bagged_h5_path,
         output_dir=args.output_dir,
         T=args.T,
         dt=args.dt,
