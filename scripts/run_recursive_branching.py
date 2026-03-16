@@ -4,14 +4,9 @@ Usage (standalone):
     python scripts/run_recursive_branching.py \
         --model-path outputs/ml_results/ensemble/model_0/model.pt \
                      outputs/ml_results/ensemble/model_1/model.pt \
-        --x-profile-template outputs/ml_results/template_x_profile.npy \
         --lstm-hidden 64 \
         --fc-hidden 64 \
         --output-dir outputs/recursive_branching
-
-`template_x` is a NumPy `.npy` tensor with shape
-``(n_steps, lookback, n_features)`` matching the model input format used by
-`rolling_forecast(...)`.
 """
 
 from __future__ import annotations
@@ -49,7 +44,6 @@ class RecursiveBranchingRunConfig:
     """Settings for one recursive branching run."""
 
     model_paths: tuple[Path, ...]
-    x_profile_template_path: Path
     output_dir: Path
 
     T: float = 200.0
@@ -60,9 +54,13 @@ class RecursiveBranchingRunConfig:
     baseline_angle_deg: float = 45.0
     seed: int = 123
 
-    state_dim: int = 13
-    num_targets: int = 13
+    # Feature layout (one control feature + state features)
+    lookback: int = 12
+    n_features: int = 13
+    state_dim: int | None = None
+    num_targets: int | None = None
     control_channel: int = 0
+
     n_lstm: int = 1
     lstm_hidden: int = 64
     n_fc: int = 1
@@ -87,48 +85,69 @@ def _load_config_module(config_path: Path) -> ModuleType:
     return module
 
 
-def _make_control_window(u_series: np.ndarray, step: int, lookback: int) -> np.ndarray:
+def _steady_state_rows(steady_state: dict, *, state_dim: int, lookback: int) -> tuple[np.ndarray, np.ndarray]:
+    if lookback < 1:
+        raise ValueError(f"lookback must be >=1, got {lookback}.")
+
+    control_value = steady_state.get("drumAngleDeg")
+    if control_value is None:
+        raise ValueError("STEADY_STATE must contain key 'drumAngleDeg'.")
+
+    state_values = [value for key, value in steady_state.items() if key != "drumAngleDeg"]
+    if len(state_values) < state_dim:
+        raise ValueError(
+            "STEADY_STATE does not contain enough non-control entries for requested state_dim. "
+            f"Found {len(state_values)} non-control entries, state_dim={state_dim}."
+        )
+
+    state_row = np.asarray(state_values[:state_dim], dtype=np.float32)
+    control_row = np.asarray([float(control_value)], dtype=np.float32)
+
+    state_pad = np.repeat(state_row[None, :], lookback, axis=0)
+    control_pad = np.repeat(control_row[None, :], lookback, axis=0)
+    return state_pad, control_pad
+
+
+def _make_control_window(u_series: np.ndarray, step: int, lookback: int, *, control_steady: float) -> np.ndarray:
     start = max(0, step - lookback + 1)
     history = u_series[start : step + 1]
     if history.size == 0:
         raise RuntimeError("Control history unexpectedly empty while building windows.")
 
     out = np.empty(lookback, dtype=np.float32)
-    out[: lookback - history.size] = history[0]
+    out[: lookback - history.size] = np.float32(control_steady)
     out[lookback - history.size :] = history
     return out
 
 
 def build_profile_to_x_adapter(
-    template_x: np.ndarray,
     *,
+    n_steps: int,
+    lookback: int,
+    n_features: int,
+    steady_state: dict,
     state_dim: int,
     control_channel: int,
 ) -> Callable[[DrumProfile], np.ndarray]:
     """Build adapter mapping `DrumProfile -> x_profile` for rolling forecast.
 
-    Parameters
-    ----------
-    template_x:
-        Numpy tensor of shape ``(n_steps, lookback, n_features)``.
-        Usually this is taken from one concrete profile tensor from your scaled
-        LSTM dataset pipeline and saved once as `.npy`.
+    The first state window is initialized from `STEADY_STATE`, mirroring the
+    steady-state padding concept used by dataset construction.
     """
-    x_template = np.asarray(template_x, dtype=np.float32)
-    if x_template.ndim != 3:
-        raise ValueError(f"template_x must be 3D (steps, lookback, features), got {x_template.shape}")
+    if n_steps < 1:
+        raise ValueError("n_steps must be >=1.")
+    if lookback < 1:
+        raise ValueError("lookback must be >=1.")
+    if n_features <= state_dim:
+        raise ValueError("n_features must be > state_dim (at least one control feature).")
 
-    n_steps, lookback, n_features = x_template.shape
     control_dim = n_features - state_dim
-    if control_dim <= 0:
-        raise ValueError(
-            f"Invalid feature layout: n_features={n_features}, state_dim={state_dim}. "
-            "Need at least one control channel."
-        )
     if not (0 <= control_channel < control_dim):
         raise ValueError(f"control_channel={control_channel} out of range [0, {control_dim - 1}]")
 
     control_feature_idx = state_dim + control_channel
+    state_pad, control_pad = _steady_state_rows(steady_state, state_dim=state_dim, lookback=lookback)
+    control_steady = float(control_pad[0, 0])
 
     def _adapter(profile: DrumProfile) -> np.ndarray:
         u_series = np.asarray(profile.theta_deg, dtype=np.float32)
@@ -136,13 +155,20 @@ def build_profile_to_x_adapter(
             raise ValueError(f"Expected 1D theta_deg control series, got shape {u_series.shape}")
         if u_series.size != n_steps:
             raise ValueError(
-                "Template x_profile step count must match profile horizon. "
-                f"Got template steps={n_steps}, profile steps={u_series.size}."
+                f"Profile horizon mismatch: expected {n_steps} steps, got {u_series.size}."
             )
 
-        x_profile = x_template.copy()
+        x_profile = np.zeros((n_steps, lookback, n_features), dtype=np.float32)
+        # Initialize all state channels from steady state; rolling_forecast uses x_profile[0] state window.
+        x_profile[:, :, :state_dim] = state_pad[None, :, :]
+
         for step in range(n_steps):
-            x_profile[step, :, control_feature_idx] = _make_control_window(u_series, step, lookback)
+            x_profile[step, :, control_feature_idx] = _make_control_window(
+                u_series,
+                step,
+                lookback,
+                control_steady=control_steady,
+            )
         return x_profile
 
     return _adapter
@@ -168,16 +194,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
     ell = float(cfg.ELL)
     nugget_v = float(cfg.NUGGET_V_DEG2_S2)
     sigma_theta_target = float(cfg.SIGMA_THETA_TARGET)
-
-    x_template = np.load(config.x_profile_template_path)
-    if x_template.ndim != 3:
-        raise ValueError(f"x-profile-template must load to 3D array; got {x_template.shape}.")
-
-    profile_to_x = build_profile_to_x_adapter(
-        x_template,
-        state_dim=config.state_dim,
-        control_channel=config.control_channel,
-    )
+    steady_state = dict(cfg.STEADY_STATE)
 
     t_grid = _build_time_grid(config.T, config.dt)
 
@@ -202,18 +219,24 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
         seed=config.seed,
     )
 
-    n_steps, lookback, num_features = x_template.shape
-    if n_steps != root_profile.t.size:
-        raise ValueError(
-            "Time-grid/profile length mismatch with x-profile template. "
-            f"template steps={n_steps}, generated steps={root_profile.t.size}."
-        )
+    n_steps = int(root_profile.t.size)
+    state_dim = (config.n_features - 1) if config.state_dim is None else int(config.state_dim)
+    num_targets = state_dim if config.num_targets is None else int(config.num_targets)
+
+    profile_to_x = build_profile_to_x_adapter(
+        n_steps=n_steps,
+        lookback=config.lookback,
+        n_features=config.n_features,
+        steady_state=steady_state,
+        state_dim=state_dim,
+        control_channel=config.control_channel,
+    )
 
     models = load_trained_ensemble(
         [Path(p) for p in config.model_paths],
-        timesteps=lookback,
-        num_features=num_features,
-        num_targets=config.num_targets,
+        timesteps=config.lookback,
+        num_features=config.n_features,
+        num_targets=num_targets,
         n_lstm=config.n_lstm,
         lstm_hidden=config.lstm_hidden,
         lstm_dropout=0.0,
@@ -225,7 +248,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
     forecaster = LSTMEnsembleForecaster(
         models,
         profile_to_x=profile_to_x,
-        state_dim=config.state_dim,
+        state_dim=state_dim,
     )
 
     result = run_recursive_branching(
@@ -246,6 +269,8 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
         f"final_profiles={len(result.final_profiles)} "
         f"expected_profiles={expected_profiles} "
         f"branch_events={len(result.branch_events)} "
+        f"n_steps={n_steps} lookback={config.lookback} n_features={config.n_features} "
+        f"state_dim={state_dim} num_targets={num_targets} "
         f"ell={ell} nugget_v={nugget_v} sill_v={sill_v:.6f} sigma_theta_target={sigma_theta_target} "
         f"output_dir={config.output_dir}"
     )
@@ -254,21 +279,9 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run recursive branching as a standalone script.",
-    )
+    parser = argparse.ArgumentParser(description="Run recursive branching as a standalone script.")
     parser.add_argument("--model-path", type=Path, nargs="+", required=True, help="One or more .pt ensemble checkpoints.")
-    parser.add_argument(
-        "--x-profile-template",
-        type=Path,
-        required=True,
-        help=(
-            "Path to template_x .npy file with shape (n_steps, lookback, n_features). "
-            "You can create this from one profile tensor used for LSTM rolling-forecast input."
-        ),
-    )
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory for profiles.h5 and branch_metadata.json.")
-
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help=f"Path to config.py (default: {DEFAULT_CONFIG_PATH}).")
 
     parser.add_argument("--T", type=float, default=200.0)
@@ -279,8 +292,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline-angle-deg", type=float, default=45.0)
     parser.add_argument("--seed", type=int, default=123)
 
-    parser.add_argument("--state-dim", type=int, default=13)
-    parser.add_argument("--num-targets", type=int, default=13)
+    parser.add_argument("--lookback", type=int, default=12)
+    parser.add_argument("--n-features", type=int, default=13)
+    parser.add_argument("--state-dim", type=int, default=None)
+    parser.add_argument("--num-targets", type=int, default=None)
     parser.add_argument("--control-channel", type=int, default=0)
 
     parser.add_argument("--n-lstm", type=int, default=1)
@@ -298,7 +313,6 @@ def main() -> None:
     args = parse_args()
     run_config = RecursiveBranchingRunConfig(
         model_paths=tuple(args.model_path),
-        x_profile_template_path=args.x_profile_template,
         output_dir=args.output_dir,
         T=args.T,
         dt=args.dt,
@@ -306,6 +320,8 @@ def main() -> None:
         n_branches=args.n_branches,
         baseline_angle_deg=args.baseline_angle_deg,
         seed=args.seed,
+        lookback=args.lookback,
+        n_features=args.n_features,
         state_dim=args.state_dim,
         num_targets=args.num_targets,
         control_channel=args.control_channel,
