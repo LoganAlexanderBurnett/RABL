@@ -21,6 +21,7 @@ from typing import Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = REPO_ROOT / "src"
@@ -75,6 +76,57 @@ class RecursiveBranchingRunConfig:
     device: str = "cpu"
     config_path: Path = DEFAULT_CONFIG_PATH
 
+
+
+
+def _infer_checkpoint_io_shapes(model_path: Path) -> tuple[int, int]:
+    """Infer (num_features, num_targets) from a saved LSTMRegressor checkpoint."""
+    state_dict = torch.load(Path(model_path), map_location="cpu")
+    try:
+        input_size = int(state_dict["lstm.weight_ih_l0"].shape[1])
+        output_size = int(state_dict["output_layer.bias"].shape[0])
+    except KeyError as exc:
+        raise KeyError(
+            f"Checkpoint '{model_path}' is missing expected keys for shape inference. "
+            "Expected at least 'lstm.weight_ih_l0' and 'output_layer.bias'."
+        ) from exc
+    return input_size, output_size
+
+
+def _resolve_model_io_shapes(config: RecursiveBranchingRunConfig) -> tuple[int, int]:
+    """Resolve model input/output sizes from checkpoints and validate consistency."""
+    if not config.model_paths:
+        raise ValueError("At least one model path is required.")
+
+    inferred = [_infer_checkpoint_io_shapes(path) for path in config.model_paths]
+    first_in, first_out = inferred[0]
+    mismatched = [
+        (str(path), in_size, out_size)
+        for path, (in_size, out_size) in zip(config.model_paths, inferred, strict=True)
+        if in_size != first_in or out_size != first_out
+    ]
+    if mismatched:
+        details = "; ".join(
+            f"{path} -> (in={in_size}, out={out_size})" for path, in_size, out_size in mismatched
+        )
+        raise ValueError(
+            "Ensemble checkpoints do not share the same input/output dimensions. "
+            f"Expected all to match first checkpoint (in={first_in}, out={first_out}). "
+            f"Mismatches: {details}"
+        )
+
+    if config.n_features != first_in:
+        print(
+            "[shape-infer] Overriding n_features from config "
+            f"({config.n_features}) to checkpoint value ({first_in})."
+        )
+    if config.num_targets is not None and config.num_targets != first_out:
+        print(
+            "[shape-infer] Overriding num_targets from config "
+            f"({config.num_targets}) to checkpoint value ({first_out})."
+        )
+
+    return first_in, first_out
 
 def _load_config_module(config_path: Path) -> ModuleType:
     if not config_path.exists():
@@ -227,6 +279,7 @@ def _print_run_summary(
     *,
     config: RecursiveBranchingRunConfig,
     n_steps: int,
+    n_features: int,
     state_dim: int,
     num_targets: int,
     ell: float,
@@ -238,7 +291,7 @@ def _print_run_summary(
     print("=== Recursive Branching Run Configuration ===")
     print(f"Variogram: kernel={config.kernel}, ell={ell}, nugget={nugget_v}, sill={sill_v:.6f}")
     print(f"Time/Grid: n_steps={n_steps}, dt={config.dt}, T={config.T}")
-    print(f"Forecast shape: state_dim={state_dim}, num_targets={num_targets}, lookback={config.lookback}, n_features={config.n_features}")
+    print(f"Forecast shape: state_dim={state_dim}, num_targets={num_targets}, lookback={config.lookback}, n_features={n_features}")
     print(f"Finite difference order: {config.finite_difference_order}")
     print(f"Ensemble members: {len(models)}")
     for idx, path in enumerate(config.model_paths):
@@ -326,13 +379,19 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
     _plot_root_profile(root_profile, config.output_dir / "root_profile.png")
 
     n_steps = int(root_profile.t.size)
-    state_dim = (config.n_features - 1) if config.state_dim is None else int(config.state_dim)
-    num_targets = state_dim if config.num_targets is None else int(config.num_targets)
+    n_features, num_targets = _resolve_model_io_shapes(config)
+    state_dim = (n_features - 1) if config.state_dim is None else int(config.state_dim)
+    if num_targets != state_dim:
+        raise ValueError(
+            "Resolved checkpoint output size does not match state_dim. "
+            f"num_targets={num_targets}, state_dim={state_dim}. "
+            "Pass --state-dim explicitly if your model output/state split differs."
+        )
 
     profile_to_x = build_profile_to_x_adapter(
         n_steps=n_steps,
         lookback=config.lookback,
-        n_features=config.n_features,
+        n_features=n_features,
         steady_state=steady_state,
         state_dim=state_dim,
         control_channel=config.control_channel,
@@ -341,7 +400,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
     models = load_trained_ensemble(
         [Path(p) for p in config.model_paths],
         timesteps=config.lookback,
-        num_features=config.n_features,
+        num_features=n_features,
         num_targets=num_targets,
         n_lstm=config.n_lstm,
         lstm_hidden=config.lstm_hidden,
@@ -403,6 +462,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
     _print_run_summary(
         config=config,
         n_steps=n_steps,
+        n_features=n_features,
         state_dim=state_dim,
         num_targets=num_targets,
         ell=ell,
