@@ -117,7 +117,7 @@ def save_autoregressive_forecast_video(
     legend_handles = [
         Line2D([0], [0], color=truth_color, linewidth=1.0, label="Ground truth"),
         Line2D([0], [0], color=input_color, linewidth=2.2, label="Input window (AR state/control)"),
-        Line2D([0], [0], color=output_color, linewidth=1.3, marker="o", markersize=4, label="Output prediction"),
+        Line2D([0], [0], color=output_color, linewidth=2.0, marker="|", markersize=12, label="Output prediction (current step)"),
     ]
 
     fig.legend(
@@ -163,13 +163,15 @@ def save_autoregressive_forecast_video(
                 window_y = ar_history[start:frame, target_idx]
                 ax.plot(window_t, window_y, color=input_color, linewidth=2.2, label="Input window (AR state)")
 
-            ax.scatter(
-                [t_series[frame]],
-                [y_pred[frame, target_idx]],
+            y_tick_center = float(y_pred[frame, target_idx])
+            y_tick_span = 0.02 * max(1e-6, state_lims[target_idx][1] - state_lims[target_idx][0])
+            ax.vlines(
+                x=float(t_series[frame]),
+                ymin=y_tick_center - y_tick_span,
+                ymax=y_tick_center + y_tick_span,
                 color=output_color,
-                s=16,
+                linewidth=2.0,
                 zorder=5,
-                label="Output (current prediction)",
             )
             if frame > 0:
                 ax.plot(
