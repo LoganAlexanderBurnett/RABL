@@ -10,6 +10,8 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+
+from .branchpoint_finder import finite_difference
 from torch.utils.data import DataLoader
 
 from .lstm_pipeline import (
@@ -303,18 +305,23 @@ def _save_ensemble_rolling_forecasts_hdf5(
 ) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    column_names = (
-        ["t", "u(t)"]
-        + [f"x_true(t)_{name}" for name in target_names]
-        + [f"x_mean(t)_{name}" for name in target_names]
-        + [f"x_2sigma(t)_{name}" for name in target_names]
-    )
-    column_attr = np.array(column_names, dtype="S")
-
     with h5py.File(output_path, "w") as h5f:
         for entry in forecasts:
+            column_names = (
+                ["t", "u(t)"]
+                + [f"x_true(t)_{name}" for name in target_names]
+                + [f"x_mean(t)_{name}" for name in target_names]
+                + [f"x_2sigma(t)_{name}" for name in target_names]
+            )
+            if "dx_sigma_dt" in entry:
+                column_names += [f"x_dsigma_dt(t)_{name}" for name in target_names]
+            column_attr = np.array(column_names, dtype="S")
+
             group = h5f.create_group(entry["profile"])
-            group.create_dataset("data", data=entry["table"].astype(np.float32))
+            table = entry["table"].astype(np.float32)
+            if "dx_sigma_dt" in entry:
+                table = np.column_stack([table, entry["dx_sigma_dt"].astype(np.float32)]).astype(np.float32)
+            group.create_dataset("data", data=table)
             group.attrs["columns"] = column_attr
 
 
@@ -327,6 +334,8 @@ def ensemble_rolling_forecast_and_save(
     state_dim: int = STATE_DIM,
     control_channel: int = 0,
     target_names: list[str] | None = None,
+    derivative_order: int | None = None,
+    derivative_dt: float = 1.0,
 ) -> None:
     if target_names is None:
         target_names = list(TARGET_NAMES)
@@ -354,7 +363,10 @@ def ensemble_rolling_forecast_and_save(
         u_series = _descale_feature_from_stats(scaling_stats, u_series, control_idx)
 
         table = np.column_stack([t_series, u_series, y_true, y_mean, y_two_sigma]).astype(np.float32)
-        forecasts.append({"profile": str(profile_name), "table": table})
+        entry: dict[str, Any] = {"profile": str(profile_name), "table": table}
+        if derivative_order is not None:
+            entry["dx_sigma_dt"] = finite_difference(y_two_sigma, order=derivative_order, dt=derivative_dt)
+        forecasts.append(entry)
 
     _save_ensemble_rolling_forecasts_hdf5(
         forecasts,
@@ -380,6 +392,7 @@ def plot_ensemble_forecast_profile_grid(
     save_path: Path | None = None,
     control_name: str = "drumAngleDeg",
     target_names: list[str] | None = None,
+    plot_uncertainty_derivative: bool = True,
     close_figure: bool = True,
 ) -> plt.Figure:
     """
@@ -416,6 +429,14 @@ def plot_ensemble_forecast_profile_grid(
     y_true = np.column_stack([table[:, columns.index(f"x_true(t)_{name}")] for name in target_names])
     y_mean = np.column_stack([table[:, columns.index(f"x_mean(t)_{name}")] for name in target_names])
     y_2sigma = np.column_stack([table[:, columns.index(f"x_2sigma(t)_{name}")] for name in target_names])
+    derivative_cols = [f"x_dsigma_dt(t)_{name}" for name in target_names]
+    has_derivative = all(col in columns for col in derivative_cols)
+    y_dsigma_dt = (
+        np.column_stack([table[:, columns.index(col)] for col in derivative_cols])
+        if (plot_uncertainty_derivative and has_derivative)
+        else None
+    )
+
     y_upper = y_mean + y_2sigma
     y_lower = y_mean - y_2sigma
 
@@ -425,6 +446,8 @@ def plot_ensemble_forecast_profile_grid(
     axes_flat[0].plot(t_series, u_series, linewidth=1.5, color="black")
     axes_flat[0].set_title(control_name)
     axes_flat[0].grid(True, alpha=0.3)
+
+    derivative_axes: list[plt.Axes] = []
 
     for target_idx, target_name in enumerate(target_names):
         ax = axes_flat[target_idx + 1]
@@ -440,6 +463,18 @@ def plot_ensemble_forecast_profile_grid(
             alpha=0.15,
             linewidth=0,
         )
+        if y_dsigma_dt is not None:
+            ax2 = ax.twinx()
+            derivative_axes.append(ax2)
+            ax2.plot(
+                t_series,
+                y_dsigma_dt[:, target_idx],
+                linewidth=1.2,
+                color="C4",
+                linestyle=":",
+                label="d(x_sigma)/dt",
+            )
+            ax2.axhline(0.0, color="0.5", linewidth=0.9, linestyle="--", alpha=0.8)
         ax.set_title(target_name)
         ax.grid(True, alpha=0.3)
 
@@ -450,7 +485,11 @@ def plot_ensemble_forecast_profile_grid(
         axes_flat[idx].set_ylabel("State")
 
     handles, labels = axes_flat[1].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=4, frameon=False, bbox_to_anchor=(0.5, 1.02))
+    if y_dsigma_dt is not None and derivative_axes:
+        h2, l2 = derivative_axes[0].get_legend_handles_labels()
+        handles = handles + h2
+        labels = labels + l2
+    fig.legend(handles, labels, loc="upper center", ncol=5, frameon=False, bbox_to_anchor=(0.5, 1.02))
     fig.suptitle(f"Ensemble Rolling Forecast - {profile_name}", y=1.06, fontsize=16)
     fig.tight_layout()
 

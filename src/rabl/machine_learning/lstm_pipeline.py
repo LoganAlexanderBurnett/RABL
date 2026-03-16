@@ -52,6 +52,8 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+
+from .branchpoint_finder import finite_difference
 from matplotlib.backends.backend_pdf import PdfPages
 from tqdm import tqdm
 from torch import nn
@@ -1542,6 +1544,7 @@ def _plot_ensemble_forecast_vs_truth_grid(
     y_true: np.ndarray,
     y_mean: np.ndarray,
     y_2sigma: np.ndarray | None,
+    y_dsigma_dt: np.ndarray | None,
     target_names: list[str],
     title: str,
     control_name: str,
@@ -1557,6 +1560,8 @@ def _plot_ensemble_forecast_vs_truth_grid(
         raise ValueError(f"y_true and y_mean must match. Got {y_true.shape} vs {y_mean.shape}")
     if y_2sigma is not None and y_2sigma.shape != y_mean.shape:
         raise ValueError(f"y_2sigma must match y_mean shape. Got {y_2sigma.shape} vs {y_mean.shape}")
+    if y_dsigma_dt is not None and y_dsigma_dt.shape != y_mean.shape:
+        raise ValueError(f"y_dsigma_dt must match y_mean shape. Got {y_dsigma_dt.shape} vs {y_mean.shape}")
 
     num_steps, num_targets = y_true.shape
     if len(target_names) != num_targets:
@@ -1576,6 +1581,7 @@ def _plot_ensemble_forecast_vs_truth_grid(
     axes_flat[0].set_title(control_name)
     axes_flat[0].grid(True, alpha=0.3)
 
+    derivative_axes: list[plt.Axes] = []
     for target_idx, target_name in enumerate(target_names):
         ax = axes_flat[target_idx + 1]
         ax.plot(t_series, y_true[:, target_idx], label="Ground truth", linewidth=1.6, color="C0")
@@ -1586,6 +1592,18 @@ def _plot_ensemble_forecast_vs_truth_grid(
             ax.plot(t_series, y_upper, linestyle="--", linewidth=1.0, color="C1", label="Mean + 2σ")
             ax.plot(t_series, y_lower, linestyle="--", linewidth=1.0, color="C2", label="Mean - 2σ")
             ax.fill_between(t_series, y_lower, y_upper, color="C1", alpha=0.15, linewidth=0)
+        if y_dsigma_dt is not None:
+            ax2 = ax.twinx()
+            derivative_axes.append(ax2)
+            ax2.plot(
+                t_series,
+                y_dsigma_dt[:, target_idx],
+                linewidth=1.2,
+                color="C4",
+                linestyle=":",
+                label="d(x_sigma)/dt",
+            )
+            ax2.axhline(0.0, color="0.5", linewidth=0.9, linestyle="--", alpha=0.8)
         ax.set_title(target_name)
         ax.grid(True, alpha=0.3)
 
@@ -1596,7 +1614,11 @@ def _plot_ensemble_forecast_vs_truth_grid(
         axes_flat[idx].set_ylabel("State")
 
     handles, labels = axes_flat[1].get_legend_handles_labels()
-    legend_cols = 4 if y_2sigma is not None else 2
+    if y_dsigma_dt is not None and derivative_axes:
+        h2, l2 = derivative_axes[0].get_legend_handles_labels()
+        handles = handles + h2
+        labels = labels + l2
+    legend_cols = 5 if y_dsigma_dt is not None else (4 if y_2sigma is not None else 2)
     fig.suptitle(title, y=0.985, fontsize=16)
     fig.legend(
         handles,
@@ -1619,6 +1641,9 @@ def save_forecast_profiles_pdf(
     state_dim: int = STATE_DIM,
     control_channel: int = 0,
     mode: str = "auto",
+    include_uncertainty_derivative: bool = False,
+    derivative_order: int = 4,
+    derivative_dt: float = 1.0,
 ) -> None:
     """
     Render one 2x7 forecast-vs-truth page per profile from a forecast HDF5 file.
@@ -1677,6 +1702,13 @@ def save_forecast_profiles_pdf(
             y_true = np.column_stack([table[:, columns.index(col)] for col in truth_cols])
             y_pred_or_mean = np.column_stack([table[:, columns.index(col)] for col in pred_cols])
             y_2sigma = None if not sigma_cols else np.column_stack([table[:, columns.index(col)] for col in sigma_cols])
+            y_dsigma_dt = None
+            if include_uncertainty_derivative and y_2sigma is not None:
+                dsigma_cols = [f"x_dsigma_dt(t)_{name}" for name in target_names]
+                if all(col in columns for col in dsigma_cols):
+                    y_dsigma_dt = np.column_stack([table[:, columns.index(col)] for col in dsigma_cols])
+                else:
+                    y_dsigma_dt = finite_difference(y_2sigma, order=derivative_order, dt=derivative_dt)
 
             x_profile = _build_profile_control_tensor(
                 u_series,
@@ -1703,6 +1735,7 @@ def save_forecast_profiles_pdf(
                     y_true=y_true,
                     y_mean=y_pred_or_mean,
                     y_2sigma=y_2sigma,
+                    y_dsigma_dt=y_dsigma_dt,
                     target_names=target_names,
                     title=f"Rolling Forecast - {profile_name}",
                     control_name=control_name,
