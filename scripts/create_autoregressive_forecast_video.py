@@ -104,11 +104,14 @@ def save_autoregressive_forecast_video(
     control_min = float(np.min(u_series) - control_pad)
     control_max = float(np.max(u_series) + control_pad)
 
-    state_pad = 0.06 * max(1e-6, float(np.ptp(np.concatenate([y_true, y_pred], axis=0))))
+    # Per-target y-limits (with per-target padding) so a single large-range variable
+    # does not force every subplot into an overly wide axis range.
     state_lims: list[tuple[float, float]] = []
     for idx in range(y_true.shape[1]):
-        y_lo = float(min(np.min(y_true[:, idx]), np.min(y_pred[:, idx])) - state_pad)
-        y_hi = float(max(np.max(y_true[:, idx]), np.max(y_pred[:, idx])) + state_pad)
+        combined = np.concatenate([y_true[:, idx], y_pred[:, idx]])
+        pad = 0.06 * max(1e-6, float(np.ptp(combined)))
+        y_lo = float(np.min(combined) - pad)
+        y_hi = float(np.max(combined) + pad)
         state_lims.append((y_lo, y_hi))
 
     legend_handles = [
