@@ -90,8 +90,8 @@ def save_autoregressive_forecast_video(
     fig, axes = plt.subplots(2, 7, figsize=FIGSIZE_2X7, sharex=True)
     axes_flat = axes.flatten()
 
-    input_color = "aquamarine"
-    output_color = "darkcyan"
+    input_color = "crimson"
+    output_color = "royalblue"
     truth_color = "0.7"
 
     ar_history = _build_autoregressive_history(y_true=y_true, y_pred=y_pred)
@@ -246,8 +246,8 @@ def main() -> None:
         default=12,
         help="Number of previous steps to color as model input window in each frame.",
     )
-    parser.add_argument("--fps", type=int, default=12, help="Frames per second.")
-    parser.add_argument("--video_dpi", type=int, default=160, help="GIF DPI.")
+    parser.add_argument("--fps", type=int, default=30, help="Frames per second.")
+    parser.add_argument("--video_dpi", type=int, default=100, help="GIF DPI.")
     parser.add_argument(
         "--frame-stride",
         type=int,
