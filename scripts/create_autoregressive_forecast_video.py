@@ -8,9 +8,8 @@ from pathlib import Path
 import h5py
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+from matplotlib.lines import Line2D
 import numpy as np
-
-from rabl.machine_learning.bagging_ensemble import TARGET_NAMES
 
 FIGSIZE_2X7 = (26, 8)
 
@@ -24,6 +23,19 @@ def _decode_columns(columns_attr: np.ndarray | list[object]) -> list[str]:
             out.append(str(item))
     return out
 
+
+
+
+def _extract_target_names(columns: list[str]) -> list[str]:
+    """Infer target names directly from HDF5 column schema."""
+    prefixes = ("x(t)_", "x_true(t)_")
+    target_names: list[str] = []
+    for col in columns:
+        for prefix in prefixes:
+            if col.startswith(prefix):
+                target_names.append(col[len(prefix) :])
+                break
+    return target_names
 
 def _resolve_target_series(
     table: np.ndarray,
@@ -73,6 +85,7 @@ def save_autoregressive_forecast_video(
     lookback: int,
     fps: int,
     video_dpi: int,
+    frame_stride: int,
 ) -> None:
     fig, axes = plt.subplots(2, 7, figsize=FIGSIZE_2X7, sharex=True)
     axes_flat = axes.flatten()
@@ -97,6 +110,21 @@ def save_autoregressive_forecast_video(
         y_lo = float(min(np.min(y_true[:, idx]), np.min(y_pred[:, idx])) - state_pad)
         y_hi = float(max(np.max(y_true[:, idx]), np.max(y_pred[:, idx])) + state_pad)
         state_lims.append((y_lo, y_hi))
+
+    legend_handles = [
+        Line2D([0], [0], color=truth_color, linewidth=1.0, label="Ground truth"),
+        Line2D([0], [0], color=input_color, linewidth=2.2, label="Input window (AR state/control)"),
+        Line2D([0], [0], color=output_color, linewidth=1.3, marker="o", markersize=4, label="Output prediction"),
+    ]
+
+    fig.legend(
+        legend_handles,
+        [h.get_label() for h in legend_handles],
+        loc="upper center",
+        ncol=3,
+        frameon=False,
+        bbox_to_anchor=(0.5, 1.02),
+    )
 
     def _update(frame: int) -> None:
         frame = int(frame)
@@ -157,15 +185,6 @@ def save_autoregressive_forecast_video(
         for idx in range(7, 14):
             axes_flat[idx].set_xlabel("Time step")
 
-        legend_handles, legend_labels = axes_flat[1].get_legend_handles_labels()
-        fig.legend(
-            legend_handles,
-            legend_labels,
-            loc="upper center",
-            ncol=3,
-            frameon=False,
-            bbox_to_anchor=(0.5, 1.02),
-        )
         fig.suptitle(
             f"Autoregressive Rolling Forecast March - {profile_name} | step={frame + 1}/{len(t_series)}",
             y=1.05,
@@ -177,8 +196,26 @@ def save_autoregressive_forecast_video(
     if save_path.suffix.lower() != ".gif":
         raise ValueError("Video output currently supports only .gif files.")
 
-    animation = FuncAnimation(fig, _update, frames=len(t_series), interval=int(1000 / max(fps, 1)))
-    animation.save(save_path, writer="pillow", fps=fps, dpi=max(video_dpi, 1))
+    frame_indices = list(range(0, len(t_series), frame_stride))
+    if frame_indices[-1] != len(t_series) - 1:
+        frame_indices.append(len(t_series) - 1)
+
+    animation = FuncAnimation(fig, _update, frames=frame_indices, interval=int(1000 / max(fps, 1)))
+
+    total_frames = len(frame_indices)
+
+    def _progress(current_frame: int, _total: int) -> None:
+        # Pillow writer can appear silent for long renders; emit periodic progress.
+        if current_frame == 0 or (current_frame + 1) % 25 == 0 or (current_frame + 1) == total_frames:
+            print(f"Rendering frame {current_frame + 1}/{total_frames}...")
+
+    animation.save(
+        save_path,
+        writer="pillow",
+        fps=fps,
+        dpi=max(video_dpi, 1),
+        progress_callback=_progress,
+    )
 
     plt.close(fig)
 
@@ -206,10 +243,18 @@ def main() -> None:
     )
     parser.add_argument("--fps", type=int, default=12, help="Frames per second.")
     parser.add_argument("--video_dpi", type=int, default=160, help="GIF DPI.")
+    parser.add_argument(
+        "--frame-stride",
+        type=int,
+        default=1,
+        help="Render every Nth step as a frame (1 renders all steps).",
+    )
     args = parser.parse_args()
 
     if args.lookback <= 0:
         raise ValueError("--lookback must be a positive integer.")
+    if args.frame_stride <= 0:
+        raise ValueError("--frame-stride must be a positive integer.")
 
     with h5py.File(args.forecast_h5_path, "r") as h5f:
         profile_names = sorted(h5f.keys())
@@ -224,7 +269,9 @@ def main() -> None:
         table = group["data"][...].astype(np.float32)
         columns = _decode_columns(group.attrs.get("columns", []))
 
-    target_names = list(TARGET_NAMES)
+    target_names = _extract_target_names(columns)
+    if not target_names:
+        raise KeyError("No target columns found in forecast table.")
     t_series = table[:, columns.index("t")]
     u_series = table[:, columns.index("u(t)")]
     y_true, y_pred = _resolve_target_series(table=table, columns=columns, target_names=target_names)
@@ -240,6 +287,7 @@ def main() -> None:
         lookback=args.lookback,
         fps=args.fps,
         video_dpi=args.video_dpi,
+        frame_stride=args.frame_stride,
     )
 
     print(f"Saved autoregressive forecast video: {args.output}")
