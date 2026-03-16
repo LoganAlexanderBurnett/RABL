@@ -16,8 +16,10 @@ This script wires together the full workflow from
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Callable
 
 import numpy as np
@@ -35,6 +37,22 @@ from rabl.machine_learning.recursive_branching import (
     save_recursive_branching_output,
 )
 from rabl.variography.DrumVariography import DrumProfile, DrumProfileGenerator
+
+
+DEFAULT_CONFIG_PATH = REPO_ROOT / "scripts" / "config.py"
+
+
+def _load_config_module(config_path: Path) -> ModuleType:
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    spec = importlib.util.spec_from_file_location("rabl_recursive_branching_config", config_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load config module from: {config_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _make_control_window(u_series: np.ndarray, step: int, lookback: int) -> np.ndarray:
@@ -108,11 +126,12 @@ def parse_args() -> argparse.Namespace:
         help="Path to .npy template with shape (n_steps, lookback, n_features).",
     )
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory for branching outputs.")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help=f"Path to config.py (default: {DEFAULT_CONFIG_PATH}).")
 
-    parser.add_argument("--T", type=float, required=True, help="Final horizon time.")
-    parser.add_argument("--dt", type=float, required=True, help="Time step for grid generation.")
-    parser.add_argument("--n-intervals", type=int, required=True, help="Number of horizon intervals N_k.")
-    parser.add_argument("--n-branches", type=int, required=True, help="Number of children per profile per interval N_b.")
+    parser.add_argument("--T", type=float, default=200.0, help="Final horizon time.")
+    parser.add_argument("--dt", type=float, default=0.4, help="Time step for grid generation.")
+    parser.add_argument("--n-intervals", type=int, default=3, help="Number of horizon intervals N_k.")
+    parser.add_argument("--n-branches", type=int, default=2, help="Number of children per profile per interval N_b.")
 
     parser.add_argument("--baseline-angle-deg", type=float, default=45.0)
     parser.add_argument("--seed", type=int, default=123)
@@ -122,17 +141,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--control-channel", type=int, default=0)
 
     parser.add_argument("--n-lstm", type=int, default=1)
-    parser.add_argument("--lstm-hidden", type=int, default=64)
-    parser.add_argument("--lstm-dropout", type=float, default=0.0)
+    parser.add_argument("--lstm-hidden", type=int, required=True)
     parser.add_argument("--n-fc", type=int, default=1)
-    parser.add_argument("--fc-hidden", type=int, nargs="+", default=[64])
+    parser.add_argument("--fc-hidden", type=int, nargs="+", required=True)
 
     parser.add_argument("--finite-difference-order", type=int, default=4, choices=[2, 4])
 
     parser.add_argument("--kernel", type=str, default="matern52", choices=["matern32", "matern52"])
-    parser.add_argument("--ell", type=float, default=5.0)
-    parser.add_argument("--sill-v-deg2-s2", type=float, default=0.02)
-    parser.add_argument("--nugget-v-deg2-s2", type=float, default=0.0)
 
     parser.add_argument("--device", type=str, default="cpu", help="Torch device for model loading/inference.")
 
@@ -155,6 +170,11 @@ def main() -> None:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    cfg = _load_config_module(args.config)
+    ell = float(cfg.ELL)
+    nugget_v = float(cfg.NUGGET_V_DEG2_S2)
+    sigma_theta_target = float(cfg.SIGMA_THETA_TARGET)
+
     x_template = np.load(args.x_profile_template)
     if x_template.ndim != 3:
         raise ValueError(f"x-profile-template must load to 3D array; got {x_template.shape}.")
@@ -165,14 +185,23 @@ def main() -> None:
         control_channel=args.control_channel,
     )
 
+    t_grid = _build_time_grid(args.T, args.dt)
+
+    # Compute sill from config sigma target using DrumVariography helper.
     generator = DrumProfileGenerator(
         kernel=args.kernel,
-        ell=args.ell,
-        sill_v_deg2_s2=args.sill_v_deg2_s2,
-        nugget_v_deg2_s2=args.nugget_v_deg2_s2,
+        ell=ell,
+        sill_v_deg2_s2=0.0,
+        nugget_v_deg2_s2=nugget_v,
+    )
+    _ell, sill_v, _nugget = generator.solve_params_for_sigma_theta(
+        t_grid=t_grid,
+        sigma_theta_target=sigma_theta_target,
+        ell=ell,
+        nugget=nugget_v,
+        update_instance=True,
     )
 
-    t_grid = _build_time_grid(args.T, args.dt)
     root_profile = generate_root_profile(
         generator,
         t_grid=t_grid,
@@ -194,7 +223,8 @@ def main() -> None:
         num_targets=args.num_targets,
         n_lstm=args.n_lstm,
         lstm_hidden=args.lstm_hidden,
-        lstm_dropout=args.lstm_dropout,
+        # Dropout is not needed for inference; eval mode disables it.
+        lstm_dropout=0.0,
         n_fc=args.n_fc,
         fc_hidden=tuple(args.fc_hidden),
         device=args.device,
@@ -224,6 +254,7 @@ def main() -> None:
         f"final_profiles={len(result.final_profiles)} "
         f"expected_profiles={expected_profiles} "
         f"branch_events={len(result.branch_events)} "
+        f"ell={ell} nugget_v={nugget_v} sill_v={sill_v:.6f} sigma_theta_target={sigma_theta_target} "
         f"output_dir={args.output_dir}"
     )
 
