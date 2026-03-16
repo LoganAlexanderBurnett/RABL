@@ -90,8 +90,8 @@ def save_autoregressive_forecast_video(
     fig, axes = plt.subplots(2, 7, figsize=FIGSIZE_2X7, sharex=True)
     axes_flat = axes.flatten()
 
-    input_color = "C0"
-    output_color = "C3"
+    input_color = "aquamarine"
+    output_color = "darkcyan"
     truth_color = "0.7"
 
     ar_history = _build_autoregressive_history(y_true=y_true, y_pred=y_pred)
@@ -117,7 +117,7 @@ def save_autoregressive_forecast_video(
     legend_handles = [
         Line2D([0], [0], color=truth_color, linewidth=1.0, label="Ground truth"),
         Line2D([0], [0], color=input_color, linewidth=2.2, label="Input window (AR state/control)"),
-        Line2D([0], [0], color=output_color, linewidth=2.0, marker="|", markersize=12, label="Output prediction (current step)"),
+        Line2D([0], [0], color=output_color, linewidth=1.1, marker="|", markersize=10, label="Output prediction (current step)"),
     ]
 
     fig.legend(
@@ -126,7 +126,7 @@ def save_autoregressive_forecast_video(
         loc="upper center",
         ncol=3,
         frameon=False,
-        bbox_to_anchor=(0.5, 1.02),
+        bbox_to_anchor=(0.5, 0.955),
     )
 
     def _update(frame: int) -> None:
@@ -143,7 +143,7 @@ def save_autoregressive_forecast_video(
                 t_series[start:frame],
                 u_series[start:frame],
                 color=input_color,
-                linewidth=2.0,
+                linewidth=1.0,
                 label="Input window (control)",
             )
         ax_u.set_title("drumAngleDeg")
@@ -170,7 +170,7 @@ def save_autoregressive_forecast_video(
                 ymin=y_tick_center - y_tick_span,
                 ymax=y_tick_center + y_tick_span,
                 color=output_color,
-                linewidth=2.0,
+                linewidth=1.1,
                 zorder=5,
             )
             if frame > 0:
@@ -192,10 +192,10 @@ def save_autoregressive_forecast_video(
 
         fig.suptitle(
             f"Autoregressive Rolling Forecast March - {profile_name} | step={frame + 1}/{len(t_series)}",
-            y=1.05,
+            y=0.985,
             fontsize=15,
         )
-        fig.tight_layout()
+        fig.tight_layout(rect=[0, 0, 1, 0.88])
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
     if save_path.suffix.lower() != ".gif":
