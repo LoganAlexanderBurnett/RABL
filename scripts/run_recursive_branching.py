@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import sys
+from time import perf_counter
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -421,6 +422,8 @@ def _run_single_recursive_branching_workflow(
         update_instance=True,
     )
 
+    process_start = perf_counter()
+
     root_profile = generate_root_profile(
         generator,
         t_grid=t_grid,
@@ -501,6 +504,7 @@ def _run_single_recursive_branching_workflow(
         dt=config.dt,
         scaling_stats=scaling_stats,
     )
+    process_elapsed_seconds = perf_counter() - process_start
 
     if config.visualize:
         forecast_plot_dir = run_output_dir / "ensemble_forecast_plots"
@@ -547,6 +551,7 @@ def _run_single_recursive_branching_workflow(
         f"  final_profiles={len(result.final_profiles)}\n"
         f"  expected_profiles={expected_profiles}\n"
         f"  branch_events={len(result.branch_events)}\n"
+        f"  process_seconds_excluding_visualization={process_elapsed_seconds:.3f}\n"
         f"  output_dir={run_output_dir}\n"
     )
 
