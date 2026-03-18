@@ -479,10 +479,10 @@ def plot_ensemble_forecast_profile_grid(
         ax.grid(True, alpha=0.3)
 
     for idx in range(7, 14):
-        axes_flat[idx].set_xlabel("Time step")
-    axes_flat[0].set_ylabel("u(t)")
-    for idx in range(1, 14):
-        axes_flat[idx].set_ylabel("State")
+        axes_flat[idx].set_xlabel("Time (s)")
+    axes_flat[0].set_ylabel(control_name)
+    for idx, target_name in enumerate(target_names, start=1):
+        axes_flat[idx].set_ylabel(target_name)
 
     handles, labels = axes_flat[1].get_legend_handles_labels()
     if y_dsigma_dt is not None and derivative_axes:

@@ -293,6 +293,8 @@ def _plot_branched_profiles(result: RecursiveBranchingResult, save_path: Path) -
         else:
             mask = t >= node.branch_time
             ax.plot(t[mask], u[mask], color=color, linewidth=1.2, alpha=0.9)
+            branch_idx = int(np.argmin(np.abs(t - node.branch_time)))
+            ax.plot(t[branch_idx], u[branch_idx], "o", color="black", markersize=3.5, zorder=4)
 
     for interval in result.intervals:
         ax.axvline(interval.start, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
@@ -480,7 +482,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
     save_recursive_branching_output(result, config.output_dir)
     _plot_branched_profiles(result, config.output_dir / "branched_profiles.png")
 
-    target_names = [f"state_{i}" for i in range(num_targets)]
+    target_names = list(STATE_COLUMNS[:num_targets])
     forecast_h5 = _save_branching_ensemble_forecasts(
         result=result,
         forecaster=forecaster,

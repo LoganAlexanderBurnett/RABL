@@ -1550,6 +1550,7 @@ def _plot_ensemble_forecast_vs_truth_grid(
     control_name: str,
     state_dim: int,
     control_channel: int,
+    t_series: np.ndarray | None = None,
 ) -> plt.Figure:
     """Plot ensemble forecasts in the same style as bagging ensemble profile plotting."""
     if x_profile.ndim != 3:
@@ -1567,7 +1568,12 @@ def _plot_ensemble_forecast_vs_truth_grid(
     if len(target_names) != num_targets:
         raise ValueError(f"target_names must have length {num_targets}, got {len(target_names)}")
 
-    t_series = np.arange(num_steps, dtype=np.float32)
+    if t_series is None:
+        t_series = np.arange(num_steps, dtype=np.float32)
+    else:
+        t_series = np.asarray(t_series, dtype=np.float32)
+        if t_series.ndim != 1 or t_series.shape[0] != num_steps:
+            raise ValueError(f"t_series must be 1D with length {num_steps}, got {t_series.shape}")
     control_series = _extract_control_series(
         x_profile,
         state_dim=state_dim,
@@ -1608,10 +1614,10 @@ def _plot_ensemble_forecast_vs_truth_grid(
         ax.grid(True, alpha=0.3)
 
     for idx in range(7, 14):
-        axes_flat[idx].set_xlabel("Time step")
-    axes_flat[0].set_ylabel("u(t)")
-    for idx in range(1, 14):
-        axes_flat[idx].set_ylabel("State")
+        axes_flat[idx].set_xlabel("Time (s)")
+    axes_flat[0].set_ylabel(control_name)
+    for idx, target_name in enumerate(target_names, start=1):
+        axes_flat[idx].set_ylabel(target_name)
 
     handles, labels = axes_flat[1].get_legend_handles_labels()
     if y_dsigma_dt is not None and derivative_axes:
@@ -1629,6 +1635,34 @@ def _plot_ensemble_forecast_vs_truth_grid(
         bbox_to_anchor=(0.5, 0.965),
     )
     fig.tight_layout(rect=[0, 0, 1, 0.88])
+    return fig
+
+
+def _plot_uncertainty_derivative_only_grid(
+    *,
+    t_series: np.ndarray,
+    y_dsigma_dt: np.ndarray,
+    target_names: list[str],
+    title: str,
+) -> plt.Figure:
+    if y_dsigma_dt.ndim != 2:
+        raise ValueError(f"y_dsigma_dt must be 2D (steps,targets). Got {y_dsigma_dt.shape}")
+    num_steps, num_targets = y_dsigma_dt.shape
+    if len(target_names) != num_targets:
+        raise ValueError(f"target_names must have length {num_targets}, got {len(target_names)}")
+    if t_series.ndim != 1 or t_series.shape[0] != num_steps:
+        raise ValueError(f"t_series must be 1D with length {num_steps}, got {t_series.shape}")
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    for target_idx, target_name in enumerate(target_names):
+        ax.plot(t_series, y_dsigma_dt[:, target_idx], linewidth=1.2, label=target_name)
+    ax.axhline(0.0, color="0.5", linewidth=0.9, linestyle="--", alpha=0.8)
+    ax.set_title(title)
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("d(x_sigma_scaled)/dt")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper center", ncol=min(4, max(1, len(target_names))), frameon=False)
+    fig.tight_layout()
     return fig
 
 
@@ -1702,6 +1736,7 @@ def save_forecast_profiles_pdf(
                 )
 
             u_series = table[:, columns.index("u(t)")]
+            t_series = table[:, columns.index("t")]
             y_true = np.column_stack([table[:, columns.index(col)] for col in truth_cols])
             y_pred_or_mean = np.column_stack([table[:, columns.index(col)] for col in pred_cols])
             y_2sigma = None if not sigma_cols else np.column_stack([table[:, columns.index(col)] for col in sigma_cols])
@@ -1744,9 +1779,19 @@ def save_forecast_profiles_pdf(
                     control_name=control_name,
                     state_dim=state_dim,
                     control_channel=control_channel,
+                    t_series=t_series,
                 )
             pdf.savefig(fig, orientation="landscape")
             plt.close(fig)
+            if include_uncertainty_derivative and y_dsigma_dt is not None:
+                fig_deriv = _plot_uncertainty_derivative_only_grid(
+                    t_series=t_series,
+                    y_dsigma_dt=y_dsigma_dt,
+                    target_names=target_names,
+                    title=f"Scaled Uncertainty Derivative - {profile_name}",
+                )
+                pdf.savefig(fig_deriv, orientation="landscape")
+                plt.close(fig_deriv)
 
     print(f"Saved forecast PDF to: {output_pdf_path}")
 

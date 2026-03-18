@@ -298,6 +298,11 @@ def run_recursive_branching(
                 n_branches=n_branches,
                 seed=int(rng.integers(low=0, high=np.iinfo(np.int32).max)),
             )
+            if verbose:
+                print(
+                    f"[branch] interval={interval.index} parent={node.profile_id} "
+                    f"t_branch={t_branch:.3f} generated={len(child_profiles)}"
+                )
 
             for branch_label, child_profile in enumerate(child_profiles):
                 child_id = f"profile_{next_profile_idx:06d}"
