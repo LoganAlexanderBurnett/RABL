@@ -58,11 +58,12 @@ class RecursiveBranchingRunConfig:
 
     T: float = 200.0
     dt: float = 0.4
-    n_intervals: int = 3
-    n_branches: int = 2
+    Nk: int = 3
+    Nb: int = 2
 
     baseline_angle_deg: float = 45.0
     seed: int = 123
+    visualize: bool = True
 
     lookback: int = 12
     n_features: int = 13
@@ -324,9 +325,9 @@ def _print_run_summary(
     result: RecursiveBranchingResult,
     scaling_type: str,
 ) -> None:
-    print("=== Recursive Branching Run Configuration ===")
+    print("\n=== Recursive Branching Run Configuration ===")
     print(f"Variogram: kernel={config.kernel}, ell={ell}, nugget={nugget_v}, sill={sill_v:.6f}")
-    print(f"Time/Grid: n_steps={n_steps}, dt={config.dt}, T={config.T}")
+    print(f"Time/Grid: n_steps={n_steps}, dt={config.dt}, T={config.T}, Nk={config.Nk}, Nb={config.Nb}")
     print(f"Forecast shape: state_dim={state_dim}, num_targets={num_targets}, lookback={config.lookback}, n_features={n_features}")
     print(f"Finite difference order: {config.finite_difference_order}")
     print(f"Scaling: type={scaling_type}, source={config.bagged_h5_path}")
@@ -342,8 +343,8 @@ def _print_run_summary(
         per_interval_counts[event.interval_index] = per_interval_counts.get(event.interval_index, 0) + 1
 
     branched_profiles = len(result.final_profiles) - 1
-    print(f"Total profiles: {len(result.final_profiles)} (branched/new={branched_profiles})")
-    print(f"Profiles branched per interval: {per_interval_counts}")
+    print(f"\nTotal profiles: {len(result.final_profiles)} (branched/new={branched_profiles})")
+    print(f"Profiles branched per interval: {per_interval_counts}\n")
 
 
 def _save_branching_ensemble_forecasts(
@@ -420,7 +421,8 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
         baseline_angle_deg=config.baseline_angle_deg,
         seed=config.seed,
     )
-    _plot_root_profile(root_profile, config.output_dir / "root_profile.png")
+    if config.visualize:
+        _plot_root_profile(root_profile, config.output_dir / "root_profile.png")
 
     n_steps = int(root_profile.t.size)
     n_features, num_targets = _resolve_model_io_shapes(config)
@@ -471,8 +473,8 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
         forecaster=forecaster,
         generator=generator,
         root_profile=root_profile,
-        n_intervals=config.n_intervals,
-        n_branches=config.n_branches,
+        n_intervals=config.Nk,
+        n_branches=config.Nb,
         weights=weights,
         finite_difference_order=config.finite_difference_order,
         seed=config.seed,
@@ -480,7 +482,8 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
     )
 
     save_recursive_branching_output(result, config.output_dir)
-    _plot_branched_profiles(result, config.output_dir / "branched_profiles.png")
+    if config.visualize:
+        _plot_branched_profiles(result, config.output_dir / "branched_profiles.png")
 
     target_names = list(STATE_COLUMNS[:num_targets])
     forecast_h5 = _save_branching_ensemble_forecasts(
@@ -493,29 +496,30 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
         scaling_stats=scaling_stats,
     )
 
-    forecast_plot_dir = config.output_dir / "ensemble_forecast_plots"
-    forecast_plot_dir.mkdir(parents=True, exist_ok=True)
-    for profile_id in sorted(result.final_profiles.keys()):
-        plot_ensemble_forecast_profile_grid(
-            forecast_h5,
-            profile_name=profile_id,
-            save_path=forecast_plot_dir / f"{profile_id}.png",
-            target_names=target_names,
-            plot_uncertainty_derivative=True,
-            close_figure=True,
-        )
+    if config.visualize:
+        forecast_plot_dir = config.output_dir / "ensemble_forecast_plots"
+        forecast_plot_dir.mkdir(parents=True, exist_ok=True)
+        for profile_id in sorted(result.final_profiles.keys()):
+            plot_ensemble_forecast_profile_grid(
+                forecast_h5,
+                profile_name=profile_id,
+                save_path=forecast_plot_dir / f"{profile_id}.png",
+                target_names=target_names,
+                plot_uncertainty_derivative=True,
+                close_figure=True,
+            )
 
-    save_forecast_profiles_pdf(
-        forecast_h5_path=forecast_h5,
-        output_pdf_path=config.output_dir / "ensemble_forecasts_with_derivative.pdf",
-        target_names=target_names,
-        state_dim=state_dim,
-        control_channel=config.control_channel,
-        mode="ensemble",
-        include_uncertainty_derivative=True,
-        derivative_order=config.finite_difference_order,
-        derivative_dt=config.dt,
-    )
+        save_forecast_profiles_pdf(
+            forecast_h5_path=forecast_h5,
+            output_pdf_path=config.output_dir / "ensemble_forecasts_with_derivative.pdf",
+            target_names=target_names,
+            state_dim=state_dim,
+            control_channel=config.control_channel,
+            mode="ensemble",
+            include_uncertainty_derivative=True,
+            derivative_order=config.finite_difference_order,
+            derivative_dt=config.dt,
+        )
 
     _print_run_summary(
         config=config,
@@ -531,11 +535,13 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
         scaling_type=scaling_stats["type"],
     )
 
-    expected_profiles = (config.n_branches + 1) ** config.n_intervals
+    expected_profiles = (config.Nb + 1) ** config.Nk
     print(
-        "Recursive branching complete: "
-        f"final_profiles={len(result.final_profiles)} expected_profiles={expected_profiles} "
-        f"branch_events={len(result.branch_events)} output_dir={config.output_dir}"
+        "\nRecursive branching complete:\n"
+        f"  final_profiles={len(result.final_profiles)}\n"
+        f"  expected_profiles={expected_profiles}\n"
+        f"  branch_events={len(result.branch_events)}\n"
+        f"  output_dir={config.output_dir}\n"
     )
 
     return result
@@ -550,8 +556,8 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--T", type=float, default=200.0)
     parser.add_argument("--dt", type=float, default=0.4)
-    parser.add_argument("--n-intervals", type=int, default=3)
-    parser.add_argument("--n-branches", type=int, default=2)
+    parser.add_argument("--Nk", type=int, default=3, help="Number of intervals across the horizon.")
+    parser.add_argument("--Nb", type=int, default=2, help="Number of children generated at each branch point.")
 
     parser.add_argument("--baseline-angle-deg", type=float, default=45.0)
     parser.add_argument("--seed", type=int, default=123)
@@ -571,6 +577,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kernel", type=str, default="matern52", choices=["matern32", "matern52"])
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument(
+        "--visualize",
+        type=int,
+        choices=[0, 1],
+        default=1,
+        help="Whether to generate PNG/PDF visualizations (1=yes, 0=no).",
+    )
+    parser.add_argument(
         "--weights-npy",
         type=Path,
         default=None,
@@ -587,10 +600,11 @@ def main() -> None:
         output_dir=args.output_dir,
         T=args.T,
         dt=args.dt,
-        n_intervals=args.n_intervals,
-        n_branches=args.n_branches,
+        Nk=args.Nk,
+        Nb=args.Nb,
         baseline_angle_deg=args.baseline_angle_deg,
         seed=args.seed,
+        visualize=bool(args.visualize),
         lookback=args.lookback,
         n_features=args.n_features,
         state_dim=args.state_dim,
