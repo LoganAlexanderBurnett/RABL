@@ -63,6 +63,7 @@ class RecursiveBranchingRunConfig:
 
     baseline_angle_deg: float = 45.0
     seed: int = 123
+    Nr: int = 1
     visualize: bool = True
 
     lookback: int = 12
@@ -327,7 +328,7 @@ def _print_run_summary(
 ) -> None:
     print("\n=== Recursive Branching Run Configuration ===")
     print(f"Variogram: kernel={config.kernel}, ell={ell}, nugget={nugget_v}, sill={sill_v:.6f}")
-    print(f"Time/Grid: n_steps={n_steps}, dt={config.dt}, T={config.T}, Nk={config.Nk}, Nb={config.Nb}")
+    print(f"Time/Grid: n_steps={n_steps}, dt={config.dt}, T={config.T}, Nk={config.Nk}, Nb={config.Nb}, Nr={config.Nr}")
     print(f"Forecast shape: state_dim={state_dim}, num_targets={num_targets}, lookback={config.lookback}, n_features={n_features}")
     print(f"Finite difference order: {config.finite_difference_order}")
     print(f"Scaling: type={scaling_type}, source={config.bagged_h5_path}")
@@ -390,8 +391,13 @@ def _save_branching_ensemble_forecasts(
     return forecast_h5
 
 
-def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> RecursiveBranchingResult:
-    config.output_dir.mkdir(parents=True, exist_ok=True)
+def _run_single_recursive_branching_workflow(
+    config: RecursiveBranchingRunConfig,
+    *,
+    root_index: int,
+    run_output_dir: Path,
+) -> RecursiveBranchingResult:
+    run_output_dir.mkdir(parents=True, exist_ok=True)
 
     cfg = _load_config_module(config.config_path)
     ell = float(cfg.ELL)
@@ -419,10 +425,10 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
         generator,
         t_grid=t_grid,
         baseline_angle_deg=config.baseline_angle_deg,
-        seed=config.seed,
+        seed=config.seed + root_index,
     )
     if config.visualize:
-        _plot_root_profile(root_profile, config.output_dir / "root_profile.png")
+        _plot_root_profile(root_profile, run_output_dir / "root_profile.png")
 
     n_steps = int(root_profile.t.size)
     n_features, num_targets = _resolve_model_io_shapes(config)
@@ -477,19 +483,19 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
         n_branches=config.Nb,
         weights=weights,
         finite_difference_order=config.finite_difference_order,
-        seed=config.seed,
+        seed=config.seed + root_index,
         verbose=True,
     )
 
-    save_recursive_branching_output(result, config.output_dir)
+    save_recursive_branching_output(result, run_output_dir)
     if config.visualize:
-        _plot_branched_profiles(result, config.output_dir / "branched_profiles.png")
+        _plot_branched_profiles(result, run_output_dir / "branched_profiles.png")
 
     target_names = list(STATE_COLUMNS[:num_targets])
     forecast_h5 = _save_branching_ensemble_forecasts(
         result=result,
         forecaster=forecaster,
-        output_dir=config.output_dir,
+        output_dir=run_output_dir,
         target_names=target_names,
         derivative_order=config.finite_difference_order,
         dt=config.dt,
@@ -497,7 +503,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
     )
 
     if config.visualize:
-        forecast_plot_dir = config.output_dir / "ensemble_forecast_plots"
+        forecast_plot_dir = run_output_dir / "ensemble_forecast_plots"
         forecast_plot_dir.mkdir(parents=True, exist_ok=True)
         for profile_id in sorted(result.final_profiles.keys()):
             plot_ensemble_forecast_profile_grid(
@@ -511,7 +517,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
 
         save_forecast_profiles_pdf(
             forecast_h5_path=forecast_h5,
-            output_pdf_path=config.output_dir / "ensemble_forecasts_with_derivative.pdf",
+            output_pdf_path=run_output_dir / "ensemble_forecasts_with_derivative.pdf",
             target_names=target_names,
             state_dim=state_dim,
             control_channel=config.control_channel,
@@ -541,10 +547,31 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
         f"  final_profiles={len(result.final_profiles)}\n"
         f"  expected_profiles={expected_profiles}\n"
         f"  branch_events={len(result.branch_events)}\n"
-        f"  output_dir={config.output_dir}\n"
+        f"  output_dir={run_output_dir}\n"
     )
 
     return result
+
+
+def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> RecursiveBranchingResult | list[RecursiveBranchingResult]:
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+
+    if config.Nr < 1:
+        raise ValueError(f"Nr must be >= 1, got {config.Nr}.")
+
+    results: list[RecursiveBranchingResult] = []
+    multiple_roots = config.Nr > 1
+    for root_index in range(config.Nr):
+        run_output_dir = config.output_dir / f"root_{root_index:03d}" if multiple_roots else config.output_dir
+        print(f"\n=== Root Profile {root_index + 1}/{config.Nr} ===\n")
+        result = _run_single_recursive_branching_workflow(
+            config,
+            root_index=root_index,
+            run_output_dir=run_output_dir,
+        )
+        results.append(result)
+
+    return results[0] if config.Nr == 1 else results
 
 
 def parse_args() -> argparse.Namespace:
@@ -558,6 +585,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dt", type=float, default=0.4)
     parser.add_argument("--Nk", type=int, default=3, help="Number of intervals across the horizon.")
     parser.add_argument("--Nb", type=int, default=2, help="Number of children generated at each branch point.")
+    parser.add_argument("--Nr", type=int, default=1, help="Number of root profiles to run through the branching workflow.")
 
     parser.add_argument("--baseline-angle-deg", type=float, default=45.0)
     parser.add_argument("--seed", type=int, default=123)
@@ -602,6 +630,7 @@ def main() -> None:
         dt=args.dt,
         Nk=args.Nk,
         Nb=args.Nb,
+        Nr=args.Nr,
         baseline_angle_deg=args.baseline_angle_deg,
         seed=args.seed,
         visualize=bool(args.visualize),

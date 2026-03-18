@@ -287,8 +287,8 @@ def run_recursive_branching(
             if all_non_positive:
                 if verbose:
                     print(
-                        f"[branch-skip] profile={node.profile_id} interval={interval.index} "
-                        "all uncertainty-derivative components were non-positive; skipping branching."
+                        f"\n[branch-skip] profile={node.profile_id} interval={interval.index} "
+                        "all uncertainty-derivative components were non-positive; skipping branching.\n"
                     )
                 continue
 
@@ -300,8 +300,8 @@ def run_recursive_branching(
             )
             if verbose:
                 print(
-                    f"[branch] interval={interval.index} parent={node.profile_id} "
-                    f"t_branch={t_branch:.3f} generated={len(child_profiles)}"
+                    f"\n[branch] interval={interval.index} parent={node.profile_id} "
+                    f"t_branch={t_branch:.3f} generated={len(child_profiles)}\n"
                 )
 
             for branch_label, child_profile in enumerate(child_profiles):
