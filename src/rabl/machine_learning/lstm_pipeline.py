@@ -1601,7 +1601,7 @@ def _plot_ensemble_forecast_vs_truth_grid(
                 linewidth=1.2,
                 color="C4",
                 linestyle=":",
-                label="d(x_sigma)/dt",
+                label="d(x_sigma_scaled)/dt",
             )
             ax2.axhline(0.0, color="0.5", linewidth=0.9, linestyle="--", alpha=0.8)
         ax.set_title(target_name)
@@ -1655,6 +1655,9 @@ def save_forecast_profiles_pdf(
         ``[t, u(t), x_true(t)_{target}..., x_mean(t)_{target}..., [x_2sigma(t)_{target}...]]``
 
     By default (``mode='auto'``), schema detection uses ``group.attrs['columns']``.
+
+    When ``include_uncertainty_derivative=True``, derivative overlays are interpreted
+    as scaled-space uncertainty derivatives (``d(x_sigma_scaled)/dt``).
     """
     if target_names is None:
         target_names = list(TARGET_NAMES)

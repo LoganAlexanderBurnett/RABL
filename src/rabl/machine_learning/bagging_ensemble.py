@@ -472,7 +472,7 @@ def plot_ensemble_forecast_profile_grid(
                 linewidth=1.2,
                 color="C4",
                 linestyle=":",
-                label="d(x_sigma)/dt",
+                label="d(x_sigma_scaled)/dt",
             )
             ax2.axhline(0.0, color="0.5", linewidth=0.9, linestyle="--", alpha=0.8)
         ax.set_title(target_name)

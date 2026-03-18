@@ -186,22 +186,39 @@ def _interval_mask(t: np.ndarray, interval: Interval, *, is_last: bool) -> np.nd
 
 def _select_branch_time(
     t: np.ndarray,
-    uncertainty_signal: np.ndarray,
+    d_unc_dt: np.ndarray,
+    weights: np.ndarray,
     *,
     interval: Interval,
     is_last_interval: bool,
-    finite_difference_order: int,
-) -> float:
-    dt = float(np.mean(np.diff(t)))
-    derivative = finite_difference(uncertainty_signal[:, None], order=finite_difference_order, dt=dt)[:, 0]
+    positive_only: bool = True,
+) -> tuple[float, np.ndarray, bool]:
+    if d_unc_dt.ndim != 2:
+        raise ValueError(f"Expected d_unc_dt shape (n_steps,n_targets), got {d_unc_dt.shape}.")
+    if d_unc_dt.shape[0] != t.shape[0]:
+        raise ValueError(
+            "Derivative timeline length does not match t-grid length. "
+            f"Got {d_unc_dt.shape[0]} vs {t.shape[0]}."
+        )
+    if weights.ndim != 1 or weights.shape[0] != d_unc_dt.shape[1]:
+        raise ValueError(
+            "weights must be 1D with length equal to target dimension. "
+            f"Got weights={weights.shape}, targets={d_unc_dt.shape[1]}."
+        )
+
+    metric_components = np.maximum(d_unc_dt, 0.0) if positive_only else d_unc_dt
+    weighted_sq = (metric_components ** 2) * weights[None, :]
+    score = np.sqrt(np.sum(weighted_sq, axis=1))
 
     mask = _interval_mask(t, interval, is_last=is_last_interval)
     if not np.any(mask):
         raise RuntimeError(f"No time points found in interval {interval.index}: [{interval.start}, {interval.end}].")
 
     masked_idx = np.where(mask)[0]
-    local_argmax = int(np.argmax(derivative[masked_idx]))
-    return float(t[masked_idx[local_argmax]])
+    score_interval = score[masked_idx]
+    all_non_positive = bool(np.all(score_interval <= 0.0))
+    local_argmax = int(np.argmax(score_interval))
+    return float(t[masked_idx[local_argmax]]), score, all_non_positive
 
 
 def run_recursive_branching(
@@ -211,8 +228,10 @@ def run_recursive_branching(
     root_profile: DrumProfile,
     n_intervals: int,
     n_branches: int,
+    weights: np.ndarray,
     finite_difference_order: int = 4,
     seed: int | None = None,
+    verbose: bool = True,
 ) -> RecursiveBranchingResult:
     """Execute persistent recursive branching across all intervals.
 
@@ -222,6 +241,10 @@ def run_recursive_branching(
     """
     if n_branches < 1:
         raise ValueError("n_branches must be >= 1.")
+    if weights.ndim != 1:
+        raise ValueError(f"weights must be 1D, got shape {weights.shape}.")
+    if np.any(weights < 0):
+        raise ValueError("weights must be non-negative.")
 
     t_grid = np.asarray(root_profile.t, dtype=float)
     intervals = partition_horizon(t_grid, n_intervals=n_intervals)
@@ -239,21 +262,35 @@ def run_recursive_branching(
                 raise ValueError(f"Expected forecasts shape (n_models, n_steps, n_targets), got {forecasts.shape}.")
 
             uncertainty_2sigma = 2.0 * np.std(forecasts, axis=0, ddof=0)  # (S, D)
-            uncertainty_metric = np.linalg.norm(uncertainty_2sigma, axis=1)  # (S,)
-
-            if uncertainty_metric.shape[0] != t_grid.shape[0]:
+            if uncertainty_2sigma.shape[0] != t_grid.shape[0]:
                 raise ValueError(
                     "Uncertainty timeline length does not match profile timeline. "
-                    f"Got {uncertainty_metric.shape[0]} vs {t_grid.shape[0]}."
+                    f"Got {uncertainty_2sigma.shape[0]} vs {t_grid.shape[0]}."
+                )
+            if uncertainty_2sigma.shape[1] != weights.shape[0]:
+                raise ValueError(
+                    "Target dimension from forecasts does not match weight length. "
+                    f"Got targets={uncertainty_2sigma.shape[1]}, weights={weights.shape[0]}"
                 )
 
-            t_branch = _select_branch_time(
+            dt = float(np.mean(np.diff(t_grid)))
+            d_unc_dt = finite_difference(uncertainty_2sigma, order=finite_difference_order, dt=dt)
+
+            t_branch, _score, all_non_positive = _select_branch_time(
                 t_grid,
-                uncertainty_metric,
+                d_unc_dt,
+                weights,
                 interval=interval,
                 is_last_interval=(interval.index == len(intervals) - 1),
-                finite_difference_order=finite_difference_order,
             )
+
+            if all_non_positive:
+                if verbose:
+                    print(
+                        f"[branch-skip] profile={node.profile_id} interval={interval.index} "
+                        "all uncertainty-derivative components were non-positive; skipping branching."
+                    )
+                continue
 
             child_profiles = generator.branch_N_times(
                 node.profile,

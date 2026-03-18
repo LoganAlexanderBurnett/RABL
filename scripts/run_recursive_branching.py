@@ -54,6 +54,7 @@ class RecursiveBranchingRunConfig:
     model_paths: tuple[Path, ...]
     bagged_h5_path: Path
     output_dir: Path
+    weights_npy_path: Path | None = None
 
     T: float = 200.0
     dt: float = 0.4
@@ -176,6 +177,21 @@ def _make_control_window(u_series: np.ndarray, step: int, lookback: int, *, cont
     out[: lookback - history.size] = np.float32(control_steady)
     out[lookback - history.size :] = history
     return out
+
+
+def _descale_uncertainty_widths_from_stats(stats: dict, sigma_values: np.ndarray) -> np.ndarray:
+    """Descale uncertainty widths (e.g., 2σ) without applying offsets.
+
+    Mean predictions use a full inverse transform; uncertainty widths should only
+    be multiplied by the target scale (std/span).
+    """
+    scaling_type = stats["type"]
+    y_stats = stats["y"]
+    if scaling_type == "standard":
+        return sigma_values * y_stats["std"]
+    if scaling_type == "minmax":
+        return sigma_values * y_stats["span"]
+    raise ValueError(f"Unsupported scaling type: {scaling_type}")
 
 
 def build_profile_to_x_adapter(
@@ -341,24 +357,25 @@ def _save_branching_ensemble_forecasts(
     forecasts: list[dict[str, np.ndarray | str]] = []
     for profile_id, node in sorted(result.final_profiles.items()):
         pred_stack_scaled = forecaster.forecast(node.profile)
-        pred_stack = np.stack(
-            [_descale_targets_from_stats(scaling_stats, pred_stack_scaled[i]) for i in range(pred_stack_scaled.shape[0])],
-            axis=0,
-        )
-        y_mean = np.mean(pred_stack, axis=0)
-        y_two_sigma = 2.0 * np.std(pred_stack, axis=0, ddof=0)
-        y_dsigma_dt = finite_difference(y_two_sigma, order=derivative_order, dt=dt)
+        y_mean_scaled = np.mean(pred_stack_scaled, axis=0)
+        y_two_sigma_scaled = 2.0 * np.std(pred_stack_scaled, axis=0, ddof=0)
+        y_dsigma_dt_scaled = finite_difference(y_two_sigma_scaled, order=derivative_order, dt=dt)
+
+        y_mean = _descale_targets_from_stats(scaling_stats, y_mean_scaled)
+        y_two_sigma = _descale_uncertainty_widths_from_stats(scaling_stats, y_two_sigma_scaled)
 
         t_series = np.asarray(node.profile.t, dtype=np.float32)
         u_series = np.asarray(node.profile.theta_deg, dtype=np.float32)
 
         # Branching workflow has no measured truth series; duplicate mean for x_true fields
         # to keep schema compatible with existing ensemble plotting utilities.
+        # NOTE: y_mean / y_2sigma are descaled physical values; dx_sigma_dt is kept scaled.
         table = np.column_stack([t_series, u_series, y_mean, y_mean, y_two_sigma]).astype(np.float32)
         forecasts.append({
             "profile": profile_id,
             "table": table,
-            "dx_sigma_dt": y_dsigma_dt.astype(np.float32),
+            # Keep uncertainty derivative in scaled units.
+            "dx_sigma_dt": y_dsigma_dt_scaled.astype(np.float32),
         })
 
     forecast_h5 = output_dir / "ensemble_forecasts.h5"
@@ -438,14 +455,26 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
 
     forecaster = LSTMEnsembleForecaster(models, profile_to_x=profile_to_x, state_dim=state_dim)
 
+    if config.weights_npy_path is None:
+        weights = np.ones((num_targets,), dtype=np.float64)
+    else:
+        weights = np.load(config.weights_npy_path).astype(np.float64)
+    if weights.ndim != 1 or weights.shape[0] != num_targets:
+        raise ValueError(
+            "weights vector must have shape (num_targets,). "
+            f"Got {weights.shape}, num_targets={num_targets}."
+        )
+
     result = run_recursive_branching(
         forecaster=forecaster,
         generator=generator,
         root_profile=root_profile,
         n_intervals=config.n_intervals,
         n_branches=config.n_branches,
+        weights=weights,
         finite_difference_order=config.finite_difference_order,
         seed=config.seed,
+        verbose=True,
     )
 
     save_recursive_branching_output(result, config.output_dir)
@@ -539,6 +568,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--finite-difference-order", type=int, default=4, choices=[2, 4])
     parser.add_argument("--kernel", type=str, default="matern52", choices=["matern32", "matern52"])
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument(
+        "--weights-npy",
+        type=Path,
+        default=None,
+        help="Optional .npy vector of per-target non-negative weights (shape: [num_targets]).",
+    )
     return parser.parse_args()
 
 
@@ -567,6 +602,7 @@ def main() -> None:
         kernel=args.kernel,
         device=args.device,
         config_path=args.config,
+        weights_npy_path=args.weights_npy,
     )
     run_recursive_branching_workflow(run_config)
 
