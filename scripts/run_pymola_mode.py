@@ -14,6 +14,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
 try:
     # Import directly from pymola so dependency/import errors surface clearly.
     from rabl.interface.pymola import BatchConfig, DymolaBatchRunner
@@ -26,6 +30,47 @@ except ModuleNotFoundError as exc:
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+PLOT_VARS = [
+    "drumAngleDeg",
+    "drumVelDeg_s",
+    "TN2",
+    "Tm",
+    "Thp",
+    "Tf",
+    "c[1]",
+    "c[2]",
+    "c[3]",
+    "c[4]",
+    "c[5]",
+    "c[6]",
+    "P_MW",
+    "rho_dollars",
+    "rho_drums_dollars",
+    "rho_fuel_dollars",
+    "rho_moderator_dollars",
+    "Q_to_steam",
+]
+
+COLOR_MAP = {
+    "drumAngleDeg": "black",
+    "drumVelDeg_s": "black",
+    "TN2": "#d62728",
+    "Tm": "#d62728",
+    "Thp": "#d62728",
+    "Tf": "#d62728",
+    "c[1]": "#006400",
+    "c[2]": "#006400",
+    "c[3]": "#006400",
+    "c[4]": "#006400",
+    "c[5]": "#006400",
+    "c[6]": "#006400",
+    "P_MW": "#e377c2",
+    "rho_dollars": "black",
+    "rho_drums_dollars": "#1f77b4",
+    "rho_fuel_dollars": "#2ca02c",
+    "rho_moderator_dollars": "#ff7f0e",
+    "Q_to_steam": "#7f7f7f",
+}
 
 
 def _repo_rel(path: str | None, fallback: str) -> str:
@@ -49,7 +94,104 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-interval", type=float, default=0.1, help="Dymola output interval in seconds.")
     parser.add_argument("--no-skip-existing", action="store_true", help="Disable skip-existing behavior.")
+    parser.add_argument("--branch-check-atol", type=float, default=1e-6, help="Absolute tolerance for parent/child shared-prefix checks.")
+    parser.add_argument("--branch-check-rtol", type=float, default=1e-5, help="Relative tolerance for parent/child shared-prefix checks.")
+    parser.add_argument("--branch-check-strict", action="store_true", help="Fail run if any shared-prefix check fails.")
     return parser.parse_args()
+
+
+def _read_results_csv(results_csv: Path) -> pd.DataFrame:
+    df = pd.read_csv(results_csv)
+    df.columns = df.columns.str.strip()
+    if "t" not in df.columns:
+        raise RuntimeError(f"Missing 't' column in {results_csv}")
+    df = df.apply(pd.to_numeric, errors="coerce").dropna(subset=["t"])
+    return df
+
+
+def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
+    dfs: list[tuple[str, pd.DataFrame]] = []
+    for p in results_csvs:
+        dfs.append((p.stem, _read_results_csv(p)))
+
+    rows = 3
+    cols = 6
+    fig, axes = plt.subplots(rows, cols, figsize=(30, 12), sharex=True)
+    axes = axes.flatten()
+
+    for ax, var in zip(axes, PLOT_VARS, strict=False):
+        color = COLOR_MAP.get(var, "black")
+        for _, df in dfs:
+            if var not in df.columns:
+                continue
+            ax.plot(df["t"].to_numpy(), df[var].to_numpy(), color=color, linewidth=1.0, alpha=0.10)
+        ax.set_title(var)
+        ax.set_ylabel(var)
+        ax.grid(True, which="both", alpha=0.35)
+
+    for ax in axes[len(PLOT_VARS):]:
+        ax.set_axis_off()
+    for ax in axes[-cols:]:
+        ax.set_xlabel("t (s)")
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
+def _run_shared_prefix_checks(stitched_dir: Path, h5_path: Path, *, atol: float, rtol: float) -> list[str]:
+    try:
+        import h5py
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Shared-prefix checks require h5py.") from exc
+
+    failures: list[str] = []
+    with h5py.File(h5_path, "r") as h5f:
+        for root_id in sorted(h5f.keys()):
+            root_grp = h5f[root_id]
+            for profile_id in sorted(root_grp.keys()):
+                grp = root_grp[profile_id]
+                parent_id = str(grp.attrs.get("parent_profile_id", "")).strip()
+                if not parent_id:
+                    continue
+                branch_time = float(grp.attrs.get("branch_time", np.nan))
+                if np.isnan(branch_time):
+                    failures.append(f"{root_id}/{profile_id}: missing branch_time")
+                    continue
+
+                parent_csv = stitched_dir / f"results_{root_id}__{parent_id}.csv"
+                child_csv = stitched_dir / f"results_{root_id}__{profile_id}.csv"
+                if not parent_csv.exists() or not child_csv.exists():
+                    failures.append(f"{root_id}/{profile_id}: missing stitched csv parent={parent_csv.exists()} child={child_csv.exists()}")
+                    continue
+
+                p_df = _read_results_csv(parent_csv)
+                c_df = _read_results_csv(child_csv)
+                p_pref = p_df[p_df["t"] <= branch_time].copy()
+                c_pref = c_df[c_df["t"] <= branch_time].copy()
+
+                if p_pref.empty or c_pref.empty:
+                    failures.append(f"{root_id}/{profile_id}: empty shared prefix")
+                    continue
+
+                t_common = np.intersect1d(p_pref["t"].to_numpy(), c_pref["t"].to_numpy())
+                if t_common.size == 0:
+                    failures.append(f"{root_id}/{profile_id}: no common time grid in shared prefix")
+                    continue
+
+                p_idx = p_pref.set_index("t")
+                c_idx = c_pref.set_index("t")
+                vars_to_check = [v for v in PLOT_VARS if v in p_idx.columns and v in c_idx.columns]
+                for v in vars_to_check:
+                    p_vals = p_idx.loc[t_common, v].to_numpy(dtype=float)
+                    c_vals = c_idx.loc[t_common, v].to_numpy(dtype=float)
+                    if not np.allclose(p_vals, c_vals, atol=atol, rtol=rtol, equal_nan=True):
+                        max_abs = float(np.nanmax(np.abs(p_vals - c_vals)))
+                        failures.append(
+                            f"{root_id}/{profile_id}: shared-prefix mismatch in '{v}' at t<={branch_time:.6f}, max_abs={max_abs:.3e}"
+                        )
+                        break
+    return failures
 
 
 def main() -> None:
@@ -77,6 +219,28 @@ def main() -> None:
     try:
         if args.mode == "branched_hdf5":
             runner.run_branched_hdf5()
+            stitched_dir = Path(out_dir) / cfg.stitched_results_dir
+            failures = _run_shared_prefix_checks(
+                stitched_dir=stitched_dir,
+                h5_path=Path(h5_path),
+                atol=args.branch_check_atol,
+                rtol=args.branch_check_rtol,
+            )
+            if failures:
+                print("\nShared-prefix check failures:")
+                for msg in failures:
+                    print(f"  - {msg}")
+                if args.branch_check_strict:
+                    raise SystemExit("Shared-prefix checks failed (strict mode).")
+            else:
+                print("Shared-prefix checks passed for all parent/child pairs.")
+
+            results_csvs = sorted(stitched_dir.glob("results_*.csv"))
+            if not results_csvs:
+                raise SystemExit(f"No stitched CSVs found in: {stitched_dir}")
+            plot_path = stitched_dir / "timeseries_stitched_ALL_PROFILES.png"
+            _plot_all_profiles(results_csvs, plot_path)
+            print(f"Saved stitched plot to {plot_path}")
         else:
             runner.run_all()
     finally:
