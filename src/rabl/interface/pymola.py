@@ -269,27 +269,38 @@ class DymolaBatchRunner:
     def _set_profile_variables_for_continuation(self, suffix_rel: str) -> bool:
         """
         Update profile-related parameters on active/default model context.
-        Try bare names first, then fully-qualified names.
+        Only bare names are used; if string SetVariable calls fail, fall back
+        to ExecuteCommand for strings.
         """
-        bare_ok = all([
-            self.dymola.SetVariable("profileFile", suffix_rel),
-            self.dymola.SetVariable("tableName", self.cfg.table_name),
-            self.dymola.SetVariable("angleColumn", int(self.cfg.angle_col)),
-            self.dymola.SetVariable("velColumn", int(self.cfg.vel_col)),
-            self.dymola.SetVariable("accColumn", int(self.cfg.acc_col)),
-        ])
-        if bare_ok:
+        try:
+            if not self.dymola.SetVariable("angleColumn", int(self.cfg.angle_col)):
+                return False
+            if not self.dymola.SetVariable("velColumn", int(self.cfg.vel_col)):
+                return False
+            if not self.dymola.SetVariable("accColumn", int(self.cfg.acc_col)):
+                return False
+            if not self.dymola.SetVariable("profileFile", suffix_rel):
+                raise RuntimeError("SetVariable(profileFile) returned False")
+            if not self.dymola.SetVariable("tableName", self.cfg.table_name):
+                raise RuntimeError("SetVariable(tableName) returned False")
             return True
-
-        model_prefix = self.cfg.model_name
-        qualified_ok = all([
-            self.dymola.SetVariable(f"{model_prefix}.profileFile", suffix_rel),
-            self.dymola.SetVariable(f"{model_prefix}.tableName", self.cfg.table_name),
-            self.dymola.SetVariable(f"{model_prefix}.angleColumn", int(self.cfg.angle_col)),
-            self.dymola.SetVariable(f"{model_prefix}.velColumn", int(self.cfg.vel_col)),
-            self.dymola.SetVariable(f"{model_prefix}.accColumn", int(self.cfg.acc_col)),
-        ])
-        return qualified_ok
+        except Exception:
+            try:
+                esc_profile = suffix_rel.replace("\\", "/").replace('"', '\\"')
+                esc_table = self.cfg.table_name.replace('"', '\\"')
+                if not self.dymola.ExecuteCommand(f'profileFile="{esc_profile}"'):
+                    return False
+                if not self.dymola.ExecuteCommand(f'tableName="{esc_table}"'):
+                    return False
+                if not self.dymola.SetVariable("angleColumn", int(self.cfg.angle_col)):
+                    return False
+                if not self.dymola.SetVariable("velColumn", int(self.cfg.vel_col)):
+                    return False
+                if not self.dymola.SetVariable("accColumn", int(self.cfg.acc_col)):
+                    return False
+                return True
+            except Exception:
+                return False
 
     def _read_result_columns(self, result_file: str, stop_time: float) -> tuple[list[np.ndarray], float]:
         t0 = time()
@@ -524,6 +535,10 @@ class DymolaBatchRunner:
         suffix_rel = os.path.relpath(suffix_mat, self.out_dir_abs).replace("\\", "/")
         vars_ok = self._set_profile_variables_for_continuation(suffix_rel)
         if not vars_ok:
+            (self.logs_abs / f"{job.root_id}__{job.profile_id}__setvars_error.log").write_text(
+                str(self.dymola.getLastErrorLog()),
+                encoding="utf-8",
+            )
             return False, {
                 "status": "FAIL_SET_PROFILE_VARIABLES",
                 "generated_profile_mat": str(suffix_mat),
