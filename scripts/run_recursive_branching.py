@@ -24,6 +24,7 @@ from typing import Callable
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib.lines import Line2D
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = REPO_ROOT / "src"
@@ -302,6 +303,19 @@ def _plot_branched_profiles(result: RecursiveBranchingResult, save_path: Path) -
         ax.axvline(interval.start, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
     if result.intervals:
         ax.axvline(result.intervals[-1].end, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+
+    if result.intervals:
+        legend_handles = [
+            Line2D(
+                [0],
+                [0],
+                color=interval_colors[interval.index % len(interval_colors)],
+                linewidth=2.0,
+                label=f"Spawned in Interval {interval.index + 1}",
+            )
+            for interval in result.intervals
+        ]
+        ax.legend(handles=legend_handles, loc="best", frameon=True)
 
     ax.set_title("Branched Drum Profiles Across Intervals")
     ax.set_xlabel("Time (s)")
