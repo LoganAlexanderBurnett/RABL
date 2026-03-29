@@ -51,6 +51,7 @@ import re
 
 import h5py
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import numpy as np
 import torch
 
@@ -1694,15 +1695,14 @@ def _physical_group_for_target_name(target_name: str) -> str:
 
 
 def _build_uncertainty_derivative_styles(target_names: list[str]) -> list[dict[str, str]]:
-    group_colors = {
+    group_base_colors = {
         "temperature": "red",
         "concentration": "green",
-        "power": "pink",
+        "power": "deeppink",
         "reactivity": "black",
         "q_to_steam": "gray",
         "other": "C4",
     }
-    linestyle_cycle = ["-", "--", "-.", ":"]
 
     groups = [_physical_group_for_target_name(name) for name in target_names]
     group_counts: dict[str, int] = {}
@@ -1714,9 +1714,27 @@ def _build_uncertainty_derivative_styles(target_names: list[str]) -> list[dict[s
     for group in groups:
         idx_in_group = group_indices.get(group, 0)
         group_indices[group] = idx_in_group + 1
-        linestyle = "-" if group_counts[group] <= 1 else linestyle_cycle[idx_in_group % len(linestyle_cycle)]
-        styles.append({"color": group_colors[group], "linestyle": linestyle})
+        shade_idx = 0 if group_counts[group] <= 1 else idx_in_group
+        color = _vary_group_color(group_base_colors[group], shade_idx=shade_idx, n_shades=group_counts[group])
+        styles.append({"color": color, "linestyle": "-"})
     return styles
+
+
+def _vary_group_color(base_color: str, *, shade_idx: int, n_shades: int) -> str:
+    if n_shades <= 1:
+        return base_color
+    rgb = np.asarray(mcolors.to_rgb(base_color), dtype=np.float64)
+    center = 0.5 * (n_shades - 1)
+    offset = (shade_idx - center) / max(center, 1.0)  # [-1, 1]
+    if offset >= 0:
+        # Lighter for later traces.
+        mix = 0.22 * offset
+        out = rgb * (1.0 - mix) + np.ones(3, dtype=np.float64) * mix
+    else:
+        # Slightly darker for earlier traces.
+        mix = 0.18 * (-offset)
+        out = rgb * (1.0 - mix)
+    return mcolors.to_hex(np.clip(out, 0.0, 1.0))
 
 
 def save_forecast_profiles_pdf(

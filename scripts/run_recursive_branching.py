@@ -279,8 +279,7 @@ def _plot_root_profile(root_profile: DrumProfile, save_path: Path) -> None:
 def _plot_branched_profiles(result: RecursiveBranchingResult, save_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(10, 6))
     root_id = "profile_000000"
-    cmap = plt.get_cmap("viridis")
-    max_interval = max((i.index for i in result.intervals), default=0)
+    interval_colors = _interval_colors(len(result.intervals))
 
     for profile_id, node in result.final_profiles.items():
         t = np.asarray(node.profile.t, dtype=float)
@@ -290,7 +289,7 @@ def _plot_branched_profiles(result: RecursiveBranchingResult, save_path: Path) -
             continue
 
         k = 0 if node.created_in_interval is None else node.created_in_interval
-        color = cmap(k / max(1, max_interval))
+        color = interval_colors[k % len(interval_colors)] if interval_colors else "darkcyan"
         if node.branch_time is None:
             ax.plot(t, u, color=color, linewidth=1.2, alpha=0.85)
         else:
@@ -311,6 +310,12 @@ def _plot_branched_profiles(result: RecursiveBranchingResult, save_path: Path) -
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
+def _interval_colors(n_intervals: int) -> list[str]:
+    """Match the interval color scheme used in generate_branched_control_profiles.py."""
+    palette = ["darkcyan", "aquamarine", "mediumturquoise"]
+    return [palette[i % len(palette)] for i in range(max(0, n_intervals))]
 
 
 def _print_run_summary(
