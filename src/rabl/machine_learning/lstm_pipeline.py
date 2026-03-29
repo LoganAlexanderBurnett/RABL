@@ -47,6 +47,7 @@ from typing import Any, Callable, Iterable
 import os
 import random
 import gc
+import re
 
 import h5py
 import matplotlib.pyplot as plt
@@ -1588,6 +1589,7 @@ def _plot_ensemble_forecast_vs_truth_grid(
     axes_flat[0].grid(True, alpha=0.3)
 
     derivative_axes: list[plt.Axes] = []
+    derivative_styles = _build_uncertainty_derivative_styles(target_names)
     for target_idx, target_name in enumerate(target_names):
         ax = axes_flat[target_idx + 1]
         ax.plot(t_series, y_true[:, target_idx], label="Ground truth", linewidth=1.6, color="C0")
@@ -1601,12 +1603,13 @@ def _plot_ensemble_forecast_vs_truth_grid(
         if y_dsigma_dt is not None:
             ax2 = ax.twinx()
             derivative_axes.append(ax2)
+            dstyle = derivative_styles[target_idx]
             ax2.plot(
                 t_series,
                 y_dsigma_dt[:, target_idx],
                 linewidth=1.2,
-                color="C4",
-                linestyle=":",
+                color=dstyle["color"],
+                linestyle=dstyle["linestyle"],
                 label="d(x_sigma_scaled)/dt",
             )
             ax2.axhline(0.0, color="0.5", linewidth=0.9, linestyle="--", alpha=0.8)
@@ -1654,8 +1657,17 @@ def _plot_uncertainty_derivative_only_grid(
         raise ValueError(f"t_series must be 1D with length {num_steps}, got {t_series.shape}")
 
     fig, ax = plt.subplots(figsize=(14, 7))
+    derivative_styles = _build_uncertainty_derivative_styles(target_names)
     for target_idx, target_name in enumerate(target_names):
-        ax.plot(t_series, y_dsigma_dt[:, target_idx], linewidth=1.2, label=target_name)
+        dstyle = derivative_styles[target_idx]
+        ax.plot(
+            t_series,
+            y_dsigma_dt[:, target_idx],
+            linewidth=1.2,
+            color=dstyle["color"],
+            linestyle=dstyle["linestyle"],
+            label=target_name,
+        )
     ax.axhline(0.0, color="0.5", linewidth=0.9, linestyle="--", alpha=0.8)
     ax.set_title(title)
     ax.set_xlabel("Time (s)")
@@ -1664,6 +1676,47 @@ def _plot_uncertainty_derivative_only_grid(
     ax.legend(loc="upper center", ncol=min(4, max(1, len(target_names))), frameon=False)
     fig.tight_layout()
     return fig
+
+
+def _physical_group_for_target_name(target_name: str) -> str:
+    name = target_name.strip().lower()
+    if name == "n" or "power" in name:
+        return "power"
+    if "reactivity" in name or name in {"rho", "rho_dollars"}:
+        return "reactivity"
+    if "q_to_steam" in name or "steam" in name:
+        return "q_to_steam"
+    if re.fullmatch(r"c[\[_]?\d+\]?", name):
+        return "concentration"
+    if name.startswith("t") or "temp" in name:
+        return "temperature"
+    return "other"
+
+
+def _build_uncertainty_derivative_styles(target_names: list[str]) -> list[dict[str, str]]:
+    group_colors = {
+        "temperature": "red",
+        "concentration": "green",
+        "power": "pink",
+        "reactivity": "black",
+        "q_to_steam": "gray",
+        "other": "C4",
+    }
+    linestyle_cycle = ["-", "--", "-.", ":"]
+
+    groups = [_physical_group_for_target_name(name) for name in target_names]
+    group_counts: dict[str, int] = {}
+    group_indices: dict[str, int] = {}
+    for group in groups:
+        group_counts[group] = group_counts.get(group, 0) + 1
+
+    styles: list[dict[str, str]] = []
+    for group in groups:
+        idx_in_group = group_indices.get(group, 0)
+        group_indices[group] = idx_in_group + 1
+        linestyle = "-" if group_counts[group] <= 1 else linestyle_cycle[idx_in_group % len(linestyle_cycle)]
+        styles.append({"color": group_colors[group], "linestyle": linestyle})
+    return styles
 
 
 def save_forecast_profiles_pdf(
