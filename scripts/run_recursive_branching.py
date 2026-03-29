@@ -41,6 +41,7 @@ from rabl.machine_learning.recursive_branching import (
     generate_root_profile,
     load_trained_ensemble,
     run_recursive_branching,
+    save_profiles_lineage_graph,
     save_recursive_branching_output,
 )
 from rabl.machine_learning.lstm_pipeline import save_forecast_profiles_pdf
@@ -535,6 +536,11 @@ def _run_single_recursive_branching_workflow(
         ],
     }
     (run_output_dir / "branch_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    save_profiles_lineage_graph(
+        profiles_h5_path=profiles_h5_path,
+        output_image_path=run_output_dir / "profiles_lineage_graph.png",
+        root_group_name=root_group_name,
+    )
 
     if config.visualize:
         _plot_branched_profiles(result, run_output_dir / "branched_profiles.png")

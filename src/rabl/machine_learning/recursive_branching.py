@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 import h5py
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -352,3 +353,97 @@ def save_recursive_branching_output(
             grp.attrs["created_in_interval"] = -1 if node.created_in_interval is None else node.created_in_interval
             grp.attrs["branch_time"] = np.nan if node.branch_time is None else node.branch_time
             grp.attrs["branch_label"] = -1 if node.branch_label is None else node.branch_label
+
+
+def save_profiles_lineage_graph(
+    profiles_h5_path: Path,
+    output_image_path: Path,
+    *,
+    root_group_name: str,
+) -> Path:
+    """Render and save a lineage graph image from a shared profiles.h5 root group."""
+    profiles_h5_path = Path(profiles_h5_path)
+    output_image_path = Path(output_image_path)
+    output_image_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with h5py.File(profiles_h5_path, "r") as h5f:
+        if root_group_name not in h5f:
+            raise KeyError(f"Root group '{root_group_name}' not found in {profiles_h5_path}.")
+        root_grp = h5f[root_group_name]
+        profile_ids = sorted(root_grp.keys())
+        if not profile_ids:
+            raise ValueError(f"Root group '{root_group_name}' contains no profiles.")
+
+        parent_by_id: dict[str, str | None] = {}
+        interval_by_id: dict[str, int] = {}
+        for profile_id in profile_ids:
+            grp = root_grp[profile_id]
+            parent_attr = str(grp.attrs.get("parent_profile_id", "")).strip()
+            parent_by_id[profile_id] = parent_attr if parent_attr else None
+            interval_by_id[profile_id] = int(grp.attrs.get("created_in_interval", -1))
+
+    depth_by_id: dict[str, int] = {}
+    unresolved = set(profile_ids)
+    while unresolved:
+        progress = False
+        for profile_id in list(unresolved):
+            parent_id = parent_by_id[profile_id]
+            if parent_id is None or parent_id not in parent_by_id:
+                depth_by_id[profile_id] = 0
+                unresolved.remove(profile_id)
+                progress = True
+            elif parent_id in depth_by_id:
+                depth_by_id[profile_id] = depth_by_id[parent_id] + 1
+                unresolved.remove(profile_id)
+                progress = True
+        if not progress:
+            for profile_id in unresolved:
+                depth_by_id[profile_id] = 0
+            break
+
+    order = sorted(profile_ids, key=lambda pid: (depth_by_id[pid], pid))
+    x_by_id = {profile_id: float(idx) for idx, profile_id in enumerate(order)}
+    y_by_id = {profile_id: -float(depth_by_id[profile_id]) for profile_id in profile_ids}
+
+    fig, ax = plt.subplots(figsize=(max(10, len(profile_ids) * 0.18), 6.5))
+
+    for child_id, parent_id in parent_by_id.items():
+        if parent_id is None or parent_id not in x_by_id:
+            continue
+        ax.plot(
+            [x_by_id[parent_id], x_by_id[child_id]],
+            [y_by_id[parent_id], y_by_id[child_id]],
+            color="0.65",
+            linewidth=1.0,
+            zorder=1,
+        )
+
+    max_interval = max((interval_by_id[pid] for pid in profile_ids), default=-1)
+    cmap = plt.get_cmap("viridis")
+    for profile_id in profile_ids:
+        interval_idx = interval_by_id[profile_id]
+        color = "black" if interval_idx < 0 else cmap(interval_idx / max(1, max_interval))
+        ax.scatter(x_by_id[profile_id], y_by_id[profile_id], s=34, color=color, edgecolor="white", linewidth=0.4, zorder=3)
+
+    for profile_id in profile_ids:
+        ax.text(
+            x_by_id[profile_id],
+            y_by_id[profile_id] + 0.12,
+            profile_id,
+            ha="center",
+            va="bottom",
+            fontsize=6,
+            rotation=45,
+        )
+
+    ax.set_title(f"Profile Lineage Graph ({root_group_name})")
+    ax.set_xlabel("Profiles")
+    ax.set_ylabel("Generation depth")
+    ax.grid(True, alpha=0.2, linestyle=":")
+    ax.set_yticks(sorted(set(y_by_id.values())))
+    ax.set_yticklabels([str(int(abs(v))) for v in sorted(set(y_by_id.values()))])
+    ax.invert_yaxis()
+    fig.tight_layout()
+    fig.savefig(output_image_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    return output_image_path
