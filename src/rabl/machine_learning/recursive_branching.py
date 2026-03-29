@@ -20,6 +20,7 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib.lines import Line2D
 
 from rabl.machine_learning.branchpoint_finder import finite_difference
 from rabl.machine_learning.lstm_pipeline import build_model, rolling_forecast
@@ -403,7 +404,7 @@ def save_profiles_lineage_graph(
 
     order = sorted(profile_ids, key=lambda pid: (depth_by_id[pid], pid))
     x_by_id = {profile_id: float(idx) for idx, profile_id in enumerate(order)}
-    y_by_id = {profile_id: -float(depth_by_id[profile_id]) for profile_id in profile_ids}
+    y_by_id = {profile_id: float(depth_by_id[profile_id]) for profile_id in profile_ids}
 
     fig, ax = plt.subplots(figsize=(max(10, len(profile_ids) * 0.18), 6.5))
 
@@ -418,11 +419,10 @@ def save_profiles_lineage_graph(
             zorder=1,
         )
 
-    max_interval = max((interval_by_id[pid] for pid in profile_ids), default=-1)
-    cmap = plt.get_cmap("viridis")
+    interval_palette = _interval_colors(max((interval_by_id[pid] for pid in profile_ids), default=-1) + 1)
     for profile_id in profile_ids:
         interval_idx = interval_by_id[profile_id]
-        color = "black" if interval_idx < 0 else cmap(interval_idx / max(1, max_interval))
+        color = "black" if interval_idx < 0 else interval_palette[interval_idx % len(interval_palette)]
         ax.scatter(x_by_id[profile_id], y_by_id[profile_id], s=34, color=color, edgecolor="white", linewidth=0.4, zorder=3)
 
     for profile_id in profile_ids:
@@ -441,9 +441,30 @@ def save_profiles_lineage_graph(
     ax.set_ylabel("Generation depth")
     ax.grid(True, alpha=0.2, linestyle=":")
     ax.set_yticks(sorted(set(y_by_id.values())))
-    ax.set_yticklabels([str(int(abs(v))) for v in sorted(set(y_by_id.values()))])
+    ax.set_yticklabels([str(int(v)) for v in sorted(set(y_by_id.values()))])
     ax.invert_yaxis()
+    max_interval_idx = max((interval_by_id[pid] for pid in profile_ids), default=-1)
+    legend_handles = [Line2D([0], [0], marker="o", color="none", markerfacecolor="black", markersize=7, label="Root profile")]
+    for interval_idx in range(max_interval_idx + 1):
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor=interval_palette[interval_idx % len(interval_palette)],
+                markersize=7,
+                label=f"Spawned in Interval {interval_idx + 1}",
+            )
+        )
+    ax.legend(handles=legend_handles, loc="best", frameon=True)
     fig.tight_layout()
     fig.savefig(output_image_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
     return output_image_path
+
+
+def _interval_colors(n_intervals: int) -> list[str]:
+    """Use the same interval palette as branched profile plotting."""
+    palette = ["darkcyan", "aquamarine", "mediumturquoise"]
+    return [palette[i % len(palette)] for i in range(max(1, n_intervals))]
