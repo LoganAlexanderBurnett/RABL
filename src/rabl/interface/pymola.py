@@ -1,6 +1,7 @@
 import csv
 import os
 import re
+import shutil
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -251,6 +252,45 @@ class DymolaBatchRunner:
         result_file = str(self.dymola.getLastResultFileName()) if ok else ""
         return bool(ok), t_sim, result_file
 
+    def _simulate_continued_default_model(self, *, start_time: float, stop_time: float, result_base: str) -> tuple[bool, float, str]:
+        """Continue from imported state using the default/active model context."""
+        t0 = time()
+        ok = self.dymola.simulateModel(
+            "",
+            startTime=float(start_time),
+            stopTime=float(stop_time),
+            resultFile=result_base,
+            outputInterval=self.cfg.output_interval,
+        )
+        t_sim = time() - t0
+        result_file = str(self.dymola.getLastResultFileName()) if ok else ""
+        return bool(ok), t_sim, result_file
+
+    def _set_profile_variables_for_continuation(self, suffix_rel: str) -> bool:
+        """
+        Update profile-related parameters on active/default model context.
+        Try bare names first, then fully-qualified names.
+        """
+        bare_ok = all([
+            self.dymola.SetVariable("profileFile", suffix_rel),
+            self.dymola.SetVariable("tableName", self.cfg.table_name),
+            self.dymola.SetVariable("angleColumn", int(self.cfg.angle_col)),
+            self.dymola.SetVariable("velColumn", int(self.cfg.vel_col)),
+            self.dymola.SetVariable("accColumn", int(self.cfg.acc_col)),
+        ])
+        if bare_ok:
+            return True
+
+        model_prefix = self.cfg.model_name
+        qualified_ok = all([
+            self.dymola.SetVariable(f"{model_prefix}.profileFile", suffix_rel),
+            self.dymola.SetVariable(f"{model_prefix}.tableName", self.cfg.table_name),
+            self.dymola.SetVariable(f"{model_prefix}.angleColumn", int(self.cfg.angle_col)),
+            self.dymola.SetVariable(f"{model_prefix}.velColumn", int(self.cfg.vel_col)),
+            self.dymola.SetVariable(f"{model_prefix}.accColumn", int(self.cfg.acc_col)),
+        ])
+        return qualified_ok
+
     def _read_result_columns(self, result_file: str, stop_time: float) -> tuple[list[np.ndarray], float]:
         t0 = time()
         rows = self.dymola.readTrajectorySize(result_file)
@@ -476,24 +516,32 @@ class DymolaBatchRunner:
         if not import_ok:
             return False, {"status": "FAIL_IMPORT_INITIAL_RESULT", "generated_profile_mat": str(suffix_mat)}
 
+        if self.cfg.keep_dsfinal_for_debug:
+            dsin = self.out_dir_abs / "dsin.txt"
+            if dsin.exists():
+                shutil.copy2(dsin, self.logs_abs / f"{job.root_id}__{job.profile_id}__after_import_dsin.txt")
+
+        suffix_rel = os.path.relpath(suffix_mat, self.out_dir_abs).replace("\\", "/")
+        vars_ok = self._set_profile_variables_for_continuation(suffix_rel)
+        if not vars_ok:
+            return False, {
+                "status": "FAIL_SET_PROFILE_VARIABLES",
+                "generated_profile_mat": str(suffix_mat),
+            }
+
+        if self.cfg.keep_dsfinal_for_debug:
+            dsin = self.out_dir_abs / "dsin.txt"
+            if dsin.exists():
+                shutil.copy2(dsin, self.logs_abs / f"{job.root_id}__{job.profile_id}__before_continue_dsin.txt")
+
         result_base = f"{job.root_id}__{job.profile_id}__branch"
-        ok, t_sim, result_file = self._simulate_model_call(
-            profile_mat_path=suffix_mat,
+        ok, t_sim, result_file = self._simulate_continued_default_model(
             start_time=float(job.branch_time),
-            stop_time=job.stop_time,
+            stop_time=float(job.stop_time),
             result_base=result_base,
         )
         if not ok:
-            # Fallback attempt: explicitly set parameters on active model.
-            self.dymola.SetVariable(f"{self.cfg.model_name}.profileFile", self._to_dymola_path(suffix_mat))
-            ok, t_sim, result_file = self._simulate_model_call(
-                profile_mat_path=suffix_mat,
-                start_time=float(job.branch_time),
-                stop_time=job.stop_time,
-                result_base=result_base + "__fallback",
-            )
-            if not ok:
-                return False, {"status": "FAIL_SIMULATE_BRANCH", "simulate_s": t_sim, "result_base": result_base, "generated_profile_mat": str(suffix_mat)}
+            return False, {"status": "FAIL_SIMULATE_BRANCH", "simulate_s": t_sim, "result_base": result_base, "generated_profile_mat": str(suffix_mat)}
 
         return True, {
             "status": "OK", "simulate_s": t_sim, "result_base": result_base,
