@@ -13,7 +13,6 @@ This module orchestrates a persistent branching workflow:
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -329,15 +328,22 @@ def run_recursive_branching(
     return RecursiveBranchingResult(intervals=intervals, final_profiles=profiles, branch_events=branch_events)
 
 
-def save_recursive_branching_output(result: RecursiveBranchingResult, output_dir: Path) -> None:
-    """Save final profiles and branch metadata to disk."""
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+def save_recursive_branching_output(
+    result: RecursiveBranchingResult,
+    profiles_h5_path: Path,
+    *,
+    root_group_name: str,
+) -> None:
+    """Save final profiles under ``root_group_name`` in a shared profiles HDF5 file."""
+    profiles_h5_path = Path(profiles_h5_path)
+    profiles_h5_path.parent.mkdir(parents=True, exist_ok=True)
 
-    profiles_h5_path = output_dir / "profiles.h5"
-    with h5py.File(profiles_h5_path, "w") as h5f:
+    with h5py.File(profiles_h5_path, "a") as h5f:
+        if root_group_name in h5f:
+            del h5f[root_group_name]
+        root_grp = h5f.create_group(root_group_name)
         for profile_id, node in result.final_profiles.items():
-            grp = h5f.create_group(profile_id)
+            grp = root_grp.create_group(profile_id)
             grp.create_dataset("t", data=np.asarray(node.profile.t, dtype=np.float64))
             grp.create_dataset("theta_deg", data=np.asarray(node.profile.theta_deg, dtype=np.float64))
             grp.create_dataset("v_deg_s", data=np.asarray(node.profile.v_deg_s, dtype=np.float64))
@@ -346,22 +352,3 @@ def save_recursive_branching_output(result: RecursiveBranchingResult, output_dir
             grp.attrs["created_in_interval"] = -1 if node.created_in_interval is None else node.created_in_interval
             grp.attrs["branch_time"] = np.nan if node.branch_time is None else node.branch_time
             grp.attrs["branch_label"] = -1 if node.branch_label is None else node.branch_label
-
-    metadata = {
-        "intervals": [
-            {"index": interval.index, "start": interval.start, "end": interval.end}
-            for interval in result.intervals
-        ],
-        "n_profiles": len(result.final_profiles),
-        "branch_events": [
-            {
-                "child_profile_id": event.child_profile_id,
-                "parent_profile_id": event.parent_profile_id,
-                "interval_index": event.interval_index,
-                "branch_time": event.branch_time,
-                "branch_label": event.branch_label,
-            }
-            for event in result.branch_events
-        ],
-    }
-    (output_dir / "branch_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")

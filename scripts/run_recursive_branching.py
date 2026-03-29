@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import sys
 from time import perf_counter
 from dataclasses import dataclass
@@ -31,7 +32,6 @@ if str(SRC_PATH) not in sys.path:
 
 from rabl.machine_learning.bagging_ensemble import (
     _save_ensemble_rolling_forecasts_hdf5,
-    plot_ensemble_forecast_profile_grid,
 )
 from rabl.machine_learning.branchpoint_finder import finite_difference
 from rabl.machine_learning.recursive_branching import (
@@ -397,6 +397,7 @@ def _run_single_recursive_branching_workflow(
     *,
     root_index: int,
     run_output_dir: Path,
+    profiles_h5_path: Path,
 ) -> RecursiveBranchingResult:
     run_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -490,7 +491,32 @@ def _run_single_recursive_branching_workflow(
         verbose=True,
     )
 
-    save_recursive_branching_output(result, run_output_dir)
+    root_group_name = f"root_{root_index + 1:03d}"
+    save_recursive_branching_output(
+        result,
+        profiles_h5_path=profiles_h5_path,
+        root_group_name=root_group_name,
+    )
+    metadata = {
+        "root_group_name": root_group_name,
+        "intervals": [
+            {"index": interval.index, "start": interval.start, "end": interval.end}
+            for interval in result.intervals
+        ],
+        "n_profiles": len(result.final_profiles),
+        "branch_events": [
+            {
+                "child_profile_id": event.child_profile_id,
+                "parent_profile_id": event.parent_profile_id,
+                "interval_index": event.interval_index,
+                "branch_time": event.branch_time,
+                "branch_label": event.branch_label,
+            }
+            for event in result.branch_events
+        ],
+    }
+    (run_output_dir / "branch_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
     if config.visualize:
         _plot_branched_profiles(result, run_output_dir / "branched_profiles.png")
 
@@ -507,18 +533,6 @@ def _run_single_recursive_branching_workflow(
     process_elapsed_seconds = perf_counter() - process_start
 
     if config.visualize:
-        forecast_plot_dir = run_output_dir / "ensemble_forecast_plots"
-        forecast_plot_dir.mkdir(parents=True, exist_ok=True)
-        for profile_id in sorted(result.final_profiles.keys()):
-            plot_ensemble_forecast_profile_grid(
-                forecast_h5,
-                profile_name=profile_id,
-                save_path=forecast_plot_dir / f"{profile_id}.png",
-                target_names=target_names,
-                plot_uncertainty_derivative=True,
-                close_figure=True,
-            )
-
         save_forecast_profiles_pdf(
             forecast_h5_path=forecast_h5,
             output_pdf_path=run_output_dir / "ensemble_forecasts_with_derivative.pdf",
@@ -566,6 +580,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
 
     results: list[RecursiveBranchingResult] = []
     multiple_roots = config.Nr > 1
+    profiles_h5_path = config.output_dir / "profiles.h5"
     for root_index in range(config.Nr):
         run_output_dir = config.output_dir / f"root_{root_index:03d}" if multiple_roots else config.output_dir
         print(f"\n=== Root Profile {root_index + 1}/{config.Nr} ===\n")
@@ -573,6 +588,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
             config,
             root_index=root_index,
             run_output_dir=run_output_dir,
+            profiles_h5_path=profiles_h5_path,
         )
         results.append(result)
 
