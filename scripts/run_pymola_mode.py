@@ -14,7 +14,15 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rabl.interface import BatchConfig, DymolaBatchRunner
+try:
+    # Import directly from pymola so dependency/import errors surface clearly.
+    from rabl.interface.pymola import BatchConfig, DymolaBatchRunner
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        "Unable to import Dymola interface dependencies. "
+        "Make sure your Python environment can import both "
+        "'dymola.dymola_interface' and required scientific packages (numpy/scipy/h5py)."
+    ) from exc
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
