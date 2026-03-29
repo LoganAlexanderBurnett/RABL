@@ -2,6 +2,9 @@ within MicroreactorPK.Blocks;
 block DrumProfileFromFile
   /*
     Reads an Nx4 table [time, angle_deg, vel, acc] from a .mat file variable
+
+    IMPORTANT: time in column 1 must be absolute simulation time.
+    For restart runs, suffix tables should start at the branch time (not at 0).
     named `profile`
 
     Behavior:

@@ -4,7 +4,11 @@ model RunOneProfile
   import MicroreactorPK.Blocks.DrumProfileFromFile;
   import MicroreactorPK.Models.HPMicroPK;
 
-  // Set these from Python for each run
+  // Set these from Python for each run.
+  // `profileFile` may be either:
+  // 1) a full profile that starts at t=0, or
+  // 2) a suffix profile that starts at a nonzero absolute branch time
+  //    when running restart-based branch simulations.
   parameter String profileFile = "";
   parameter String tableName   = "profile" "Matrix variable name in MAT-file";
   parameter Integer angleColumn(min=2) = 2;
