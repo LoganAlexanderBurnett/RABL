@@ -1,4 +1,5 @@
 {
+  "root_group_name": "root_001",
   "intervals": [
     {
       "index": 0,
@@ -36,28 +37,28 @@
       "child_profile_id": "profile_000003",
       "parent_profile_id": "profile_000000",
       "interval_index": 1,
-      "branch_time": 76.4,
+      "branch_time": 128.4,
       "branch_label": 0
     },
     {
       "child_profile_id": "profile_000004",
       "parent_profile_id": "profile_000000",
       "interval_index": 1,
-      "branch_time": 76.4,
+      "branch_time": 128.4,
       "branch_label": 1
     },
     {
       "child_profile_id": "profile_000005",
       "parent_profile_id": "profile_000001",
       "interval_index": 1,
-      "branch_time": 128.4,
+      "branch_time": 127.2,
       "branch_label": 0
     },
     {
       "child_profile_id": "profile_000006",
       "parent_profile_id": "profile_000001",
       "interval_index": 1,
-      "branch_time": 128.4,
+      "branch_time": 127.2,
       "branch_label": 1
     },
     {
@@ -92,112 +93,112 @@
       "child_profile_id": "profile_000011",
       "parent_profile_id": "profile_000001",
       "interval_index": 2,
-      "branch_time": 175.20000000000002,
+      "branch_time": 174.8,
       "branch_label": 0
     },
     {
       "child_profile_id": "profile_000012",
       "parent_profile_id": "profile_000001",
       "interval_index": 2,
-      "branch_time": 175.20000000000002,
+      "branch_time": 174.8,
       "branch_label": 1
     },
     {
       "child_profile_id": "profile_000013",
       "parent_profile_id": "profile_000002",
       "interval_index": 2,
-      "branch_time": 138.4,
+      "branch_time": 138.0,
       "branch_label": 0
     },
     {
       "child_profile_id": "profile_000014",
       "parent_profile_id": "profile_000002",
       "interval_index": 2,
-      "branch_time": 138.4,
+      "branch_time": 138.0,
       "branch_label": 1
     },
     {
       "child_profile_id": "profile_000015",
       "parent_profile_id": "profile_000003",
       "interval_index": 2,
-      "branch_time": 196.8,
+      "branch_time": 133.6,
       "branch_label": 0
     },
     {
       "child_profile_id": "profile_000016",
       "parent_profile_id": "profile_000003",
       "interval_index": 2,
-      "branch_time": 196.8,
+      "branch_time": 133.6,
       "branch_label": 1
     },
     {
       "child_profile_id": "profile_000017",
       "parent_profile_id": "profile_000004",
       "interval_index": 2,
-      "branch_time": 137.6,
+      "branch_time": 133.6,
       "branch_label": 0
     },
     {
       "child_profile_id": "profile_000018",
       "parent_profile_id": "profile_000004",
       "interval_index": 2,
-      "branch_time": 137.6,
+      "branch_time": 133.6,
       "branch_label": 1
     },
     {
       "child_profile_id": "profile_000019",
       "parent_profile_id": "profile_000005",
       "interval_index": 2,
-      "branch_time": 195.60000000000002,
+      "branch_time": 180.0,
       "branch_label": 0
     },
     {
       "child_profile_id": "profile_000020",
       "parent_profile_id": "profile_000005",
       "interval_index": 2,
-      "branch_time": 195.60000000000002,
+      "branch_time": 180.0,
       "branch_label": 1
     },
     {
       "child_profile_id": "profile_000021",
       "parent_profile_id": "profile_000006",
       "interval_index": 2,
-      "branch_time": 167.20000000000002,
+      "branch_time": 133.6,
       "branch_label": 0
     },
     {
       "child_profile_id": "profile_000022",
       "parent_profile_id": "profile_000006",
       "interval_index": 2,
-      "branch_time": 167.20000000000002,
+      "branch_time": 133.6,
       "branch_label": 1
     },
     {
       "child_profile_id": "profile_000023",
       "parent_profile_id": "profile_000007",
       "interval_index": 2,
-      "branch_time": 138.8,
+      "branch_time": 138.0,
       "branch_label": 0
     },
     {
       "child_profile_id": "profile_000024",
       "parent_profile_id": "profile_000007",
       "interval_index": 2,
-      "branch_time": 138.8,
+      "branch_time": 138.0,
       "branch_label": 1
     },
     {
       "child_profile_id": "profile_000025",
       "parent_profile_id": "profile_000008",
       "interval_index": 2,
-      "branch_time": 144.8,
+      "branch_time": 142.0,
       "branch_label": 0
     },
     {
       "child_profile_id": "profile_000026",
       "parent_profile_id": "profile_000008",
       "interval_index": 2,
-      "branch_time": 144.8,
+      "branch_time": 142.0,
       "branch_label": 1
     }
   ]

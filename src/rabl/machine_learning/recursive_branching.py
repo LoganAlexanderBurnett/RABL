@@ -406,7 +406,7 @@ def save_profiles_lineage_graph(
     x_by_id = {profile_id: float(idx) for idx, profile_id in enumerate(order)}
     y_by_id = {profile_id: float(depth_by_id[profile_id]) for profile_id in profile_ids}
 
-    fig, ax = plt.subplots(figsize=(max(10, len(profile_ids) * 0.18), 6.5))
+    fig, ax = plt.subplots(figsize=(len(profile_ids) * 0.3, 6.5))
 
     for child_id, parent_id in parent_by_id.items():
         if parent_id is None or parent_id not in x_by_id:
@@ -417,6 +417,7 @@ def save_profiles_lineage_graph(
             color="0.65",
             linewidth=1.0,
             zorder=1,
+            alpha=0.5
         )
 
     interval_palette = _interval_colors(max((interval_by_id[pid] for pid in profile_ids), default=-1) + 1)
@@ -433,7 +434,7 @@ def save_profiles_lineage_graph(
             ha="center",
             va="bottom",
             fontsize=6,
-            rotation=45,
+            rotation=60,
         )
 
     ax.set_title(f"Profile Lineage Graph ({root_group_name})")
