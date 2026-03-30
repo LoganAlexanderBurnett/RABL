@@ -300,12 +300,13 @@ class DymolaBatchRunner:
         esc_profile = suffix_rel.replace("\\", "/").replace('"', '\\"')
         esc_table = self.cfg.table_name.replace('"', '\\"')
 
-        # Strategy 2: ExecuteCommand for strings + SetVariable for ints.
+        # Strategy 2: ExecuteCommand for strings (Modelica assignment syntax)
+        # + SetVariable for ints.
         try:
-            if not self.dymola.ExecuteCommand(f'profileFile="{esc_profile}"'):
-                errors.append(_err("ExecuteCommand(profileFile)=False"))
-            elif not self.dymola.ExecuteCommand(f'tableName="{esc_table}"'):
-                errors.append(_err("ExecuteCommand(tableName)=False"))
+            if not self.dymola.ExecuteCommand(f'profileFile := "{esc_profile}";'):
+                errors.append(_err("ExecuteCommand(profileFile := ...)=False"))
+            elif not self.dymola.ExecuteCommand(f'tableName := "{esc_table}";'):
+                errors.append(_err("ExecuteCommand(tableName := ...)=False"))
             elif not self.dymola.SetVariable("angleColumn", int(self.cfg.angle_col)):
                 errors.append(_err("SetVariable(angleColumn)=False [strategy2]"))
             elif not self.dymola.SetVariable("velColumn", int(self.cfg.vel_col)):
@@ -320,11 +321,11 @@ class DymolaBatchRunner:
         # Strategy 3: ExecuteCommand for all bare-name assignments.
         try:
             cmds = [
-                f'angleColumn={int(self.cfg.angle_col)}',
-                f'velColumn={int(self.cfg.vel_col)}',
-                f'accColumn={int(self.cfg.acc_col)}',
-                f'profileFile="{esc_profile}"',
-                f'tableName="{esc_table}"',
+                f'angleColumn := {int(self.cfg.angle_col)};',
+                f'velColumn := {int(self.cfg.vel_col)};',
+                f'accColumn := {int(self.cfg.acc_col)};',
+                f'profileFile := "{esc_profile}";',
+                f'tableName := "{esc_table}";',
             ]
             for cmd in cmds:
                 if not self.dymola.ExecuteCommand(cmd):
@@ -334,6 +335,24 @@ class DymolaBatchRunner:
                 return True, "setvars_strategy3_ok"
         except Exception as exc:
             errors.append(_err(f"Strategy3 exception: {exc}"))
+
+        # Strategy 4: ExecuteCommand for all bare-name assignments with "=" fallback.
+        try:
+            cmds = [
+                f'angleColumn = {int(self.cfg.angle_col)};',
+                f'velColumn = {int(self.cfg.vel_col)};',
+                f'accColumn = {int(self.cfg.acc_col)};',
+                f'profileFile = "{esc_profile}";',
+                f'tableName = "{esc_table}";',
+            ]
+            for cmd in cmds:
+                if not self.dymola.ExecuteCommand(cmd):
+                    errors.append(_err(f"ExecuteCommand({cmd})=False [strategy4]"))
+                    break
+            else:
+                return True, "setvars_strategy4_ok"
+        except Exception as exc:
+            errors.append(_err(f"Strategy4 exception: {exc}"))
 
         return False, "\n".join(errors)
 
