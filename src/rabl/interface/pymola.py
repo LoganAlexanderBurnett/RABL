@@ -33,6 +33,7 @@ class BatchConfig:
     # Branched behaviors
     preserve_restart_artifacts: bool = True
     keep_dsfinal_for_debug: bool = False
+    store_protected_vars_for_restart: bool = True
     canonical_output_interval: float | None = None
     keep_full_parent_cache: bool = True
 
@@ -198,6 +199,14 @@ class DymolaBatchRunner:
             raise RuntimeError(f"checkModel failed for {self.cfg.model_name}\n{self.dymola.getLastErrorLog()}")
         if not self.dymola.translateModel(self.cfg.model_name):
             raise RuntimeError(f"translateModel failed for {self.cfg.model_name}\n{self.dymola.getLastErrorLog()}")
+
+        if self.cfg.profile_mode == "branched_hdf5" and self.cfg.store_protected_vars_for_restart:
+            # Preserve protected/internal block variables in result MAT so
+            # importInitialResult can reconstruct CombiTimeTable internals.
+            ok = self.dymola.ExecuteCommand("Advanced.StoreProtectedVariables := true;")
+            if not ok:
+                ok = self.dymola.ExecuteCommand("Advanced.StoreProtectedVariables=true;")
+            print(f"StoreProtectedVariables enabled: {ok}")
 
         if not self.summary_csv.exists():
             with open(self.summary_csv, "w", newline="") as fp:
@@ -627,10 +636,13 @@ class DymolaBatchRunner:
             f"[BRANCH] root={job.root_id} profile={job.profile_id} parent={job.parent_profile_id} "
             f"branch_time={job.branch_time:.6f} suffix_mat={suffix_mat.name}"
         )
-        parent_exists = Path(parent_result_file).exists()
+        parent_path = Path(parent_result_file)
+        if not parent_path.is_absolute():
+            parent_path = self.out_dir_abs / parent_path
+        parent_exists = parent_path.exists()
         suffix_exists = suffix_mat.exists()
         print(f"[BRANCH] parent_result_exists={parent_exists} suffix_mat_exists={suffix_exists}")
-        import_ok = self.dymola.importInitialResult(self._to_dymola_path(parent_result_file), float(job.branch_time))
+        import_ok = self.dymola.importInitialResult(self._to_dymola_path(parent_path), float(job.branch_time))
         if not import_ok:
             return False, {"status": "FAIL_IMPORT_INITIAL_RESULT", "generated_profile_mat": str(suffix_mat)}
         print("[BRANCH] importInitialResult=OK")
@@ -646,6 +658,7 @@ class DymolaBatchRunner:
         context_log.write_text(
             "\n".join([
                 f"parent_result_file={parent_result_file}",
+                f"parent_result_path_resolved={parent_path}",
                 f"parent_result_exists={parent_exists}",
                 f"suffix_mat={suffix_mat}",
                 f"suffix_mat_exists={suffix_exists}",
