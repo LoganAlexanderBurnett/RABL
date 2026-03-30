@@ -17,7 +17,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.lines import Line2D
 
 try:
     # Import directly from pymola so dependency/import errors surface clearly.
@@ -103,8 +102,8 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
         dfs.append((p.stem, root_id, _read_results_csv(p)))
 
     root_ids = sorted({root_id for _, root_id, _ in dfs})
-    cmap = plt.cm.get_cmap("tab20", max(1, len(root_ids)))
-    root_colors = {root_id: cmap(i) for i, root_id in enumerate(root_ids)}
+    rng = np.random.default_rng()
+    root_colors = {root_id: (float(rng.random()), float(rng.random()), float(rng.random()), 1.0) for root_id in root_ids}
 
     rows = 3
     cols = 6
@@ -130,10 +129,6 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
         ax.set_axis_off()
     for ax in axes[-cols:]:
         ax.set_xlabel("t (s)")
-
-    legend_handles = [Line2D([0], [0], color=root_colors[r], lw=2, label=r) for r in root_ids]
-    if legend_handles:
-        fig.legend(handles=legend_handles, loc="upper center", ncol=min(len(legend_handles), 6))
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
