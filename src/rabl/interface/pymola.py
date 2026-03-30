@@ -597,6 +597,20 @@ class DymolaBatchRunner:
         savemat(str(mat_out), {"table": np.column_stack(stitched_cols), "columns": np.array(self.cfg.vars_to_pull, dtype=object)})
         return csv_out, mat_out, (time() - t0)
 
+    def _log_branch_failure(self, job: BranchNode, status: str, *, detail: str = "") -> None:
+        """Emit immediate console + file diagnostics for branch failures."""
+        msg = f"[BRANCH-FAIL] {job.root_id}/{job.profile_id} status={status}"
+        if detail:
+            msg += f" detail={detail}"
+        print(msg)
+        try:
+            err = str(self.dymola.getLastErrorLog())
+        except Exception:
+            err = ""
+        log_path = self.logs_abs / f"{job.root_id}__{job.profile_id}__{status.lower()}.log"
+        payload = msg + ("\n\n" + err if err else "")
+        log_path.write_text(payload, encoding="utf-8")
+
     def run_branched_hdf5(self):
         assert self.dymola is not None, "Call start() first."
         nodes = self._load_branched_hdf5_tree(self.branched_hdf5_abs)
@@ -614,6 +628,7 @@ class DymolaBatchRunner:
                 full_grid_by_root.setdefault(job.root_id, np.asarray(job.t, dtype=float))
                 ok, rec = self._simulate_root_job(job)
                 if not ok:
+                    print(f"[ROOT-FAIL] {job.root_id}/{job.profile_id} status={rec.get('status', 'FAIL')}")
                     self._append_summary(root_id=job.root_id, profile_id=job.profile_id, parent_profile_id="", depth=job.depth,
                                          run_type="root_full", stop_time_s=job.stop_time, total_run_s=time()-run_t0, **rec)
                     continue
@@ -629,6 +644,7 @@ class DymolaBatchRunner:
 
             parent_key = (job.root_id, job.parent_profile_id)
             if parent_key not in result_by_key:
+                self._log_branch_failure(job, "FAIL_PARENT_RESULT_MISSING", detail=f"missing parent result for {parent_key}")
                 self._append_summary(root_id=job.root_id, profile_id=job.profile_id, parent_profile_id=job.parent_profile_id,
                                      branch_time_s=job.branch_time, depth=job.depth, run_type="branch_restart", status="FAIL_PARENT_RESULT_MISSING",
                                      stop_time_s=job.stop_time, total_run_s=time()-run_t0)
@@ -636,19 +652,61 @@ class DymolaBatchRunner:
 
             ok, rec = self._simulate_branch_job(job, result_by_key[parent_key])
             if not ok:
+                self._log_branch_failure(job, rec.get("status", "FAIL_BRANCH"))
                 self._append_summary(root_id=job.root_id, profile_id=job.profile_id, parent_profile_id=job.parent_profile_id,
                                      branch_time_s=job.branch_time, depth=job.depth, run_type="branch_restart", stop_time_s=job.stop_time,
                                      total_run_s=time()-run_t0, **rec)
                 continue
 
-            cols_child, t_extract = self._read_result_columns(rec["dymola_result_file"], job.stop_time)
+            try:
+                cols_child, t_extract = self._read_result_columns(rec["dymola_result_file"], job.stop_time)
+            except Exception as exc:
+                status = "FAIL_MISSING_VARS"
+                self._log_branch_failure(job, status, detail=str(exc))
+                self._append_summary(
+                    root_id=job.root_id,
+                    profile_id=job.profile_id,
+                    parent_profile_id=job.parent_profile_id,
+                    branch_time_s=job.branch_time,
+                    depth=job.depth,
+                    run_type="branch_restart",
+                    stop_time_s=job.stop_time,
+                    total_run_s=time() - run_t0,
+                    status=status,
+                    generated_profile_mat=rec.get("generated_profile_mat", ""),
+                    restart_source_result=rec.get("restart_source_result", ""),
+                    dymola_result_file=rec.get("dymola_result_file", ""),
+                    result_base=rec.get("result_base", ""),
+                )
+                continue
             t_stitch0 = time()
-            stitched_cols = self._stitch_full_trajectory(
-                parent_full_cols=self._stitched_cache[parent_key],
-                child_suffix_cols=cols_child,
-                branch_time=float(job.branch_time),
-                full_time_grid=full_grid_by_root[job.root_id],
-            )
+            try:
+                stitched_cols = self._stitch_full_trajectory(
+                    parent_full_cols=self._stitched_cache[parent_key],
+                    child_suffix_cols=cols_child,
+                    branch_time=float(job.branch_time),
+                    full_time_grid=full_grid_by_root[job.root_id],
+                )
+            except Exception as exc:
+                status = "FAIL_STITCH"
+                self._log_branch_failure(job, status, detail=str(exc))
+                self._append_summary(
+                    root_id=job.root_id,
+                    profile_id=job.profile_id,
+                    parent_profile_id=job.parent_profile_id,
+                    branch_time_s=job.branch_time,
+                    depth=job.depth,
+                    run_type="branch_restart",
+                    stop_time_s=job.stop_time,
+                    extract_s=t_extract,
+                    total_run_s=time() - run_t0,
+                    status=status,
+                    generated_profile_mat=rec.get("generated_profile_mat", ""),
+                    restart_source_result=rec.get("restart_source_result", ""),
+                    dymola_result_file=rec.get("dymola_result_file", ""),
+                    result_base=rec.get("result_base", ""),
+                )
+                continue
             t_stitch = time() - t_stitch0
             self._stitch_times.append(t_stitch)
 
