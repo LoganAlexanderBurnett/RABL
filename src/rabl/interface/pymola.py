@@ -265,28 +265,20 @@ class DymolaBatchRunner:
     def _simulate_continued_default_model(
         self,
         *,
-        profile_mat_path: Path,
         start_time: float,
         stop_time: float,
         result_base: str,
     ) -> tuple[bool, float, str, str]:
         """
-        Continue from imported state and explicitly pass profile settings in the
-        model-call modifiers (documented simulateModel usage).
+        Continue from imported state using the active/default model context.
+        This preserves imported dynamic states from importInitialResult.
         """
-        profile_rel = os.path.relpath(profile_mat_path, self.out_dir_abs).replace("\\", "/")
-        model_call = (
-            f'{self.cfg.model_name}(profileFile="{profile_rel}", '
-            f'tableName="{self.cfg.table_name}", '
-            f'angleColumn={self.cfg.angle_col}, velColumn={self.cfg.vel_col}, accColumn={self.cfg.acc_col})'
-        )
-
         t0 = time()
-        attempt = f"simulateModel({model_call})"
+        attempt = "simulateModel(\"\")"
         ok = False
         try:
             ok = self.dymola.simulateModel(
-                model_call,
+                "",
                 startTime=float(start_time),
                 stopTime=float(stop_time),
                 resultFile=result_base,
@@ -594,6 +586,7 @@ class DymolaBatchRunner:
         self,
         job: BranchNode,
         parent_result_file: str,
+        parent_generated_profile_mat: str | None = None,
     ) -> tuple[bool, dict]:
         suffix_mat = self._write_suffix_profile_mat(job)
         print(
@@ -646,6 +639,33 @@ class DymolaBatchRunner:
         print(f"[BRANCH] runtime_rebind_available={can_rebind}")
         effective_profile_mat = str(suffix_mat)
 
+        # Keep imported dynamic state (simulateModel("")) and rebind profile by
+        # updating the already-bound parent profile MAT in-place.
+        if parent_generated_profile_mat:
+            fallback_target = Path(parent_generated_profile_mat)
+            try:
+                shutil.copy2(suffix_mat, fallback_target)
+                effective_profile_mat = str(fallback_target)
+                print(f"[BRANCH] profile rebind via MAT copy: {suffix_mat.name} -> {fallback_target.name}")
+            except Exception as exc:
+                (self.logs_abs / f"{job.root_id}__{job.profile_id}__setvars_error.log").write_text(
+                    f"MAT-copy rebind failed: copy2({suffix_mat}, {fallback_target})\n\n{exc}",
+                    encoding="utf-8",
+                )
+                return False, {
+                    "status": "FAIL_SET_PROFILE_VARIABLES",
+                    "generated_profile_mat": str(suffix_mat),
+                }
+        else:
+            (self.logs_abs / f"{job.root_id}__{job.profile_id}__setvars_error.log").write_text(
+                "No parent_generated_profile_mat was provided for MAT-copy rebind.",
+                encoding="utf-8",
+            )
+            return False, {
+                "status": "FAIL_SET_PROFILE_VARIABLES",
+                "generated_profile_mat": str(suffix_mat),
+            }
+
         if self.cfg.keep_dsfinal_for_debug:
             dsin = self.out_dir_abs / "dsin.txt"
             if dsin.exists():
@@ -653,7 +673,6 @@ class DymolaBatchRunner:
 
         result_base = f"{job.root_id}__{job.profile_id}__branch"
         ok, t_sim, result_file, sim_attempt = self._simulate_continued_default_model(
-            profile_mat_path=suffix_mat,
             start_time=float(job.branch_time),
             stop_time=float(job.stop_time),
             result_base=result_base,
@@ -762,6 +781,7 @@ class DymolaBatchRunner:
             ok, rec = self._simulate_branch_job(
                 job,
                 result_by_key[parent_key],
+                parent_generated_profile_mat=generated_profile_by_key.get(parent_key),
             )
             if not ok:
                 self._log_branch_failure(job, rec.get("status", "FAIL_BRANCH"))
