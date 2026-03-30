@@ -357,7 +357,9 @@ class DymolaBatchRunner:
         # Strategy 5: infer active instance prefix from dsin/dsfinal and assign
         # `<instance>.param` (instance qualification, not class qualification).
         try:
-            prefix = self._infer_active_profile_prefix_from_dsin()
+            candidates = self._collect_profile_prefix_candidates_from_dsin()
+            errors.append(f"strategy5 candidates={candidates}")
+            prefix = candidates[0] if candidates else None
             if prefix:
                 if not self.dymola.SetVariable(f"{prefix}.angleColumn", int(self.cfg.angle_col)):
                     errors.append(_err(f"SetVariable({prefix}.angleColumn)=False [strategy5]"))
@@ -378,8 +380,8 @@ class DymolaBatchRunner:
 
         return False, "\n".join(errors)
 
-    def _infer_active_profile_prefix_from_dsin(self) -> str | None:
-        """Best-effort inference of active model instance prefix from dsin/dsfinal."""
+    def _collect_profile_prefix_candidates_from_dsin(self) -> list[str]:
+        """Collect possible active instance prefixes from dsin/dsfinal profile params."""
         candidates: set[str] = set()
         for name in ("dsin.txt", "dsfinal.txt"):
             p = self.out_dir_abs / name
@@ -392,10 +394,8 @@ class DymolaBatchRunner:
                 if prefix == self.cfg.model_name:
                     continue
                 candidates.add(prefix)
-        if not candidates:
-            return None
         # Prefer shorter prefixes first; these are usually active instance names.
-        return sorted(candidates, key=lambda s: (s.count("."), len(s)))[0]
+        return sorted(candidates, key=lambda s: (s.count("."), len(s)))
 
     def _read_result_columns(self, result_file: str, stop_time: float) -> tuple[list[np.ndarray], float]:
         t0 = time()
@@ -618,9 +618,17 @@ class DymolaBatchRunner:
 
     def _simulate_branch_job(self, job: BranchNode, parent_result_file: str) -> tuple[bool, dict]:
         suffix_mat = self._write_suffix_profile_mat(job)
+        print(
+            f"[BRANCH] root={job.root_id} profile={job.profile_id} parent={job.parent_profile_id} "
+            f"branch_time={job.branch_time:.6f} suffix_mat={suffix_mat.name}"
+        )
+        parent_exists = Path(parent_result_file).exists()
+        suffix_exists = suffix_mat.exists()
+        print(f"[BRANCH] parent_result_exists={parent_exists} suffix_mat_exists={suffix_exists}")
         import_ok = self.dymola.importInitialResult(self._to_dymola_path(parent_result_file), float(job.branch_time))
         if not import_ok:
             return False, {"status": "FAIL_IMPORT_INITIAL_RESULT", "generated_profile_mat": str(suffix_mat)}
+        print("[BRANCH] importInitialResult=OK")
 
         if self.cfg.keep_dsfinal_for_debug:
             dsin = self.out_dir_abs / "dsin.txt"
@@ -628,6 +636,22 @@ class DymolaBatchRunner:
                 shutil.copy2(dsin, self.logs_abs / f"{job.root_id}__{job.profile_id}__after_import_dsin.txt")
 
         suffix_rel = os.path.relpath(suffix_mat, self.out_dir_abs).replace("\\", "/")
+        candidates = self._collect_profile_prefix_candidates_from_dsin()
+        context_log = self.logs_abs / f"{job.root_id}__{job.profile_id}__branch_context.log"
+        context_log.write_text(
+            "\n".join([
+                f"parent_result_file={parent_result_file}",
+                f"parent_result_exists={parent_exists}",
+                f"suffix_mat={suffix_mat}",
+                f"suffix_mat_exists={suffix_exists}",
+                f"suffix_rel={suffix_rel}",
+                f"branch_time={job.branch_time}",
+                f"inferred_prefix_candidates={candidates}",
+                f"last_error_log_pre_setvars={self.dymola.getLastErrorLog()}",
+            ]),
+            encoding="utf-8",
+        )
+        print(f"[BRANCH] inferred_prefix_candidates={candidates}")
         vars_ok, vars_detail = self._set_profile_variables_for_continuation(suffix_rel)
         if not vars_ok:
             (self.logs_abs / f"{job.root_id}__{job.profile_id}__setvars_error.log").write_text(
