@@ -34,7 +34,6 @@ class BatchConfig:
     preserve_restart_artifacts: bool = True
     keep_dsfinal_for_debug: bool = False
     store_protected_vars_for_restart: bool = True
-    enable_rebind_probes: bool = False
     canonical_output_interval: float | None = None
     keep_full_parent_cache: bool = True
 
@@ -292,77 +291,6 @@ class DymolaBatchRunner:
         result_file = str(self.dymola.getLastResultFileName()) if ok else ""
         return bool(ok), t_sim, result_file, attempt
 
-    def _collect_profile_prefix_candidates_from_dsin(self) -> list[str]:
-        """Collect possible active instance prefixes from dsin/dsfinal profile params."""
-        candidates: set[str] = set()
-        for name in ("dsin.txt", "dsfinal.txt"):
-            p = self.out_dir_abs / name
-            if not p.exists():
-                continue
-            text = p.read_text(encoding="utf-8", errors="ignore")
-            for m in re.finditer(r'([A-Za-z_][A-Za-z0-9_\.]*)\.(?:profileFile|tableName|angleColumn|velColumn|accColumn)\b', text):
-                prefix = m.group(1)
-                # Ignore the class path prefix that previously produced parse errors.
-                if prefix == self.cfg.model_name:
-                    continue
-                candidates.add(prefix)
-        # Prefer shorter prefixes first; these are usually active instance names.
-        return sorted(candidates, key=lambda s: (s.count("."), len(s)))
-
-    def _can_runtime_rebind_profile_params(self) -> bool:
-        """
-        Heuristic check: do dsin/dsfinal expose profile path params in
-        initialName tables? If not, SetVariable/ExecuteCommand rebinding is
-        unlikely to work in this translated context.
-        """
-        probes = ("profileFile", "fileName", ".fileName", ".profileFile")
-        for name in ("dsin.txt", "dsfinal.txt"):
-            p = self.out_dir_abs / name
-            if not p.exists():
-                continue
-            text = p.read_text(encoding="utf-8", errors="ignore")
-            if any(tok in text for tok in probes):
-                return True
-        return False
-
-    def _collect_initial_name_hints(self) -> list[str]:
-        """Collect lines from dsin/dsfinal that hint at rebindable parameter names."""
-        hints: set[str] = set()
-        patt = re.compile(r"(profileFile|fileName|tableName|angleColumn|velColumn|accColumn)")
-        for name in ("dsin.txt", "dsfinal.txt"):
-            p = self.out_dir_abs / name
-            if not p.exists():
-                continue
-            for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
-                s = line.strip()
-                if not s:
-                    continue
-                if patt.search(s):
-                    hints.add(f"{name}:{s}")
-        return sorted(hints)
-
-    def _probe_rebind_symbols(self, candidates: list[str]) -> list[str]:
-        """
-        Probe which symbols parse in the active Dymola context.
-        This is diagnostics-only and does not mutate model values.
-        """
-        symbols = ["profileFile", "tableName", "angleColumn", "velColumn", "accColumn"]
-        for c in candidates:
-            symbols.extend([
-                f"{c}.fileName", f"{c}.tableName",
-                f"{c}.angleColumn", f"{c}.velColumn", f"{c}.accColumn",
-            ])
-        out: list[str] = []
-        for sym in symbols:
-            ok = self.dymola.ExecuteCommand(sym)
-            out.append(f"probe_symbol[{sym}]={ok}")
-            if not ok:
-                try:
-                    out.append(f"probe_error[{sym}]={self.dymola.getLastErrorLog()}")
-                except Exception:
-                    pass
-        return out
-
     def _read_result_columns(self, result_file: str, stop_time: float) -> tuple[list[np.ndarray], float]:
         t0 = time()
         rows = self.dymola.readTrajectorySize(result_file)
@@ -608,12 +536,7 @@ class DymolaBatchRunner:
                 shutil.copy2(dsin, self.logs_abs / f"{job.root_id}__{job.profile_id}__after_import_dsin.txt")
 
         child_profile_rel = os.path.relpath(child_full_mat, self.out_dir_abs).replace("\\", "/")
-        candidates = self._collect_profile_prefix_candidates_from_dsin()
         context_log = self.logs_abs / f"{job.root_id}__{job.profile_id}__branch_context.log"
-        name_hints = self._collect_initial_name_hints()
-        probe_lines: list[str] = []
-        if self.cfg.enable_rebind_probes:
-            probe_lines = self._probe_rebind_symbols(candidates)
         context_log.write_text(
             "\n".join([
                 f"parent_result_file={parent_result_file}",
@@ -623,22 +546,14 @@ class DymolaBatchRunner:
                 f"child_profile_mat_exists={child_profile_exists}",
                 f"child_profile_rel={child_profile_rel}",
                 f"branch_time={job.branch_time}",
-                f"inferred_prefix_candidates={candidates}",
-                f"initial_name_hints_count={len(name_hints)}",
-                f"enable_rebind_probes={self.cfg.enable_rebind_probes}",
-                *name_hints,
-                *probe_lines,
-                f"last_error_log_pre_setvars={self.dymola.getLastErrorLog()}",
+                "profile_rebind_mode=mat_copy_only",
             ]),
             encoding="utf-8",
         )
-        print(f"[BRANCH] inferred_prefix_candidates={candidates}")
-        can_rebind = self._can_runtime_rebind_profile_params()
-        print(f"[BRANCH] runtime_rebind_available={can_rebind}")
         effective_profile_mat = str(child_full_mat)
 
-        # Keep imported dynamic state (simulateModel("")) and rebind profile by
-        # updating the already-bound parent profile MAT in-place.
+        # Standard/only profile rebind path: keep imported dynamic state
+        # (simulateModel("")) and update the already-bound MAT in-place.
         if parent_generated_profile_mat:
             fallback_target = Path(parent_generated_profile_mat)
             try:
