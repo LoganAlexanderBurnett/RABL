@@ -291,7 +291,8 @@ class DymolaBatchRunner:
                 return tag
 
         def _set_param_value(name: str, value: str) -> bool:
-            cmd = f'setParameterValue("{name}", "{value.replace(chr(34), r"\\\"")}")'
+            esc_value = value.replace('"', '\\"')
+            cmd = f'setParameterValue("{name}", "{esc_value}")'
             ok = self.dymola.ExecuteCommand(cmd)
             if not ok:
                 errors.append(_err(f"ExecuteCommand({cmd})=False [strategy0]"))
