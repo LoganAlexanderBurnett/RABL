@@ -269,13 +269,10 @@ class DymolaBatchRunner:
         start_time: float,
         stop_time: float,
         result_base: str,
-        initial_names: list[str] | None = None,
-        initial_values: list[float] | None = None,
     ) -> tuple[bool, float, str, str]:
         """
         Continue from imported state and explicitly pass profile settings in the
         model-call modifiers (documented simulateModel usage).
-        Optionally use simulateExtendedModel for numeric rebinding.
         """
         profile_rel = os.path.relpath(profile_mat_path, self.out_dir_abs).replace("\\", "/")
         model_call = (
@@ -285,30 +282,16 @@ class DymolaBatchRunner:
         )
 
         t0 = time()
-        attempt = "simulateModel"
+        attempt = f"simulateModel({model_call})"
         ok = False
         try:
-            if initial_names and initial_values and hasattr(self.dymola, "simulateExtendedModel"):
-                attempt = f"simulateExtendedModel(initialNames={initial_names}, initialValues={initial_values})"
-                ok, _ = self.dymola.simulateExtendedModel(
-                    model_call,
-                    startTime=float(start_time),
-                    stopTime=float(stop_time),
-                    resultFile=result_base,
-                    outputInterval=self.cfg.output_interval,
-                    initialNames=initial_names,
-                    initialValues=initial_values,
-                    finalNames=[],
-                    autoLoad=True,
-                )
-            else:
-                ok = self.dymola.simulateModel(
-                    model_call,
-                    startTime=float(start_time),
-                    stopTime=float(stop_time),
-                    resultFile=result_base,
-                    outputInterval=self.cfg.output_interval,
-                )
+            ok = self.dymola.simulateModel(
+                model_call,
+                startTime=float(start_time),
+                stopTime=float(stop_time),
+                resultFile=result_base,
+                outputInterval=self.cfg.output_interval,
+            )
         except Exception as exc:
             attempt = f"{attempt} exception: {exc}"
             ok = False
@@ -316,26 +299,6 @@ class DymolaBatchRunner:
         t_sim = time() - t0
         result_file = str(self.dymola.getLastResultFileName()) if ok else ""
         return bool(ok), t_sim, result_file, attempt
-
-    def _set_profile_variables_for_continuation(self, suffix_rel: str) -> tuple[list[str], list[float], str]:
-        """
-        Strings are rebound via simulateModel model modifiers (not ExecuteCommand).
-        Numeric values are provided for simulateExtendedModel initialNames when available.
-        """
-        _ = suffix_rel  # Intentional: strings are passed in model_call modifiers at simulate time.
-        hints = self._collect_initial_name_hints()
-        use_prefixed = any("prof.angleColumn" in h for h in hints)
-        if use_prefixed:
-            return (
-                ["prof.angleColumn", "prof.velColumn", "prof.accColumn"],
-                [float(self.cfg.angle_col), float(self.cfg.vel_col), float(self.cfg.acc_col)],
-                "numeric_rebind_via_simulateExtendedModel using prefixed names",
-            )
-        return (
-            ["angleColumn", "velColumn", "accColumn"],
-            [float(self.cfg.angle_col), float(self.cfg.vel_col), float(self.cfg.acc_col)],
-            "numeric_rebind_via_simulateExtendedModel using bare names",
-        )
 
     def _collect_profile_prefix_candidates_from_dsin(self) -> list[str]:
         """Collect possible active instance prefixes from dsin/dsfinal profile params."""
@@ -681,8 +644,6 @@ class DymolaBatchRunner:
         print(f"[BRANCH] inferred_prefix_candidates={candidates}")
         can_rebind = self._can_runtime_rebind_profile_params()
         print(f"[BRANCH] runtime_rebind_available={can_rebind}")
-        initial_names, initial_values, vars_detail = self._set_profile_variables_for_continuation(suffix_rel)
-        print(f"[BRANCH] continuation_rebind_plan={vars_detail}")
         effective_profile_mat = str(suffix_mat)
 
         if self.cfg.keep_dsfinal_for_debug:
@@ -696,8 +657,6 @@ class DymolaBatchRunner:
             start_time=float(job.branch_time),
             stop_time=float(job.stop_time),
             result_base=result_base,
-            initial_names=initial_names,
-            initial_values=initial_values,
         )
         if not ok:
             (self.logs_abs / f"{job.root_id}__{job.profile_id}__setvars_error.log").write_text(
