@@ -290,6 +290,40 @@ class DymolaBatchRunner:
             except Exception:
                 return tag
 
+        def _set_param_value(name: str, value: str) -> bool:
+            cmd = f'setParameterValue("{name}", "{value.replace(chr(34), r"\\\"")}")'
+            ok = self.dymola.ExecuteCommand(cmd)
+            if not ok:
+                errors.append(_err(f"ExecuteCommand({cmd})=False [strategy0]"))
+            return bool(ok)
+
+        # Strategy 0: use Dymola parameter setter command.
+        # This is often more reliable than direct assignment for parameters.
+        try:
+            candidates = self._collect_profile_prefix_candidates_from_dsin()
+            param_sets = [
+                ("profileFile", self._to_dymola_path(suffix_rel)),
+                ("tableName", self.cfg.table_name),
+                ("angleColumn", str(int(self.cfg.angle_col))),
+                ("velColumn", str(int(self.cfg.vel_col))),
+                ("accColumn", str(int(self.cfg.acc_col))),
+            ]
+            # Add block-instance flavored names (e.g. prof.fileName).
+            for c in candidates:
+                param_sets.extend([
+                    (f"{c}.fileName", self._to_dymola_path(suffix_rel)),
+                    (f"{c}.tableName", self.cfg.table_name),
+                    (f"{c}.angleColumn", str(int(self.cfg.angle_col))),
+                    (f"{c}.velColumn", str(int(self.cfg.vel_col))),
+                    (f"{c}.accColumn", str(int(self.cfg.acc_col))),
+                ])
+
+            for p, v in param_sets:
+                if _set_param_value(p, v):
+                    return True, f"setvars_strategy0_ok param={p}"
+        except Exception as exc:
+            errors.append(_err(f"Strategy0 exception: {exc}"))
+
         # Strategy 1: SetVariable for all parameters.
         try:
             if not self.dymola.SetVariable("angleColumn", int(self.cfg.angle_col)):
@@ -737,10 +771,11 @@ class DymolaBatchRunner:
         print(f"[BRANCH] inferred_prefix_candidates={candidates}")
         can_rebind = self._can_runtime_rebind_profile_params()
         print(f"[BRANCH] runtime_rebind_available={can_rebind}")
-        vars_ok = False
-        vars_detail = "runtime rebind unavailable; bypassed setvars"
-        if can_rebind:
-            vars_ok, vars_detail = self._set_profile_variables_for_continuation(suffix_rel)
+        vars_ok, vars_detail = self._set_profile_variables_for_continuation(suffix_rel)
+        if not can_rebind and vars_ok:
+            vars_detail += " (succeeded despite missing dsin/dsfinal string hints)"
+        elif not can_rebind and not vars_ok:
+            vars_detail = "runtime rebind unavailable; setvars attempt failed\n" + vars_detail
         effective_profile_mat = str(suffix_mat)
         if not vars_ok:
             (self.logs_abs / f"{job.root_id}__{job.profile_id}__setvars_error.log").write_text(
