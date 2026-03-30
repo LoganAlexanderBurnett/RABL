@@ -1,0 +1,35 @@
+parent_result_file=root_001__profile_000000__root.mat
+parent_result_path_resolved=C:\Users\Logan\Desktop\mit_coursework\eVinci\GitHub\RABL\tests\dymola_with_branches\root_001__profile_000000__root.mat
+parent_result_exists=True
+suffix_mat=C:\Users\Logan\Desktop\mit_coursework\eVinci\GitHub\RABL\tests\dymola_with_branches\generated_profiles\root_001__profile_000001__suffix_from_128p4.mat
+suffix_mat_exists=True
+suffix_rel=generated_profiles/root_001__profile_000001__suffix_from_128p4.mat
+branch_time=128.4
+inferred_prefix_candidates=['prof']
+initial_name_hints_count=24
+enable_rebind_probes=False
+dsfinal.txt:1   282   # accColumn
+dsfinal.txt:1   282   # angleColumn
+dsfinal.txt:1   282   # velColumn
+dsfinal.txt:6   258   # prof.accColumn
+dsfinal.txt:6   258   # prof.angleColumn
+dsfinal.txt:6   258   # prof.velColumn
+dsfinal.txt:accColumn
+dsfinal.txt:angleColumn
+dsfinal.txt:prof.accColumn
+dsfinal.txt:prof.angleColumn
+dsfinal.txt:prof.velColumn
+dsfinal.txt:velColumn
+dsin.txt:1   282   # accColumn
+dsin.txt:1   282   # angleColumn
+dsin.txt:1   282   # velColumn
+dsin.txt:6   258   # prof.accColumn
+dsin.txt:6   258   # prof.angleColumn
+dsin.txt:6   258   # prof.velColumn
+dsin.txt:accColumn
+dsin.txt:angleColumn
+dsin.txt:prof.accColumn
+dsin.txt:prof.angleColumn
+dsin.txt:prof.velColumn
+dsin.txt:velColumn
+last_error_log_pre_setvars=
