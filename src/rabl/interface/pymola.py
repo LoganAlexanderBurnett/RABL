@@ -354,7 +354,48 @@ class DymolaBatchRunner:
         except Exception as exc:
             errors.append(_err(f"Strategy4 exception: {exc}"))
 
+        # Strategy 5: infer active instance prefix from dsin/dsfinal and assign
+        # `<instance>.param` (instance qualification, not class qualification).
+        try:
+            prefix = self._infer_active_profile_prefix_from_dsin()
+            if prefix:
+                if not self.dymola.SetVariable(f"{prefix}.angleColumn", int(self.cfg.angle_col)):
+                    errors.append(_err(f"SetVariable({prefix}.angleColumn)=False [strategy5]"))
+                elif not self.dymola.SetVariable(f"{prefix}.velColumn", int(self.cfg.vel_col)):
+                    errors.append(_err(f"SetVariable({prefix}.velColumn)=False [strategy5]"))
+                elif not self.dymola.SetVariable(f"{prefix}.accColumn", int(self.cfg.acc_col)):
+                    errors.append(_err(f"SetVariable({prefix}.accColumn)=False [strategy5]"))
+                elif not self.dymola.SetVariable(f"{prefix}.profileFile", suffix_rel):
+                    errors.append(_err(f"SetVariable({prefix}.profileFile)=False [strategy5]"))
+                elif not self.dymola.SetVariable(f"{prefix}.tableName", self.cfg.table_name):
+                    errors.append(_err(f"SetVariable({prefix}.tableName)=False [strategy5]"))
+                else:
+                    return True, f"setvars_strategy5_ok prefix={prefix}"
+            else:
+                errors.append("strategy5: no dsin prefix candidate found")
+        except Exception as exc:
+            errors.append(_err(f"Strategy5 exception: {exc}"))
+
         return False, "\n".join(errors)
+
+    def _infer_active_profile_prefix_from_dsin(self) -> str | None:
+        """Best-effort inference of active model instance prefix from dsin/dsfinal."""
+        candidates: set[str] = set()
+        for name in ("dsin.txt", "dsfinal.txt"):
+            p = self.out_dir_abs / name
+            if not p.exists():
+                continue
+            text = p.read_text(encoding="utf-8", errors="ignore")
+            for m in re.finditer(r'([A-Za-z_][A-Za-z0-9_\.]*)\.(?:profileFile|tableName|angleColumn|velColumn|accColumn)\b', text):
+                prefix = m.group(1)
+                # Ignore the class path prefix that previously produced parse errors.
+                if prefix == self.cfg.model_name:
+                    continue
+                candidates.add(prefix)
+        if not candidates:
+            return None
+        # Prefer shorter prefixes first; these are usually active instance names.
+        return sorted(candidates, key=lambda s: (s.count("."), len(s)))[0]
 
     def _read_result_columns(self, result_file: str, stop_time: float) -> tuple[list[np.ndarray], float]:
         t0 = time()
