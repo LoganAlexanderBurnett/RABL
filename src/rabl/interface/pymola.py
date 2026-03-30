@@ -34,6 +34,7 @@ class BatchConfig:
     preserve_restart_artifacts: bool = True
     keep_dsfinal_for_debug: bool = False
     store_protected_vars_for_restart: bool = True
+    enable_rebind_probes: bool = False
     canonical_output_interval: float | None = None
     keep_full_parent_cache: bool = True
 
@@ -712,7 +713,9 @@ class DymolaBatchRunner:
         candidates = self._collect_profile_prefix_candidates_from_dsin()
         context_log = self.logs_abs / f"{job.root_id}__{job.profile_id}__branch_context.log"
         name_hints = self._collect_initial_name_hints()
-        probe_lines = self._probe_rebind_symbols(candidates)
+        probe_lines: list[str] = []
+        if self.cfg.enable_rebind_probes:
+            probe_lines = self._probe_rebind_symbols(candidates)
         context_log.write_text(
             "\n".join([
                 f"parent_result_file={parent_result_file}",
@@ -724,6 +727,7 @@ class DymolaBatchRunner:
                 f"branch_time={job.branch_time}",
                 f"inferred_prefix_candidates={candidates}",
                 f"initial_name_hints_count={len(name_hints)}",
+                f"enable_rebind_probes={self.cfg.enable_rebind_probes}",
                 *name_hints,
                 *probe_lines,
                 f"last_error_log_pre_setvars={self.dymola.getLastErrorLog()}",
