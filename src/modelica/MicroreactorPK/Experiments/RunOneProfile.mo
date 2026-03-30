@@ -9,11 +9,17 @@ model RunOneProfile
   // 1) a full profile that starts at t=0, or
   // 2) a suffix profile that starts at a nonzero absolute branch time
   //    when running restart-based branch simulations.
-  parameter String profileFile = "";
-  parameter String tableName   = "profile" "Matrix variable name in MAT-file";
-  parameter Integer angleColumn(min=2) = 2;
-  parameter Integer velColumn(min=2) = 3;
-  parameter Integer accColumn(min=2) = 4;
+  parameter String profileFile = ""
+    annotation(Evaluate=false);
+  parameter String tableName   = "profile"
+    annotation(Evaluate=false)
+    "Matrix variable name in MAT-file";
+  parameter Integer angleColumn(min=2) = 2
+    annotation(Evaluate=false);
+  parameter Integer velColumn(min=2) = 3
+    annotation(Evaluate=false);
+  parameter Integer accColumn(min=2) = 4
+    annotation(Evaluate=false);
 
   // Instantiate the profile reader
   DrumProfileFromFile prof(

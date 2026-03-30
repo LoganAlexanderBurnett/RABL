@@ -17,15 +17,22 @@ block DrumProfileFromFile
 
   // Path to the MAT-file containing the table (Matlab v4).
   // Leave empty by default and set from Python.
-  parameter String fileName = "" "Path to .mat file containing profile table";
+  parameter String fileName = ""
+    annotation(Evaluate=false)
+    "Path to .mat file containing profile table";
 
   // Name of the matrix variable inside the MAT-file (e.g., "profile").
-  parameter String tableName = "profile";
+  parameter String tableName = "profile"
+    annotation(Evaluate=false);
 
   // Which column contains the drum angle. Column 1 is time.
-  parameter Integer angleColumn(min=2) = 2 "Column index for angle";
-  parameter Integer velColumn(min=2) = 3;
-  parameter Integer accColumn(min=2) = 4;
+  parameter Integer angleColumn(min=2) = 2
+    annotation(Evaluate=false)
+    "Column index for angle";
+  parameter Integer velColumn(min=2) = 3
+    annotation(Evaluate=false);
+  parameter Integer accColumn(min=2) = 4
+    annotation(Evaluate=false);
 
   // Output signal: interpolated drum angle in degrees.
   output Real angleDeg "Drum angle [deg]";
