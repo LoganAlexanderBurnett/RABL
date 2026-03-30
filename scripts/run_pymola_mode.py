@@ -17,6 +17,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.lines import Line2D
 
 try:
     # Import directly from pymola so dependency/import errors surface clearly.
@@ -50,28 +51,6 @@ PLOT_VARS = [
     "rho_moderator_dollars",
     "Q_to_steam",
 ]
-
-COLOR_MAP = {
-    "drumAngleDeg": "black",
-    "drumVelDeg_s": "black",
-    "TN2": "#d62728",
-    "Tm": "#d62728",
-    "Thp": "#d62728",
-    "Tf": "#d62728",
-    "c[1]": "#006400",
-    "c[2]": "#006400",
-    "c[3]": "#006400",
-    "c[4]": "#006400",
-    "c[5]": "#006400",
-    "c[6]": "#006400",
-    "P_MW": "#e377c2",
-    "rho_dollars": "black",
-    "rho_drums_dollars": "#1f77b4",
-    "rho_fuel_dollars": "#2ca02c",
-    "rho_moderator_dollars": "#ff7f0e",
-    "Q_to_steam": "#7f7f7f",
-}
-
 
 def _repo_rel(path: str | None, fallback: str) -> str:
     if not path:
@@ -109,10 +88,23 @@ def _read_results_csv(results_csv: Path) -> pd.DataFrame:
     return df
 
 
+def _extract_root_id_from_results_stem(stem: str) -> str:
+    # e.g. "results_root_001__profile_000012" -> "root_001"
+    parts = stem.split("__")
+    if len(parts) >= 2 and parts[0].startswith("results_"):
+        return parts[0].replace("results_", "", 1)
+    return "unknown_root"
+
+
 def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
-    dfs: list[tuple[str, pd.DataFrame]] = []
+    dfs: list[tuple[str, str, pd.DataFrame]] = []
     for p in results_csvs:
-        dfs.append((p.stem, _read_results_csv(p)))
+        root_id = _extract_root_id_from_results_stem(p.stem)
+        dfs.append((p.stem, root_id, _read_results_csv(p)))
+
+    root_ids = sorted({root_id for _, root_id, _ in dfs})
+    cmap = plt.cm.get_cmap("tab20", max(1, len(root_ids)))
+    root_colors = {root_id: cmap(i) for i, root_id in enumerate(root_ids)}
 
     rows = 3
     cols = 6
@@ -120,11 +112,16 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
     axes = axes.flatten()
 
     for ax, var in zip(axes, PLOT_VARS, strict=False):
-        color = COLOR_MAP.get(var, "black")
-        for _, df in dfs:
+        for _, root_id, df in dfs:
             if var not in df.columns:
                 continue
-            ax.plot(df["t"].to_numpy(), df[var].to_numpy(), color=color, linewidth=1.0, alpha=0.10)
+            ax.plot(
+                df["t"].to_numpy(),
+                df[var].to_numpy(),
+                color=root_colors[root_id],
+                linewidth=1.0,
+                alpha=0.15,
+            )
         ax.set_title(var)
         ax.set_ylabel(var)
         ax.grid(True, which="both", alpha=0.35)
@@ -133,6 +130,10 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
         ax.set_axis_off()
     for ax in axes[-cols:]:
         ax.set_xlabel("t (s)")
+
+    legend_handles = [Line2D([0], [0], color=root_colors[r], lw=2, label=r) for r in root_ids]
+    if legend_handles:
+        fig.legend(handles=legend_handles, loc="upper center", ncol=min(len(legend_handles), 6))
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
