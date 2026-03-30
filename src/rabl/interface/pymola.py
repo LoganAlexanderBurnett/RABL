@@ -616,7 +616,12 @@ class DymolaBatchRunner:
             return False, {"status": "FAIL_SIMULATE_ROOT", "simulate_s": t_sim, "result_base": result_base, "generated_profile_mat": str(profile_mat)}
         return True, {"status": "OK", "simulate_s": t_sim, "result_base": result_base, "generated_profile_mat": str(profile_mat), "dymola_result_file": result_file}
 
-    def _simulate_branch_job(self, job: BranchNode, parent_result_file: str) -> tuple[bool, dict]:
+    def _simulate_branch_job(
+        self,
+        job: BranchNode,
+        parent_result_file: str,
+        parent_generated_profile_mat: str | None = None,
+    ) -> tuple[bool, dict]:
         suffix_mat = self._write_suffix_profile_mat(job)
         print(
             f"[BRANCH] root={job.root_id} profile={job.profile_id} parent={job.parent_profile_id} "
@@ -653,16 +658,32 @@ class DymolaBatchRunner:
         )
         print(f"[BRANCH] inferred_prefix_candidates={candidates}")
         vars_ok, vars_detail = self._set_profile_variables_for_continuation(suffix_rel)
+        effective_profile_mat = str(suffix_mat)
         if not vars_ok:
             (self.logs_abs / f"{job.root_id}__{job.profile_id}__setvars_error.log").write_text(
                 vars_detail + "\n\n" + str(self.dymola.getLastErrorLog()),
                 encoding="utf-8",
             )
             print(f"[BRANCH-FAIL] {job.root_id}/{job.profile_id} setvars detail: {vars_detail.splitlines()[-1] if vars_detail else 'none'}")
-            return False, {
-                "status": "FAIL_SET_PROFILE_VARIABLES",
-                "generated_profile_mat": str(suffix_mat),
-            }
+            # Fallback: if parameters are locked/unavailable, overwrite the
+            # profile MAT currently bound in the active context (parent's MAT).
+            if parent_generated_profile_mat:
+                fallback_target = Path(parent_generated_profile_mat)
+                try:
+                    shutil.copy2(suffix_mat, fallback_target)
+                    effective_profile_mat = str(fallback_target)
+                    print(f"[BRANCH] setvars fallback: copied suffix MAT -> {fallback_target.name}")
+                except Exception as exc:
+                    print(f"[BRANCH-FAIL] MAT-copy fallback failed: {exc}")
+                    return False, {
+                        "status": "FAIL_SET_PROFILE_VARIABLES",
+                        "generated_profile_mat": str(suffix_mat),
+                    }
+            else:
+                return False, {
+                    "status": "FAIL_SET_PROFILE_VARIABLES",
+                    "generated_profile_mat": str(suffix_mat),
+                }
 
         if self.cfg.keep_dsfinal_for_debug:
             dsin = self.out_dir_abs / "dsin.txt"
@@ -680,7 +701,7 @@ class DymolaBatchRunner:
 
         return True, {
             "status": "OK", "simulate_s": t_sim, "result_base": result_base,
-            "generated_profile_mat": str(suffix_mat), "restart_source_result": parent_result_file,
+            "generated_profile_mat": effective_profile_mat, "restart_source_result": parent_result_file,
             "dymola_result_file": result_file,
         }
 
@@ -737,6 +758,7 @@ class DymolaBatchRunner:
         jobs = self._toposort_branch_jobs(nodes)
 
         result_by_key: dict[tuple[str, str], str] = {}
+        generated_profile_by_key: dict[tuple[str, str], str] = {}
         full_grid_by_root: dict[str, np.ndarray] = {}
 
         batch_t0 = time()
@@ -756,6 +778,7 @@ class DymolaBatchRunner:
                 self._stitched_cache[key] = cols
                 csv_out, mat_out, t_write = self._save_stitched_outputs(job, cols)
                 result_by_key[key] = rec["dymola_result_file"]
+                generated_profile_by_key[key] = rec.get("generated_profile_mat", "")
                 self._append_summary(root_id=job.root_id, profile_id=job.profile_id, parent_profile_id="", depth=job.depth,
                                      run_type="root_full", branch_time_s=None, stop_time_s=job.stop_time, extract_s=t_extract,
                                      write_s=t_write, total_run_s=time()-run_t0, stitched_csv_out=csv_out.name,
@@ -770,7 +793,11 @@ class DymolaBatchRunner:
                                      stop_time_s=job.stop_time, total_run_s=time()-run_t0)
                 continue
 
-            ok, rec = self._simulate_branch_job(job, result_by_key[parent_key])
+            ok, rec = self._simulate_branch_job(
+                job,
+                result_by_key[parent_key],
+                parent_generated_profile_mat=generated_profile_by_key.get(parent_key),
+            )
             if not ok:
                 self._log_branch_failure(job, rec.get("status", "FAIL_BRANCH"))
                 self._append_summary(root_id=job.root_id, profile_id=job.profile_id, parent_profile_id=job.parent_profile_id,
@@ -834,6 +861,7 @@ class DymolaBatchRunner:
                 self._stitched_cache[key] = stitched_cols
             csv_out, mat_out, t_write = self._save_stitched_outputs(job, stitched_cols)
             result_by_key[key] = rec["dymola_result_file"]
+            generated_profile_by_key[key] = rec.get("generated_profile_mat", "")
 
             self._append_summary(root_id=job.root_id, profile_id=job.profile_id, parent_profile_id=job.parent_profile_id,
                                  branch_time_s=job.branch_time, depth=job.depth, run_type="branch_restart", stop_time_s=job.stop_time,
