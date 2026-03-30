@@ -262,170 +262,80 @@ class DymolaBatchRunner:
         result_file = str(self.dymola.getLastResultFileName()) if ok else ""
         return bool(ok), t_sim, result_file
 
-    def _simulate_continued_default_model(self, *, start_time: float, stop_time: float, result_base: str) -> tuple[bool, float, str]:
-        """Continue from imported state using the default/active model context."""
-        t0 = time()
-        ok = self.dymola.simulateModel(
-            "",
-            startTime=float(start_time),
-            stopTime=float(stop_time),
-            resultFile=result_base,
-            outputInterval=self.cfg.output_interval,
+    def _simulate_continued_default_model(
+        self,
+        *,
+        profile_mat_path: Path,
+        start_time: float,
+        stop_time: float,
+        result_base: str,
+        initial_names: list[str] | None = None,
+        initial_values: list[float] | None = None,
+    ) -> tuple[bool, float, str, str]:
+        """
+        Continue from imported state and explicitly pass profile settings in the
+        model-call modifiers (documented simulateModel usage).
+        Optionally use simulateExtendedModel for numeric rebinding.
+        """
+        profile_rel = os.path.relpath(profile_mat_path, self.out_dir_abs).replace("\\", "/")
+        model_call = (
+            f'{self.cfg.model_name}(profileFile="{profile_rel}", '
+            f'tableName="{self.cfg.table_name}", '
+            f'angleColumn={self.cfg.angle_col}, velColumn={self.cfg.vel_col}, accColumn={self.cfg.acc_col})'
         )
+
+        t0 = time()
+        attempt = "simulateModel"
+        ok = False
+        try:
+            if initial_names and initial_values and hasattr(self.dymola, "simulateExtendedModel"):
+                attempt = f"simulateExtendedModel(initialNames={initial_names}, initialValues={initial_values})"
+                ok, _ = self.dymola.simulateExtendedModel(
+                    model_call,
+                    startTime=float(start_time),
+                    stopTime=float(stop_time),
+                    resultFile=result_base,
+                    outputInterval=self.cfg.output_interval,
+                    initialNames=initial_names,
+                    initialValues=initial_values,
+                    finalNames=[],
+                    autoLoad=True,
+                )
+            else:
+                ok = self.dymola.simulateModel(
+                    model_call,
+                    startTime=float(start_time),
+                    stopTime=float(stop_time),
+                    resultFile=result_base,
+                    outputInterval=self.cfg.output_interval,
+                )
+        except Exception as exc:
+            attempt = f"{attempt} exception: {exc}"
+            ok = False
+
         t_sim = time() - t0
         result_file = str(self.dymola.getLastResultFileName()) if ok else ""
-        return bool(ok), t_sim, result_file
+        return bool(ok), t_sim, result_file, attempt
 
-    def _set_profile_variables_for_continuation(self, suffix_rel: str) -> tuple[bool, str]:
+    def _set_profile_variables_for_continuation(self, suffix_rel: str) -> tuple[list[str], list[float], str]:
         """
-        Update profile-related parameters on active/default model context.
-        Only bare names are used; if string SetVariable calls fail, fall back
-        to ExecuteCommand for strings.
+        Strings are rebound via simulateModel model modifiers (not ExecuteCommand).
+        Numeric values are provided for simulateExtendedModel initialNames when available.
         """
-        errors: list[str] = []
-
-        def _err(tag: str) -> str:
-            try:
-                return f"{tag}: {self.dymola.getLastErrorLog()}"
-            except Exception:
-                return tag
-
-        def _set_param_value(name: str, value: str) -> bool:
-            esc_value = value.replace('"', '\\"')
-            cmd = f'setParameterValue("{name}", "{esc_value}")'
-            ok = self.dymola.ExecuteCommand(cmd)
-            if not ok:
-                errors.append(_err(f"ExecuteCommand({cmd})=False [strategy0]"))
-            return bool(ok)
-
-        # Strategy 0: use Dymola parameter setter command.
-        # This is often more reliable than direct assignment for parameters.
-        try:
-            candidates = self._collect_profile_prefix_candidates_from_dsin()
-            param_sets = [
-                ("profileFile", self._to_dymola_path(suffix_rel)),
-                ("tableName", self.cfg.table_name),
-                ("angleColumn", str(int(self.cfg.angle_col))),
-                ("velColumn", str(int(self.cfg.vel_col))),
-                ("accColumn", str(int(self.cfg.acc_col))),
-            ]
-            # Add block-instance flavored names (e.g. prof.fileName).
-            for c in candidates:
-                param_sets.extend([
-                    (f"{c}.fileName", self._to_dymola_path(suffix_rel)),
-                    (f"{c}.tableName", self.cfg.table_name),
-                    (f"{c}.angleColumn", str(int(self.cfg.angle_col))),
-                    (f"{c}.velColumn", str(int(self.cfg.vel_col))),
-                    (f"{c}.accColumn", str(int(self.cfg.acc_col))),
-                ])
-
-            for p, v in param_sets:
-                if _set_param_value(p, v):
-                    return True, f"setvars_strategy0_ok param={p}"
-        except Exception as exc:
-            errors.append(_err(f"Strategy0 exception: {exc}"))
-
-        # Strategy 1: SetVariable for all parameters.
-        try:
-            if not self.dymola.SetVariable("angleColumn", int(self.cfg.angle_col)):
-                errors.append(_err("SetVariable(angleColumn)=False"))
-            elif not self.dymola.SetVariable("velColumn", int(self.cfg.vel_col)):
-                errors.append(_err("SetVariable(velColumn)=False"))
-            elif not self.dymola.SetVariable("accColumn", int(self.cfg.acc_col)):
-                errors.append(_err("SetVariable(accColumn)=False"))
-            elif not self.dymola.SetVariable("profileFile", suffix_rel):
-                errors.append(_err("SetVariable(profileFile)=False"))
-            elif not self.dymola.SetVariable("tableName", self.cfg.table_name):
-                errors.append(_err("SetVariable(tableName)=False"))
-            else:
-                return True, "setvars_all_ok"
-        except Exception as exc:
-            errors.append(_err(f"SetVariable strategy exception: {exc}"))
-
-        esc_profile = suffix_rel.replace("\\", "/").replace('"', '\\"')
-        esc_table = self.cfg.table_name.replace('"', '\\"')
-
-        # Strategy 2: ExecuteCommand for strings (Modelica assignment syntax)
-        # + SetVariable for ints.
-        try:
-            if not self.dymola.ExecuteCommand(f'profileFile := "{esc_profile}";'):
-                errors.append(_err("ExecuteCommand(profileFile := ...)=False"))
-            elif not self.dymola.ExecuteCommand(f'tableName := "{esc_table}";'):
-                errors.append(_err("ExecuteCommand(tableName := ...)=False"))
-            elif not self.dymola.SetVariable("angleColumn", int(self.cfg.angle_col)):
-                errors.append(_err("SetVariable(angleColumn)=False [strategy2]"))
-            elif not self.dymola.SetVariable("velColumn", int(self.cfg.vel_col)):
-                errors.append(_err("SetVariable(velColumn)=False [strategy2]"))
-            elif not self.dymola.SetVariable("accColumn", int(self.cfg.acc_col)):
-                errors.append(_err("SetVariable(accColumn)=False [strategy2]"))
-            else:
-                return True, "setvars_strategy2_ok"
-        except Exception as exc:
-            errors.append(_err(f"Strategy2 exception: {exc}"))
-
-        # Strategy 3: ExecuteCommand for all bare-name assignments.
-        try:
-            cmds = [
-                f'angleColumn := {int(self.cfg.angle_col)};',
-                f'velColumn := {int(self.cfg.vel_col)};',
-                f'accColumn := {int(self.cfg.acc_col)};',
-                f'profileFile := "{esc_profile}";',
-                f'tableName := "{esc_table}";',
-            ]
-            for cmd in cmds:
-                if not self.dymola.ExecuteCommand(cmd):
-                    errors.append(_err(f"ExecuteCommand({cmd})=False [strategy3]"))
-                    break
-            else:
-                return True, "setvars_strategy3_ok"
-        except Exception as exc:
-            errors.append(_err(f"Strategy3 exception: {exc}"))
-
-        # Strategy 4: ExecuteCommand for all bare-name assignments with "=" fallback.
-        try:
-            cmds = [
-                f'angleColumn = {int(self.cfg.angle_col)};',
-                f'velColumn = {int(self.cfg.vel_col)};',
-                f'accColumn = {int(self.cfg.acc_col)};',
-                f'profileFile = "{esc_profile}";',
-                f'tableName = "{esc_table}";',
-            ]
-            for cmd in cmds:
-                if not self.dymola.ExecuteCommand(cmd):
-                    errors.append(_err(f"ExecuteCommand({cmd})=False [strategy4]"))
-                    break
-            else:
-                return True, "setvars_strategy4_ok"
-        except Exception as exc:
-            errors.append(_err(f"Strategy4 exception: {exc}"))
-
-        # Strategy 5: infer active instance prefix from dsin/dsfinal and assign
-        # `<instance>.param` (instance qualification, not class qualification).
-        try:
-            candidates = self._collect_profile_prefix_candidates_from_dsin()
-            errors.append(f"strategy5 candidates={candidates}")
-            prefix = candidates[0] if candidates else None
-            if prefix:
-                # Prefix candidates are usually block instances (e.g. `prof`),
-                # so string path parameter is often `fileName`, not `profileFile`.
-                if not self.dymola.SetVariable(f"{prefix}.fileName", suffix_rel):
-                    errors.append(_err(f"SetVariable({prefix}.fileName)=False [strategy5]"))
-                elif not self.dymola.SetVariable(f"{prefix}.tableName", self.cfg.table_name):
-                    errors.append(_err(f"SetVariable({prefix}.tableName)=False [strategy5]"))
-                elif not self.dymola.SetVariable(f"{prefix}.angleColumn", int(self.cfg.angle_col)):
-                    errors.append(_err(f"SetVariable({prefix}.angleColumn)=False [strategy5]"))
-                elif not self.dymola.SetVariable(f"{prefix}.velColumn", int(self.cfg.vel_col)):
-                    errors.append(_err(f"SetVariable({prefix}.velColumn)=False [strategy5]"))
-                elif not self.dymola.SetVariable(f"{prefix}.accColumn", int(self.cfg.acc_col)):
-                    errors.append(_err(f"SetVariable({prefix}.accColumn)=False [strategy5]"))
-                else:
-                    return True, f"setvars_strategy5_ok prefix={prefix}"
-            else:
-                errors.append("strategy5: no dsin prefix candidate found")
-        except Exception as exc:
-            errors.append(_err(f"Strategy5 exception: {exc}"))
-
-        return False, "\n".join(errors)
+        _ = suffix_rel  # Intentional: strings are passed in model_call modifiers at simulate time.
+        hints = self._collect_initial_name_hints()
+        use_prefixed = any("prof.angleColumn" in h for h in hints)
+        if use_prefixed:
+            return (
+                ["prof.angleColumn", "prof.velColumn", "prof.accColumn"],
+                [float(self.cfg.angle_col), float(self.cfg.vel_col), float(self.cfg.acc_col)],
+                "numeric_rebind_via_simulateExtendedModel using prefixed names",
+            )
+        return (
+            ["angleColumn", "velColumn", "accColumn"],
+            [float(self.cfg.angle_col), float(self.cfg.vel_col), float(self.cfg.acc_col)],
+            "numeric_rebind_via_simulateExtendedModel using bare names",
+        )
 
     def _collect_profile_prefix_candidates_from_dsin(self) -> list[str]:
         """Collect possible active instance prefixes from dsin/dsfinal profile params."""
@@ -721,7 +631,6 @@ class DymolaBatchRunner:
         self,
         job: BranchNode,
         parent_result_file: str,
-        parent_generated_profile_mat: str | None = None,
     ) -> tuple[bool, dict]:
         suffix_mat = self._write_suffix_profile_mat(job)
         print(
@@ -772,38 +681,9 @@ class DymolaBatchRunner:
         print(f"[BRANCH] inferred_prefix_candidates={candidates}")
         can_rebind = self._can_runtime_rebind_profile_params()
         print(f"[BRANCH] runtime_rebind_available={can_rebind}")
-        vars_ok, vars_detail = self._set_profile_variables_for_continuation(suffix_rel)
-        if not can_rebind and vars_ok:
-            vars_detail += " (succeeded despite missing dsin/dsfinal string hints)"
-        elif not can_rebind and not vars_ok:
-            vars_detail = "runtime rebind unavailable; setvars attempt failed\n" + vars_detail
+        initial_names, initial_values, vars_detail = self._set_profile_variables_for_continuation(suffix_rel)
+        print(f"[BRANCH] continuation_rebind_plan={vars_detail}")
         effective_profile_mat = str(suffix_mat)
-        if not vars_ok:
-            (self.logs_abs / f"{job.root_id}__{job.profile_id}__setvars_error.log").write_text(
-                vars_detail + "\n\n" + str(self.dymola.getLastErrorLog()),
-                encoding="utf-8",
-            )
-            print(f"[BRANCH-WARN] {job.root_id}/{job.profile_id} setvars detail: {vars_detail.splitlines()[-1] if vars_detail else 'none'}")
-            # Fallback: if parameters are locked/unavailable, overwrite the
-            # profile MAT currently bound in the active context (parent's MAT).
-            if parent_generated_profile_mat:
-                fallback_target = Path(parent_generated_profile_mat)
-                try:
-                    shutil.copy2(suffix_mat, fallback_target)
-                    effective_profile_mat = str(fallback_target)
-                    print(f"[BRANCH] setvars fallback: copied suffix MAT -> {fallback_target.name}")
-                except Exception as exc:
-                    print(f"[BRANCH-FAIL] MAT-copy fallback failed: {exc}")
-                    return False, {
-                        "status": "FAIL_SET_PROFILE_VARIABLES",
-                        "generated_profile_mat": str(suffix_mat),
-                    }
-            else:
-                print(f"[BRANCH-FAIL] no parent_generated_profile_mat available for fallback")
-                return False, {
-                    "status": "FAIL_SET_PROFILE_VARIABLES",
-                    "generated_profile_mat": str(suffix_mat),
-                }
 
         if self.cfg.keep_dsfinal_for_debug:
             dsin = self.out_dir_abs / "dsin.txt"
@@ -811,12 +691,19 @@ class DymolaBatchRunner:
                 shutil.copy2(dsin, self.logs_abs / f"{job.root_id}__{job.profile_id}__before_continue_dsin.txt")
 
         result_base = f"{job.root_id}__{job.profile_id}__branch"
-        ok, t_sim, result_file = self._simulate_continued_default_model(
+        ok, t_sim, result_file, sim_attempt = self._simulate_continued_default_model(
+            profile_mat_path=suffix_mat,
             start_time=float(job.branch_time),
             stop_time=float(job.stop_time),
             result_base=result_base,
+            initial_names=initial_names,
+            initial_values=initial_values,
         )
         if not ok:
+            (self.logs_abs / f"{job.root_id}__{job.profile_id}__setvars_error.log").write_text(
+                f"Continuation attempt failed: {sim_attempt}\n\n{self.dymola.getLastErrorLog()}",
+                encoding="utf-8",
+            )
             return False, {"status": "FAIL_SIMULATE_BRANCH", "simulate_s": t_sim, "result_base": result_base, "generated_profile_mat": str(suffix_mat)}
 
         return True, {
@@ -916,7 +803,6 @@ class DymolaBatchRunner:
             ok, rec = self._simulate_branch_job(
                 job,
                 result_by_key[parent_key],
-                parent_generated_profile_mat=generated_profile_by_key.get(parent_key),
             )
             if not ok:
                 self._log_branch_failure(job, rec.get("status", "FAIL_BRANCH"))
