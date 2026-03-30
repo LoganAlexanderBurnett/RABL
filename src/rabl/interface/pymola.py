@@ -408,6 +408,22 @@ class DymolaBatchRunner:
         # Prefer shorter prefixes first; these are usually active instance names.
         return sorted(candidates, key=lambda s: (s.count("."), len(s)))
 
+    def _can_runtime_rebind_profile_params(self) -> bool:
+        """
+        Heuristic check: do dsin/dsfinal expose profile path params in
+        initialName tables? If not, SetVariable/ExecuteCommand rebinding is
+        unlikely to work in this translated context.
+        """
+        probes = ("profileFile", "fileName", ".fileName", ".profileFile")
+        for name in ("dsin.txt", "dsfinal.txt"):
+            p = self.out_dir_abs / name
+            if not p.exists():
+                continue
+            text = p.read_text(encoding="utf-8", errors="ignore")
+            if any(tok in text for tok in probes):
+                return True
+        return False
+
     def _read_result_columns(self, result_file: str, stop_time: float) -> tuple[list[np.ndarray], float]:
         t0 = time()
         rows = self.dymola.readTrajectorySize(result_file)
@@ -672,7 +688,12 @@ class DymolaBatchRunner:
             encoding="utf-8",
         )
         print(f"[BRANCH] inferred_prefix_candidates={candidates}")
-        vars_ok, vars_detail = self._set_profile_variables_for_continuation(suffix_rel)
+        can_rebind = self._can_runtime_rebind_profile_params()
+        print(f"[BRANCH] runtime_rebind_available={can_rebind}")
+        vars_ok = False
+        vars_detail = "runtime rebind unavailable; bypassed setvars"
+        if can_rebind:
+            vars_ok, vars_detail = self._set_profile_variables_for_continuation(suffix_rel)
         effective_profile_mat = str(suffix_mat)
         if not vars_ok:
             (self.logs_abs / f"{job.root_id}__{job.profile_id}__setvars_error.log").write_text(
