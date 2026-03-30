@@ -557,6 +557,15 @@ class DymolaBatchRunner:
         if parent_generated_profile_mat:
             fallback_target = Path(parent_generated_profile_mat)
             try:
+                parent_input_backup = self.generated_profiles_abs / (
+                    f"{job.root_id}__{job.profile_id}__parent_input_before_rebind.mat"
+                )
+                if fallback_target.exists():
+                    shutil.copy2(fallback_target, parent_input_backup)
+                    print(
+                        f"[BRANCH] preserved prior parent-bound input MAT: "
+                        f"{fallback_target.name} -> {parent_input_backup.name}"
+                    )
                 shutil.copy2(child_full_mat, fallback_target)
                 effective_profile_mat = str(fallback_target)
                 print(f"[BRANCH] profile rebind via MAT copy: {child_full_mat.name} -> {fallback_target.name}")
