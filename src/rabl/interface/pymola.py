@@ -290,73 +290,54 @@ class DymolaBatchRunner:
             except Exception:
                 return tag
 
-        def _set_variable(name: str, value) -> bool:
-            """
-            DymolaInterface.SetVariable raises on failure and returns None on success.
-            """
-            try:
-                self.dymola.SetVariable(name, value)
-                return True
-            except Exception as exc:
-                errors.append(_err(f"SetVariable({name}) exception: {exc}"))
-                return False
+        def _set_param_value(name: str, value: str) -> bool:
+            esc_value = value.replace('"', '\\"')
+            cmd = f'setParameterValue("{name}", "{esc_value}")'
+            ok = self.dymola.ExecuteCommand(cmd)
+            if not ok:
+                errors.append(_err(f"ExecuteCommand({cmd})=False [strategy0]"))
+            return bool(ok)
 
-        def _set_parameter_value(name: str, value) -> bool:
-            """
-            Prefer Dymola parameter API for parameter rebinding when available.
-            """
-            api = None
-            if hasattr(self.dymola, "setParameterValue"):
-                api = getattr(self.dymola, "setParameterValue")
-            elif hasattr(self.dymola, "SetParameterValue"):
-                api = getattr(self.dymola, "SetParameterValue")
-            if api is None:
-                errors.append("setParameterValue API not available on this DymolaInterface build")
-                return False
-            try:
-                api(name, value)
-                return True
-            except Exception as exc:
-                errors.append(_err(f"setParameterValue({name}) exception: {exc}"))
-                return False
-
-        # Strategy 0: use setParameterValue API for all profile-related params.
+        # Strategy 0: use Dymola parameter setter command.
+        # This is often more reliable than direct assignment for parameters.
         try:
             candidates = self._collect_profile_prefix_candidates_from_dsin()
-            param_sets: list[tuple[str, object]] = [
-                ("profileFile", suffix_rel),
+            param_sets = [
+                ("profileFile", self._to_dymola_path(suffix_rel)),
                 ("tableName", self.cfg.table_name),
-                ("angleColumn", int(self.cfg.angle_col)),
-                ("velColumn", int(self.cfg.vel_col)),
-                ("accColumn", int(self.cfg.acc_col)),
+                ("angleColumn", str(int(self.cfg.angle_col))),
+                ("velColumn", str(int(self.cfg.vel_col))),
+                ("accColumn", str(int(self.cfg.acc_col))),
             ]
+            # Add block-instance flavored names (e.g. prof.fileName).
             for c in candidates:
                 param_sets.extend([
-                    (f"{c}.fileName", suffix_rel),
+                    (f"{c}.fileName", self._to_dymola_path(suffix_rel)),
                     (f"{c}.tableName", self.cfg.table_name),
-                    (f"{c}.angleColumn", int(self.cfg.angle_col)),
-                    (f"{c}.velColumn", int(self.cfg.vel_col)),
-                    (f"{c}.accColumn", int(self.cfg.acc_col)),
+                    (f"{c}.angleColumn", str(int(self.cfg.angle_col))),
+                    (f"{c}.velColumn", str(int(self.cfg.vel_col))),
+                    (f"{c}.accColumn", str(int(self.cfg.acc_col))),
                 ])
-            ok = True
-            for n, v in param_sets:
-                if not _set_parameter_value(n, v):
-                    ok = False
-            if ok:
-                return True, "setvars_strategy0_setParameterValue_ok"
+
+            for p, v in param_sets:
+                if _set_param_value(p, v):
+                    return True, f"setvars_strategy0_ok param={p}"
         except Exception as exc:
-            errors.append(_err(f"setParameterValue strategy exception: {exc}"))
+            errors.append(_err(f"Strategy0 exception: {exc}"))
 
         # Strategy 1: SetVariable for all parameters.
         try:
-            ok = (
-                _set_variable("angleColumn", int(self.cfg.angle_col))
-                and _set_variable("velColumn", int(self.cfg.vel_col))
-                and _set_variable("accColumn", int(self.cfg.acc_col))
-                and _set_variable("profileFile", suffix_rel)
-                and _set_variable("tableName", self.cfg.table_name)
-            )
-            if ok:
+            if not self.dymola.SetVariable("angleColumn", int(self.cfg.angle_col)):
+                errors.append(_err("SetVariable(angleColumn)=False"))
+            elif not self.dymola.SetVariable("velColumn", int(self.cfg.vel_col)):
+                errors.append(_err("SetVariable(velColumn)=False"))
+            elif not self.dymola.SetVariable("accColumn", int(self.cfg.acc_col)):
+                errors.append(_err("SetVariable(accColumn)=False"))
+            elif not self.dymola.SetVariable("profileFile", suffix_rel):
+                errors.append(_err("SetVariable(profileFile)=False"))
+            elif not self.dymola.SetVariable("tableName", self.cfg.table_name):
+                errors.append(_err("SetVariable(tableName)=False"))
+            else:
                 return True, "setvars_all_ok"
         except Exception as exc:
             errors.append(_err(f"SetVariable strategy exception: {exc}"))
@@ -371,12 +352,12 @@ class DymolaBatchRunner:
                 errors.append(_err("ExecuteCommand(profileFile := ...)=False"))
             elif not self.dymola.ExecuteCommand(f'tableName := "{esc_table}";'):
                 errors.append(_err("ExecuteCommand(tableName := ...)=False"))
-            elif not _set_variable("angleColumn", int(self.cfg.angle_col)):
-                pass
-            elif not _set_variable("velColumn", int(self.cfg.vel_col)):
-                pass
-            elif not _set_variable("accColumn", int(self.cfg.acc_col)):
-                pass
+            elif not self.dymola.SetVariable("angleColumn", int(self.cfg.angle_col)):
+                errors.append(_err("SetVariable(angleColumn)=False [strategy2]"))
+            elif not self.dymola.SetVariable("velColumn", int(self.cfg.vel_col)):
+                errors.append(_err("SetVariable(velColumn)=False [strategy2]"))
+            elif not self.dymola.SetVariable("accColumn", int(self.cfg.acc_col)):
+                errors.append(_err("SetVariable(accColumn)=False [strategy2]"))
             else:
                 return True, "setvars_strategy2_ok"
         except Exception as exc:
@@ -427,14 +408,17 @@ class DymolaBatchRunner:
             if prefix:
                 # Prefix candidates are usually block instances (e.g. `prof`),
                 # so string path parameter is often `fileName`, not `profileFile`.
-                ok = (
-                    _set_variable(f"{prefix}.fileName", suffix_rel)
-                    and _set_variable(f"{prefix}.tableName", self.cfg.table_name)
-                    and _set_variable(f"{prefix}.angleColumn", int(self.cfg.angle_col))
-                    and _set_variable(f"{prefix}.velColumn", int(self.cfg.vel_col))
-                    and _set_variable(f"{prefix}.accColumn", int(self.cfg.acc_col))
-                )
-                if ok:
+                if not self.dymola.SetVariable(f"{prefix}.fileName", suffix_rel):
+                    errors.append(_err(f"SetVariable({prefix}.fileName)=False [strategy5]"))
+                elif not self.dymola.SetVariable(f"{prefix}.tableName", self.cfg.table_name):
+                    errors.append(_err(f"SetVariable({prefix}.tableName)=False [strategy5]"))
+                elif not self.dymola.SetVariable(f"{prefix}.angleColumn", int(self.cfg.angle_col)):
+                    errors.append(_err(f"SetVariable({prefix}.angleColumn)=False [strategy5]"))
+                elif not self.dymola.SetVariable(f"{prefix}.velColumn", int(self.cfg.vel_col)):
+                    errors.append(_err(f"SetVariable({prefix}.velColumn)=False [strategy5]"))
+                elif not self.dymola.SetVariable(f"{prefix}.accColumn", int(self.cfg.acc_col)):
+                    errors.append(_err(f"SetVariable({prefix}.accColumn)=False [strategy5]"))
+                else:
                     return True, f"setvars_strategy5_ok prefix={prefix}"
             else:
                 errors.append("strategy5: no dsin prefix candidate found")
