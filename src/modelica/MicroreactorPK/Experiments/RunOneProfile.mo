@@ -12,8 +12,8 @@ model RunOneProfile
   parameter String profileFile = ""
     annotation(Evaluate=false);
   parameter String tableName   = "profile"
-    annotation(Evaluate=false)
-    "Matrix variable name in MAT-file";
+    "Matrix variable name in MAT-file"
+    annotation(Evaluate=false);
   parameter Integer angleColumn(min=2) = 2
     annotation(Evaluate=false);
   parameter Integer velColumn(min=2) = 3

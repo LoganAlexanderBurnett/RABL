@@ -18,8 +18,8 @@ block DrumProfileFromFile
   // Path to the MAT-file containing the table (Matlab v4).
   // Leave empty by default and set from Python.
   parameter String fileName = ""
-    annotation(Evaluate=false)
-    "Path to .mat file containing profile table";
+    "Path to .mat file containing profile table"
+    annotation(Evaluate=false);
 
   // Name of the matrix variable inside the MAT-file (e.g., "profile").
   parameter String tableName = "profile"
@@ -27,8 +27,8 @@ block DrumProfileFromFile
 
   // Which column contains the drum angle. Column 1 is time.
   parameter Integer angleColumn(min=2) = 2
-    annotation(Evaluate=false)
-    "Column index for angle";
+    "Column index for angle"
+    annotation(Evaluate=false);
   parameter Integer velColumn(min=2) = 3
     annotation(Evaluate=false);
   parameter Integer accColumn(min=2) = 4
