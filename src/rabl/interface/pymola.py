@@ -266,41 +266,76 @@ class DymolaBatchRunner:
         result_file = str(self.dymola.getLastResultFileName()) if ok else ""
         return bool(ok), t_sim, result_file
 
-    def _set_profile_variables_for_continuation(self, suffix_rel: str) -> bool:
+    def _set_profile_variables_for_continuation(self, suffix_rel: str) -> tuple[bool, str]:
         """
         Update profile-related parameters on active/default model context.
         Only bare names are used; if string SetVariable calls fail, fall back
         to ExecuteCommand for strings.
         """
+        errors: list[str] = []
+
+        def _err(tag: str) -> str:
+            try:
+                return f"{tag}: {self.dymola.getLastErrorLog()}"
+            except Exception:
+                return tag
+
+        # Strategy 1: SetVariable for all parameters.
         try:
             if not self.dymola.SetVariable("angleColumn", int(self.cfg.angle_col)):
-                return False
-            if not self.dymola.SetVariable("velColumn", int(self.cfg.vel_col)):
-                return False
-            if not self.dymola.SetVariable("accColumn", int(self.cfg.acc_col)):
-                return False
-            if not self.dymola.SetVariable("profileFile", suffix_rel):
-                raise RuntimeError("SetVariable(profileFile) returned False")
-            if not self.dymola.SetVariable("tableName", self.cfg.table_name):
-                raise RuntimeError("SetVariable(tableName) returned False")
-            return True
-        except Exception:
-            try:
-                esc_profile = suffix_rel.replace("\\", "/").replace('"', '\\"')
-                esc_table = self.cfg.table_name.replace('"', '\\"')
-                if not self.dymola.ExecuteCommand(f'profileFile="{esc_profile}"'):
-                    return False
-                if not self.dymola.ExecuteCommand(f'tableName="{esc_table}"'):
-                    return False
-                if not self.dymola.SetVariable("angleColumn", int(self.cfg.angle_col)):
-                    return False
-                if not self.dymola.SetVariable("velColumn", int(self.cfg.vel_col)):
-                    return False
-                if not self.dymola.SetVariable("accColumn", int(self.cfg.acc_col)):
-                    return False
-                return True
-            except Exception:
-                return False
+                errors.append(_err("SetVariable(angleColumn)=False"))
+            elif not self.dymola.SetVariable("velColumn", int(self.cfg.vel_col)):
+                errors.append(_err("SetVariable(velColumn)=False"))
+            elif not self.dymola.SetVariable("accColumn", int(self.cfg.acc_col)):
+                errors.append(_err("SetVariable(accColumn)=False"))
+            elif not self.dymola.SetVariable("profileFile", suffix_rel):
+                errors.append(_err("SetVariable(profileFile)=False"))
+            elif not self.dymola.SetVariable("tableName", self.cfg.table_name):
+                errors.append(_err("SetVariable(tableName)=False"))
+            else:
+                return True, "setvars_all_ok"
+        except Exception as exc:
+            errors.append(_err(f"SetVariable strategy exception: {exc}"))
+
+        esc_profile = suffix_rel.replace("\\", "/").replace('"', '\\"')
+        esc_table = self.cfg.table_name.replace('"', '\\"')
+
+        # Strategy 2: ExecuteCommand for strings + SetVariable for ints.
+        try:
+            if not self.dymola.ExecuteCommand(f'profileFile="{esc_profile}"'):
+                errors.append(_err("ExecuteCommand(profileFile)=False"))
+            elif not self.dymola.ExecuteCommand(f'tableName="{esc_table}"'):
+                errors.append(_err("ExecuteCommand(tableName)=False"))
+            elif not self.dymola.SetVariable("angleColumn", int(self.cfg.angle_col)):
+                errors.append(_err("SetVariable(angleColumn)=False [strategy2]"))
+            elif not self.dymola.SetVariable("velColumn", int(self.cfg.vel_col)):
+                errors.append(_err("SetVariable(velColumn)=False [strategy2]"))
+            elif not self.dymola.SetVariable("accColumn", int(self.cfg.acc_col)):
+                errors.append(_err("SetVariable(accColumn)=False [strategy2]"))
+            else:
+                return True, "setvars_strategy2_ok"
+        except Exception as exc:
+            errors.append(_err(f"Strategy2 exception: {exc}"))
+
+        # Strategy 3: ExecuteCommand for all bare-name assignments.
+        try:
+            cmds = [
+                f'angleColumn={int(self.cfg.angle_col)}',
+                f'velColumn={int(self.cfg.vel_col)}',
+                f'accColumn={int(self.cfg.acc_col)}',
+                f'profileFile="{esc_profile}"',
+                f'tableName="{esc_table}"',
+            ]
+            for cmd in cmds:
+                if not self.dymola.ExecuteCommand(cmd):
+                    errors.append(_err(f"ExecuteCommand({cmd})=False [strategy3]"))
+                    break
+            else:
+                return True, "setvars_strategy3_ok"
+        except Exception as exc:
+            errors.append(_err(f"Strategy3 exception: {exc}"))
+
+        return False, "\n".join(errors)
 
     def _read_result_columns(self, result_file: str, stop_time: float) -> tuple[list[np.ndarray], float]:
         t0 = time()
@@ -533,12 +568,13 @@ class DymolaBatchRunner:
                 shutil.copy2(dsin, self.logs_abs / f"{job.root_id}__{job.profile_id}__after_import_dsin.txt")
 
         suffix_rel = os.path.relpath(suffix_mat, self.out_dir_abs).replace("\\", "/")
-        vars_ok = self._set_profile_variables_for_continuation(suffix_rel)
+        vars_ok, vars_detail = self._set_profile_variables_for_continuation(suffix_rel)
         if not vars_ok:
             (self.logs_abs / f"{job.root_id}__{job.profile_id}__setvars_error.log").write_text(
-                str(self.dymola.getLastErrorLog()),
+                vars_detail + "\n\n" + str(self.dymola.getLastErrorLog()),
                 encoding="utf-8",
             )
+            print(f"[BRANCH-FAIL] {job.root_id}/{job.profile_id} setvars detail: {vars_detail.splitlines()[-1] if vars_detail else 'none'}")
             return False, {
                 "status": "FAIL_SET_PROFILE_VARIABLES",
                 "generated_profile_mat": str(suffix_mat),
