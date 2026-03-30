@@ -301,6 +301,52 @@ class DymolaBatchRunner:
                 errors.append(_err(f"SetVariable({name}) exception: {exc}"))
                 return False
 
+        def _set_parameter_value(name: str, value) -> bool:
+            """
+            Prefer Dymola parameter API for parameter rebinding when available.
+            """
+            api = None
+            if hasattr(self.dymola, "setParameterValue"):
+                api = getattr(self.dymola, "setParameterValue")
+            elif hasattr(self.dymola, "SetParameterValue"):
+                api = getattr(self.dymola, "SetParameterValue")
+            if api is None:
+                errors.append("setParameterValue API not available on this DymolaInterface build")
+                return False
+            try:
+                api(name, value)
+                return True
+            except Exception as exc:
+                errors.append(_err(f"setParameterValue({name}) exception: {exc}"))
+                return False
+
+        # Strategy 0: use setParameterValue API for all profile-related params.
+        try:
+            candidates = self._collect_profile_prefix_candidates_from_dsin()
+            param_sets: list[tuple[str, object]] = [
+                ("profileFile", suffix_rel),
+                ("tableName", self.cfg.table_name),
+                ("angleColumn", int(self.cfg.angle_col)),
+                ("velColumn", int(self.cfg.vel_col)),
+                ("accColumn", int(self.cfg.acc_col)),
+            ]
+            for c in candidates:
+                param_sets.extend([
+                    (f"{c}.fileName", suffix_rel),
+                    (f"{c}.tableName", self.cfg.table_name),
+                    (f"{c}.angleColumn", int(self.cfg.angle_col)),
+                    (f"{c}.velColumn", int(self.cfg.vel_col)),
+                    (f"{c}.accColumn", int(self.cfg.acc_col)),
+                ])
+            ok = True
+            for n, v in param_sets:
+                if not _set_parameter_value(n, v):
+                    ok = False
+            if ok:
+                return True, "setvars_strategy0_setParameterValue_ok"
+        except Exception as exc:
+            errors.append(_err(f"setParameterValue strategy exception: {exc}"))
+
         # Strategy 1: SetVariable for all parameters.
         try:
             ok = (
