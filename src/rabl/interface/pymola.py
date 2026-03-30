@@ -370,16 +370,18 @@ class DymolaBatchRunner:
             errors.append(f"strategy5 candidates={candidates}")
             prefix = candidates[0] if candidates else None
             if prefix:
-                if not self.dymola.SetVariable(f"{prefix}.angleColumn", int(self.cfg.angle_col)):
+                # Prefix candidates are usually block instances (e.g. `prof`),
+                # so string path parameter is often `fileName`, not `profileFile`.
+                if not self.dymola.SetVariable(f"{prefix}.fileName", suffix_rel):
+                    errors.append(_err(f"SetVariable({prefix}.fileName)=False [strategy5]"))
+                elif not self.dymola.SetVariable(f"{prefix}.tableName", self.cfg.table_name):
+                    errors.append(_err(f"SetVariable({prefix}.tableName)=False [strategy5]"))
+                elif not self.dymola.SetVariable(f"{prefix}.angleColumn", int(self.cfg.angle_col)):
                     errors.append(_err(f"SetVariable({prefix}.angleColumn)=False [strategy5]"))
                 elif not self.dymola.SetVariable(f"{prefix}.velColumn", int(self.cfg.vel_col)):
                     errors.append(_err(f"SetVariable({prefix}.velColumn)=False [strategy5]"))
                 elif not self.dymola.SetVariable(f"{prefix}.accColumn", int(self.cfg.acc_col)):
                     errors.append(_err(f"SetVariable({prefix}.accColumn)=False [strategy5]"))
-                elif not self.dymola.SetVariable(f"{prefix}.profileFile", suffix_rel):
-                    errors.append(_err(f"SetVariable({prefix}.profileFile)=False [strategy5]"))
-                elif not self.dymola.SetVariable(f"{prefix}.tableName", self.cfg.table_name):
-                    errors.append(_err(f"SetVariable({prefix}.tableName)=False [strategy5]"))
                 else:
                     return True, f"setvars_strategy5_ok prefix={prefix}"
             else:
