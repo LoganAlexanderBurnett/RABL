@@ -677,7 +677,7 @@ class DymolaBatchRunner:
                 vars_detail + "\n\n" + str(self.dymola.getLastErrorLog()),
                 encoding="utf-8",
             )
-            print(f"[BRANCH-FAIL] {job.root_id}/{job.profile_id} setvars detail: {vars_detail.splitlines()[-1] if vars_detail else 'none'}")
+            print(f"[BRANCH-WARN] {job.root_id}/{job.profile_id} setvars detail: {vars_detail.splitlines()[-1] if vars_detail else 'none'}")
             # Fallback: if parameters are locked/unavailable, overwrite the
             # profile MAT currently bound in the active context (parent's MAT).
             if parent_generated_profile_mat:
@@ -693,6 +693,7 @@ class DymolaBatchRunner:
                         "generated_profile_mat": str(suffix_mat),
                     }
             else:
+                print(f"[BRANCH-FAIL] no parent_generated_profile_mat available for fallback")
                 return False, {
                     "status": "FAIL_SET_PROFILE_VARIABLES",
                     "generated_profile_mat": str(suffix_mat),
