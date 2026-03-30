@@ -102,8 +102,18 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
         dfs.append((p.stem, root_id, _read_results_csv(p)))
 
     root_ids = sorted({root_id for _, root_id, _ in dfs})
+    base_root_colors = [
+        "crimson",
+        "gold",
+        "black",
+    ]
     rng = np.random.default_rng()
-    root_colors = {root_id: (float(rng.random()), float(rng.random()), float(rng.random()), 1.0) for root_id in root_ids}
+    root_colors: dict[str, tuple[float, float, float, float] | str] = {}
+    for i, root_id in enumerate(root_ids):
+        if i < len(base_root_colors):
+            root_colors[root_id] = base_root_colors[i]
+        else:
+            root_colors[root_id] = (float(rng.random()), float(rng.random()), float(rng.random()), 1.0)
 
     rows = 3
     cols = 6
