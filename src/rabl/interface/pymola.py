@@ -566,11 +566,9 @@ class DymolaBatchRunner:
         savemat(str(out), {self.cfg.table_name: table})
         return out
 
-    def _write_suffix_profile_mat(self, job: BranchNode) -> Path:
-        assert job.branch_time is not None
-        mask = np.asarray(job.t >= job.branch_time, dtype=bool)
-        out = self.generated_profiles_abs / f"{job.root_id}__{job.profile_id}__suffix_from_{str(job.branch_time).replace('.', 'p')}.mat"
-        table = np.column_stack([job.t[mask], job.theta_deg[mask], job.v_deg_s[mask], job.a_deg_s2[mask]])
+    def _write_full_profile_mat(self, job: BranchNode) -> Path:
+        out = self.generated_profiles_abs / f"{job.root_id}__{job.profile_id}__full.mat"
+        table = np.column_stack([job.t, job.theta_deg, job.v_deg_s, job.a_deg_s2])
         savemat(str(out), {self.cfg.table_name: table})
         return out
 
@@ -588,20 +586,20 @@ class DymolaBatchRunner:
         parent_result_file: str,
         parent_generated_profile_mat: str | None = None,
     ) -> tuple[bool, dict]:
-        suffix_mat = self._write_suffix_profile_mat(job)
+        child_full_mat = self._write_full_profile_mat(job)
         print(
             f"[BRANCH] root={job.root_id} profile={job.profile_id} parent={job.parent_profile_id} "
-            f"branch_time={job.branch_time:.6f} suffix_mat={suffix_mat.name}"
+            f"branch_time={job.branch_time:.6f} child_profile_mat={child_full_mat.name}"
         )
         parent_path = Path(parent_result_file)
         if not parent_path.is_absolute():
             parent_path = self.out_dir_abs / parent_path
         parent_exists = parent_path.exists()
-        suffix_exists = suffix_mat.exists()
-        print(f"[BRANCH] parent_result_exists={parent_exists} suffix_mat_exists={suffix_exists}")
+        child_profile_exists = child_full_mat.exists()
+        print(f"[BRANCH] parent_result_exists={parent_exists} child_profile_mat_exists={child_profile_exists}")
         import_ok = self.dymola.importInitialResult(self._to_dymola_path(parent_path), float(job.branch_time))
         if not import_ok:
-            return False, {"status": "FAIL_IMPORT_INITIAL_RESULT", "generated_profile_mat": str(suffix_mat)}
+            return False, {"status": "FAIL_IMPORT_INITIAL_RESULT", "generated_profile_mat": str(child_full_mat)}
         print("[BRANCH] importInitialResult=OK")
 
         if self.cfg.keep_dsfinal_for_debug:
@@ -609,7 +607,7 @@ class DymolaBatchRunner:
             if dsin.exists():
                 shutil.copy2(dsin, self.logs_abs / f"{job.root_id}__{job.profile_id}__after_import_dsin.txt")
 
-        suffix_rel = os.path.relpath(suffix_mat, self.out_dir_abs).replace("\\", "/")
+        child_profile_rel = os.path.relpath(child_full_mat, self.out_dir_abs).replace("\\", "/")
         candidates = self._collect_profile_prefix_candidates_from_dsin()
         context_log = self.logs_abs / f"{job.root_id}__{job.profile_id}__branch_context.log"
         name_hints = self._collect_initial_name_hints()
@@ -621,9 +619,9 @@ class DymolaBatchRunner:
                 f"parent_result_file={parent_result_file}",
                 f"parent_result_path_resolved={parent_path}",
                 f"parent_result_exists={parent_exists}",
-                f"suffix_mat={suffix_mat}",
-                f"suffix_mat_exists={suffix_exists}",
-                f"suffix_rel={suffix_rel}",
+                f"child_profile_mat={child_full_mat}",
+                f"child_profile_mat_exists={child_profile_exists}",
+                f"child_profile_rel={child_profile_rel}",
                 f"branch_time={job.branch_time}",
                 f"inferred_prefix_candidates={candidates}",
                 f"initial_name_hints_count={len(name_hints)}",
@@ -637,24 +635,24 @@ class DymolaBatchRunner:
         print(f"[BRANCH] inferred_prefix_candidates={candidates}")
         can_rebind = self._can_runtime_rebind_profile_params()
         print(f"[BRANCH] runtime_rebind_available={can_rebind}")
-        effective_profile_mat = str(suffix_mat)
+        effective_profile_mat = str(child_full_mat)
 
         # Keep imported dynamic state (simulateModel("")) and rebind profile by
         # updating the already-bound parent profile MAT in-place.
         if parent_generated_profile_mat:
             fallback_target = Path(parent_generated_profile_mat)
             try:
-                shutil.copy2(suffix_mat, fallback_target)
+                shutil.copy2(child_full_mat, fallback_target)
                 effective_profile_mat = str(fallback_target)
-                print(f"[BRANCH] profile rebind via MAT copy: {suffix_mat.name} -> {fallback_target.name}")
+                print(f"[BRANCH] profile rebind via MAT copy: {child_full_mat.name} -> {fallback_target.name}")
             except Exception as exc:
                 (self.logs_abs / f"{job.root_id}__{job.profile_id}__setvars_error.log").write_text(
-                    f"MAT-copy rebind failed: copy2({suffix_mat}, {fallback_target})\n\n{exc}",
+                    f"MAT-copy rebind failed: copy2({child_full_mat}, {fallback_target})\n\n{exc}",
                     encoding="utf-8",
                 )
                 return False, {
                     "status": "FAIL_SET_PROFILE_VARIABLES",
-                    "generated_profile_mat": str(suffix_mat),
+                    "generated_profile_mat": str(child_full_mat),
                 }
         else:
             (self.logs_abs / f"{job.root_id}__{job.profile_id}__setvars_error.log").write_text(
@@ -663,7 +661,7 @@ class DymolaBatchRunner:
             )
             return False, {
                 "status": "FAIL_SET_PROFILE_VARIABLES",
-                "generated_profile_mat": str(suffix_mat),
+                "generated_profile_mat": str(child_full_mat),
             }
 
         if self.cfg.keep_dsfinal_for_debug:
@@ -682,7 +680,7 @@ class DymolaBatchRunner:
                 f"Continuation attempt failed: {sim_attempt}\n\n{self.dymola.getLastErrorLog()}",
                 encoding="utf-8",
             )
-            return False, {"status": "FAIL_SIMULATE_BRANCH", "simulate_s": t_sim, "result_base": result_base, "generated_profile_mat": str(suffix_mat)}
+            return False, {"status": "FAIL_SIMULATE_BRANCH", "simulate_s": t_sim, "result_base": result_base, "generated_profile_mat": str(child_full_mat)}
 
         return True, {
             "status": "OK", "simulate_s": t_sim, "result_base": result_base,
