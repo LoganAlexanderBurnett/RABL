@@ -1,0 +1,8 @@
+parent_result_file=root_001__profile_000008__branch.mat
+parent_result_path_resolved=C:\Users\Logan\Desktop\mit_coursework\eVinci\GitHub\RABL\tests\dymola_with_branches_Nr2Nk3Nb2\root_001__profile_000008__branch.mat
+parent_result_exists=True
+child_profile_mat=C:\Users\Logan\Desktop\mit_coursework\eVinci\GitHub\RABL\tests\dymola_with_branches_Nr2Nk3Nb2\generated_profiles\root_001__profile_000025__full.mat
+child_profile_mat_exists=True
+child_profile_rel=generated_profiles/root_001__profile_000025__full.mat
+branch_time=142.0
+profile_rebind_mode=mat_copy_only
