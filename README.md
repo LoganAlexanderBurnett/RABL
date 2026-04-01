@@ -11,7 +11,7 @@ RABL is a Python + Modelica workflow for microreactor transient studies. It comb
 
 ## Recursive Active Branch-Based Learning (RABL) flow
 
-![RABL workflow flowchart](misc/rabl_flow_horizontal.png)
+![RABL workflow flowchart](misc/rabl_flow_vertical.png)
 
 The flowchart summarizes the closed-loop RABL process used in this repository: generate initial control trajectories, evaluate them with the physics model, train an LSTM ensemble, then actively branch new trajectories where ensemble uncertainty dynamics indicate the most informative branch points. The newly branched set is fed back through the physics model and reused for retraining, iteratively improving predictive accuracy over challenging transients.
 
