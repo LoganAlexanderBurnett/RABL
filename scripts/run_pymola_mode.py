@@ -76,13 +76,9 @@ def _next_batch_dir(base_dir: Path) -> Path:
             max_idx = max(max_idx, int(match.group(1)))
 
     next_idx = max_idx + 1
-    while True:
-        candidate = base_dir / f"batch_{next_idx:04d}"
-        try:
-            candidate.mkdir(parents=False, exist_ok=False)
-            return candidate
-        except FileExistsError:
-            next_idx += 1
+    candidate = base_dir / f"batch_{next_idx:04d}"
+    candidate.mkdir(parents=False, exist_ok=False)
+    return candidate
 
 
 def _resolve_output_dir(args: argparse.Namespace) -> str:
