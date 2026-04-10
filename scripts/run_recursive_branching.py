@@ -16,6 +16,7 @@ import importlib.util
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from time import perf_counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -652,6 +653,16 @@ def _resolve_output_dir(args: argparse.Namespace) -> Path:
     print(f"[run-mode=production] Created output directory: {out_dir}")
     return out_dir
 
+
+def _resolve_seed(args: argparse.Namespace) -> int:
+    if args.run_mode == "production":
+        # Use UTC date-time with microsecond precision to produce a unique seed
+        # for each production invocation.
+        seed = int(datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f"))
+        print(f"[run-mode=production] Using timestamp-derived seed: {seed}")
+        return seed
+    return int(args.seed)
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run recursive branching as a standalone script.")
     parser.add_argument("--model-path", type=Path, nargs="+", required=True, help="One or more .pt ensemble checkpoints.")
@@ -711,7 +722,7 @@ def main() -> None:
         Nb=args.Nb,
         Nr=args.Nr,
         baseline_angle_deg=args.baseline_angle_deg,
-        seed=args.seed,
+        seed=_resolve_seed(args),
         visualize=bool(args.visualize),
         lookback=args.lookback,
         n_features=args.n_features,
