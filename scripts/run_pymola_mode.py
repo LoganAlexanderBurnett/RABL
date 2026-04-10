@@ -12,6 +12,7 @@ python scripts/run_pymola_mode.py --mode branched_hdf5 --h5 tests/recursive_bran
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 from pathlib import Path
@@ -19,6 +20,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.io import loadmat
 
 try:
     # Import directly from pymola so dependency/import errors surface clearly.
@@ -134,6 +136,55 @@ def _copy_stitched_results_to_batch_root_with_global_numbering(out_dir: Path, si
     print(f"[run-mode=production] Copied {copied} stitched result pairs to batch root with global profile numbering.")
 
 
+def _build_branched_h5_from_mat_batch(batch_dir: Path, output_h5: Path) -> Path:
+    try:
+        import h5py
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Building branched HDF5 from MAT batch requires h5py.") from exc
+
+    manifest_path = batch_dir / "branched_profiles_manifest.json"
+    if not manifest_path.exists():
+        raise SystemExit(
+            f"Missing branched manifest in MAT batch directory: {manifest_path}. "
+            "Expected run_recursive_branching.py output."
+        )
+
+    entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(entries, list) or not entries:
+        raise SystemExit(f"Invalid or empty branched manifest: {manifest_path}")
+
+    output_h5.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(output_h5, "w") as h5f:
+        for entry in entries:
+            root_id = str(entry["root_group_name"])
+            profile_id = str(entry["profile_id"])
+            mat_path = batch_dir / str(entry["mat_file"])
+            if not mat_path.exists():
+                raise SystemExit(f"Manifest-referenced MAT file not found: {mat_path}")
+
+            m = loadmat(str(mat_path))
+            if "profile" not in m:
+                raise SystemExit(f"MAT file missing 'profile' table: {mat_path}")
+            table = np.asarray(m["profile"], dtype=float)
+            if table.ndim != 2 or table.shape[1] < 4:
+                raise SystemExit(f"Unexpected profile table shape in {mat_path}: {table.shape}")
+
+            root_grp = h5f.require_group(root_id)
+            grp = root_grp.create_group(profile_id)
+            grp.create_dataset("t", data=table[:, 0])
+            grp.create_dataset("theta_deg", data=table[:, 1])
+            grp.create_dataset("v_deg_s", data=table[:, 2])
+            grp.create_dataset("a_deg_s2", data=table[:, 3])
+            grp.attrs["parent_profile_id"] = str(entry.get("parent_profile_id", ""))
+            grp.attrs["created_in_interval"] = int(entry.get("created_in_interval", -1))
+            branch_time = entry.get("branch_time", None)
+            grp.attrs["branch_time"] = np.nan if branch_time is None else float(branch_time)
+            grp.attrs["branch_label"] = int(entry.get("branch_label", -1))
+
+    print(f"[branched_hdf5] Built input HDF5 from MAT batch manifest: {output_h5}")
+    return output_h5
+
+
 def _cleanup_production_artifacts(out_dir: Path) -> None:
     generated_profiles_dir = out_dir / "generated_profiles"
     if generated_profiles_dir.exists():
@@ -174,7 +225,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--profiles",
         default=None,
-        help="Directory of drum_profile_*.mat files (used only for --mode flat_mat).",
+        help=(
+            "For --mode flat_mat: directory of drum_profile_*.mat files. "
+            "For --mode branched_hdf5 without --h5: directory containing branched "
+            "drum_profile_*.mat files and branched_profiles_manifest.json."
+        ),
     )
     parser.add_argument("--output-interval", type=float, default=0.1, help="Dymola output interval in seconds.")
     parser.add_argument("--no-skip-existing", action="store_true", help="Disable skip-existing behavior.")
@@ -313,8 +368,13 @@ def main() -> None:
     profiles_dir = _repo_rel(args.profiles, "../../../outputs/variography_profiles/test_batch")
     h5_path = _repo_rel(args.h5, "../../../tests/recursive_branching/profiles.h5")
 
-    if args.mode == "branched_hdf5" and args.h5 is None:
-        raise SystemExit("--h5 is required when --mode=branched_hdf5")
+    if args.mode == "branched_hdf5":
+        if args.h5 is None:
+            if args.profiles is None:
+                raise SystemExit("--h5 is required when --mode=branched_hdf5 unless --profiles points to a MAT batch dir with branched_profiles_manifest.json")
+            mat_batch_dir = Path(_repo_rel(args.profiles, "../../../outputs/variography_profiles/test_batch"))
+            generated_h5 = Path(out_dir) / "profiles_from_mat_batch.h5"
+            h5_path = str(_build_branched_h5_from_mat_batch(mat_batch_dir, generated_h5))
 
     cfg = BatchConfig(
         profile_mode=args.mode,

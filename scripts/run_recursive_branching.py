@@ -609,6 +609,9 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
     results: list[RecursiveBranchingResult] = []
     multiple_roots = config.Nr > 1
     profiles_h5_path = config.output_dir / "profiles.h5"
+    manifest_path = config.output_dir / "branched_profiles_manifest.json"
+    if manifest_path.exists():
+        manifest_path.unlink()
     next_profile_index = _find_latest_variography_profile_index(REPO_ROOT / "outputs" / "variography_profiles") + 1
     for root_index in range(config.Nr):
         run_output_dir = config.output_dir / f"root_{root_index:03d}" if multiple_roots else config.output_dir
@@ -623,6 +626,12 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
         written_mats = save_profiles_as_mat_files(result, config.output_dir, start_index=next_profile_index)
         next_profile_index += len(written_mats)
         print(f"Saved {len(written_mats)} profile MAT files to {config.output_dir}")
+        _append_branched_profile_manifest(
+            manifest_path,
+            root_group_name=f"root_{root_index + 1:03d}",
+            result=result,
+            written_mats=written_mats,
+        )
 
     return results[0] if config.Nr == 1 else results
 
@@ -641,6 +650,41 @@ def _find_latest_variography_profile_index(variography_root: Path) -> int:
         if match:
             max_idx = max(max_idx, int(match.group(1)))
     return max_idx
+
+
+def _append_branched_profile_manifest(
+    manifest_path: Path,
+    *,
+    root_group_name: str,
+    result: RecursiveBranchingResult,
+    written_mats: list[Path],
+) -> None:
+    entries: list[dict]
+    if manifest_path.exists():
+        entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+    else:
+        entries = []
+
+    sorted_nodes = sorted(result.final_profiles.items())
+    if len(sorted_nodes) != len(written_mats):
+        raise RuntimeError(
+            "Manifest write mismatch: number of written MAT files does not equal number of profiles."
+        )
+
+    for (profile_id, node), mat_path in zip(sorted_nodes, written_mats, strict=True):
+        entries.append(
+            {
+                "root_group_name": root_group_name,
+                "profile_id": profile_id,
+                "parent_profile_id": "" if node.parent_profile_id is None else node.parent_profile_id,
+                "created_in_interval": -1 if node.created_in_interval is None else int(node.created_in_interval),
+                "branch_time": None if node.branch_time is None else float(node.branch_time),
+                "branch_label": -1 if node.branch_label is None else int(node.branch_label),
+                "mat_file": mat_path.name,
+            }
+        )
+
+    manifest_path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
 
 def _next_batch_dir(base_dir: Path) -> Path:
