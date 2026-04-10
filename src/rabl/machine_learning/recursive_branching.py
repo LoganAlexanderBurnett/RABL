@@ -251,7 +251,7 @@ def run_recursive_branching(
     intervals = partition_horizon(t_grid, n_intervals=n_intervals)
 
     rng = np.random.default_rng(seed)
-    profiles: dict[str, ProfileNode] = {"profile_000000": ProfileNode(profile_id="profile_000000", profile=root_profile)}
+    profiles: dict[str, ProfileNode] = {"profile_00000": ProfileNode(profile_id="profile_00000", profile=root_profile)}
     branch_events: list[BranchEvent] = []
     next_profile_idx = 1
 
@@ -306,7 +306,7 @@ def run_recursive_branching(
                 )
 
             for branch_label, child_profile in enumerate(child_profiles):
-                child_id = f"profile_{next_profile_idx:06d}"
+                child_id = f"profile_{next_profile_idx:05d}"
                 next_profile_idx += 1
 
                 profiles[child_id] = ProfileNode(

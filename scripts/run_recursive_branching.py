@@ -281,7 +281,7 @@ def _plot_root_profile(root_profile: DrumProfile, save_path: Path) -> None:
 
 def _plot_branched_profiles(result: RecursiveBranchingResult, save_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(10, 6))
-    root_id = "profile_000000"
+    root_id = "profile_00000"
     interval_colors = _interval_colors(len(result.intervals))
 
     for profile_id, node in result.final_profiles.items():

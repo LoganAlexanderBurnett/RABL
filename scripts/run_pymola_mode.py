@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -93,14 +94,76 @@ def _resolve_output_dir(args: argparse.Namespace) -> str:
     return str(out_dir)
 
 
+def _find_latest_global_result_index(sim_root: Path) -> int:
+    if not sim_root.exists():
+        return 0
+    pattern = re.compile(r"^results_drum_profile_(\d{5})$")
+    max_idx = 0
+    for result_path in sim_root.glob("batch_*/results_drum_profile_*.*"):
+        if result_path.suffix.lower() not in {".csv", ".mat"}:
+            continue
+        match = pattern.match(result_path.stem)
+        if match:
+            max_idx = max(max_idx, int(match.group(1)))
+    return max_idx
+
+
+def _copy_stitched_results_to_batch_root_with_global_numbering(out_dir: Path, sim_root: Path) -> None:
+    stitched_dir = out_dir / "stitched_results"
+    if not stitched_dir.exists():
+        print("[run-mode=production] No stitched_results directory found; skipping copy.")
+        return
+
+    sources = sorted(stitched_dir.glob("results_*.csv"))
+    if not sources:
+        print("[run-mode=production] No stitched CSV results found; skipping copy.")
+        return
+
+    next_idx = _find_latest_global_result_index(sim_root) + 1
+    copied = 0
+    for csv_src in sources:
+        mat_src = csv_src.with_suffix(".mat")
+        dst_stem = f"results_drum_profile_{next_idx:05d}"
+        csv_dst = out_dir / f"{dst_stem}.csv"
+        mat_dst = out_dir / f"{dst_stem}.mat"
+        shutil.copy2(csv_src, csv_dst)
+        if mat_src.exists():
+            shutil.copy2(mat_src, mat_dst)
+        copied += 1
+        next_idx += 1
+    print(f"[run-mode=production] Copied {copied} stitched result pairs to batch root with global profile numbering.")
+
+
 def _cleanup_production_artifacts(out_dir: Path) -> None:
+    generated_profiles_dir = out_dir / "generated_profiles"
+    if generated_profiles_dir.exists():
+        shutil.rmtree(generated_profiles_dir, ignore_errors=True)
+
+    stitched_dir = out_dir / "stitched_results"
     removed = 0
-    for ext in (".txt", ".c", ".e"):
-        for file_path in out_dir.rglob(f"*{ext}"):
-            if file_path.is_file():
-                file_path.unlink(missing_ok=True)
-                removed += 1
-    print(f"[run-mode=production] Cleanup complete. Removed {removed} files (.txt/.c/.e).")
+    for file_path in out_dir.rglob("*"):
+        if not file_path.is_file():
+            continue
+        if stitched_dir in file_path.parents:
+            continue
+        suffix = file_path.suffix.lower()
+        if suffix in {".txt", ".c", ".exe", ".mat"}:
+            file_path.unlink(missing_ok=True)
+            removed += 1
+
+    summary_path = out_dir / "batch_summary.csv"
+    if summary_path.exists():
+        try:
+            summary_df = pd.read_csv(summary_path)
+            statuses = summary_df.get("status")
+            if statuses is not None and not statuses.empty and statuses.astype(str).eq("OK").all():
+                shutil.rmtree(out_dir / "logs", ignore_errors=True)
+                shutil.rmtree(out_dir / "restart_results", ignore_errors=True)
+                print("[run-mode=production] Removed logs/ and restart_results/ because all batch_summary statuses are OK.")
+        except Exception as exc:
+            print(f"[run-mode=production] Warning: unable to evaluate batch_summary.csv for conditional cleanup: {exc}")
+
+    print("[run-mode=production] Cleanup complete. Removed generated_profiles/, *.txt, *.c, *.exe, and non-stitched *.mat files.")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Dymola batch workflow in flat or branched mode.")
@@ -131,7 +194,7 @@ def _read_results_csv(results_csv: Path) -> pd.DataFrame:
 
 
 def _extract_root_id_from_results_stem(stem: str) -> str:
-    # e.g. "results_root_001__profile_000012" -> "root_001"
+    # e.g. "results_root_001__profile_00012" -> "root_001"
     parts = stem.split("__")
     if len(parts) >= 2 and parts[0].startswith("results_"):
         return parts[0].replace("results_", "", 1)
@@ -296,7 +359,11 @@ def main() -> None:
         runner.close()
 
     if args.run_mode == "production":
-        _cleanup_production_artifacts(Path(out_dir))
+        out_dir_path = Path(out_dir)
+        _cleanup_production_artifacts(out_dir_path)
+        if args.mode == "branched_hdf5":
+            sim_root = (REPO_ROOT / "outputs" / "sim_profiles").resolve()
+            _copy_stitched_results_to_batch_root_with_global_numbering(out_dir_path, sim_root)
 
 
 if __name__ == "__main__":
