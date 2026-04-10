@@ -15,11 +15,17 @@ import argparse
 import json
 import re
 import shutil
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SRC_PATH = REPO_ROOT / "src"
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
 
 try:
     # Import directly from pymola so dependency/import errors surface clearly.
@@ -31,8 +37,6 @@ except ModuleNotFoundError as exc:
         "'dymola.dymola_interface' and required scientific packages (numpy/scipy/h5py)."
     ) from exc
 
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
 PLOT_VARS = [
     "drumAngleDeg",
     "drumVelDeg_s",
