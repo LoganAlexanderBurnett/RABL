@@ -12,6 +12,7 @@ python scripts/run_pymola_mode.py --mode branched_hdf5 --h5 tests/recursive_bran
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -60,11 +61,57 @@ def _repo_rel(path: str | None, fallback: str) -> str:
     return str(p)
 
 
+
+
+def _next_batch_dir(base_dir: Path) -> Path:
+    base_dir.mkdir(parents=True, exist_ok=True)
+    pattern = re.compile(r"^batch_(\d{4})$")
+
+    max_idx = 0
+    for entry in base_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        match = pattern.match(entry.name)
+        if match:
+            max_idx = max(max_idx, int(match.group(1)))
+
+    next_idx = max_idx + 1
+    while True:
+        candidate = base_dir / f"batch_{next_idx:04d}"
+        try:
+            candidate.mkdir(parents=False, exist_ok=False)
+            return candidate
+        except FileExistsError:
+            next_idx += 1
+
+
+def _resolve_output_dir(args: argparse.Namespace) -> str:
+    if args.run_mode == "testing":
+        if args.out is None:
+            raise SystemExit("--out is required when --run-mode=testing")
+        return _repo_rel(args.out, "../../../outputs/sim_profiles/test_batch")
+
+    production_base = (REPO_ROOT / "outputs" / "sim_profiles").resolve()
+    out_dir = _next_batch_dir(production_base)
+    print(f"[run-mode=production] Created output directory: {out_dir}")
+    return str(out_dir)
+
+
+def _cleanup_production_artifacts(out_dir: Path) -> None:
+    removed = 0
+    for ext in (".txt", ".c", ".e"):
+        for file_path in out_dir.rglob(f"*{ext}"):
+            if file_path.is_file():
+                file_path.unlink(missing_ok=True)
+                removed += 1
+    print(f"[run-mode=production] Cleanup complete. Removed {removed} files (.txt/.c/.e).")
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Dymola batch workflow in flat or branched mode.")
     parser.add_argument("--mode", choices=("flat_mat", "branched_hdf5"), required=True, help="Execution workflow mode.")
     parser.add_argument("--h5", default=None, help="Path to profiles.h5 (required for --mode branched_hdf5).")
-    parser.add_argument("--out", required=True, help="Output directory for run artifacts/results.")
+    parser.add_argument("--run-mode", choices=("testing", "production"), default="testing", help="Run mode. testing requires --out; production auto-creates next batch dir.")
+    parser.add_argument("--out", default=None, help="Output directory for run artifacts/results (required in testing mode).")
     parser.add_argument(
         "--profiles",
         default=None,
@@ -203,7 +250,7 @@ def _run_shared_prefix_checks(stitched_dir: Path, h5_path: Path, *, atol: float,
 def main() -> None:
     args = parse_args()
 
-    out_dir = _repo_rel(args.out, "../../../outputs/sim_profiles/test_batch")
+    out_dir = _resolve_output_dir(args)
     profiles_dir = _repo_rel(args.profiles, "../../../outputs/variography_profiles/test_batch")
     h5_path = _repo_rel(args.h5, "../../../tests/recursive_branching/profiles.h5")
 
@@ -251,6 +298,9 @@ def main() -> None:
             runner.run_all()
     finally:
         runner.close()
+
+    if args.run_mode == "production":
+        _cleanup_production_artifacts(Path(out_dir))
 
 
 if __name__ == "__main__":

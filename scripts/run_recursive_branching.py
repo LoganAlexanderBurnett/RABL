@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import sys
 from time import perf_counter
 from dataclasses import dataclass
@@ -620,11 +621,47 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
     return results[0] if config.Nr == 1 else results
 
 
+
+
+def _next_batch_dir(base_dir: Path) -> Path:
+    base_dir.mkdir(parents=True, exist_ok=True)
+    pattern = re.compile(r"^batch_(\d{4})$")
+
+    max_idx = 0
+    for entry in base_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        match = pattern.match(entry.name)
+        if match:
+            max_idx = max(max_idx, int(match.group(1)))
+
+    next_idx = max_idx + 1
+    while True:
+        candidate = base_dir / f"batch_{next_idx:04d}"
+        try:
+            candidate.mkdir(parents=False, exist_ok=False)
+            return candidate
+        except FileExistsError:
+            next_idx += 1
+
+
+def _resolve_output_dir(args: argparse.Namespace) -> Path:
+    if args.run_mode == "testing":
+        if args.output_dir is None:
+            raise SystemExit("--output-dir is required when --run-mode=testing")
+        return args.output_dir
+
+    production_base = REPO_ROOT / "outputs" / "variography_profiles"
+    out_dir = _next_batch_dir(production_base)
+    print(f"[run-mode=production] Created output directory: {out_dir}")
+    return out_dir
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run recursive branching as a standalone script.")
     parser.add_argument("--model-path", type=Path, nargs="+", required=True, help="One or more .pt ensemble checkpoints.")
     parser.add_argument("--bagged-h5-path", type=Path, required=True, help="Path to bagged/scaled HDF5 containing 'scaling' group.")
-    parser.add_argument("--output-dir", type=Path, required=True, help="Directory for branching outputs and plots.")
+    parser.add_argument("--run-mode", choices=("testing", "production"), default="testing", help="Run mode. testing requires --output-dir; production auto-creates next batch dir.")
+    parser.add_argument("--output-dir", type=Path, default=None, help="Directory for branching outputs and plots (required in testing mode).")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help=f"Path to config.py (default: {DEFAULT_CONFIG_PATH}).")
 
     parser.add_argument("--T", type=float, default=200.0)
@@ -671,7 +708,7 @@ def main() -> None:
     run_config = RecursiveBranchingRunConfig(
         model_paths=tuple(args.model_path),
         bagged_h5_path=args.bagged_h5_path,
-        output_dir=args.output_dir,
+        output_dir=_resolve_output_dir(args),
         T=args.T,
         dt=args.dt,
         Nk=args.Nk,
