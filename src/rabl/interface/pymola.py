@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 import re
 import shutil
@@ -21,8 +22,7 @@ class BatchConfig:
     out_dir: str = r"../../../outputs/sim_profiles/test_batch"
 
     # Workflow mode
-    profile_mode: str = "flat_mat"  # flat_mat | branched_hdf5
-    branched_hdf5_path: str = r"../../../tests/recursive_branching/profiles.h5"
+    profile_mode: str = "flat_mat"  # flat_mat | branched_mat
 
     # Branched artifact directories (relative to out_dir)
     generated_profile_dir: str = "generated_profiles"
@@ -81,7 +81,6 @@ class DymolaBatchRunner:
         self.package_abs = (self.script_dir / self.cfg.package_mo).resolve()
         self.profiles_dir_abs = (self.script_dir / self.cfg.profiles_dir).resolve()
         self.out_dir_abs = (self.script_dir / self.cfg.out_dir).resolve()
-        self.branched_hdf5_abs = (self.script_dir / self.cfg.branched_hdf5_path).resolve()
 
         self.generated_profiles_abs = self.out_dir_abs / self.cfg.generated_profile_dir
         self.restart_results_abs = self.out_dir_abs / self.cfg.restart_results_dir
@@ -200,7 +199,7 @@ class DymolaBatchRunner:
         if not self.dymola.translateModel(self.cfg.model_name):
             raise RuntimeError(f"translateModel failed for {self.cfg.model_name}\n{self.dymola.getLastErrorLog()}")
 
-        if self.cfg.profile_mode == "branched_hdf5" and self.cfg.store_protected_vars_for_restart:
+        if self.cfg.profile_mode == "branched_mat" and self.cfg.store_protected_vars_for_restart:
             # Preserve protected/internal block variables in result MAT so
             # importInitialResult can reconstruct CombiTimeTable internals.
             ok = self.dymola.ExecuteCommand("Advanced.StoreProtectedVariables := true;")
@@ -391,43 +390,54 @@ class DymolaBatchRunner:
     # -----------------------------
     # Branched workflow
     # -----------------------------
-    def _load_branched_hdf5_tree(self, h5_path: Path) -> list[BranchNode]:
-        try:
-            import h5py
-        except ImportError as exc:
-            raise RuntimeError("branched_hdf5 mode requires h5py") from exc
+    def _load_branched_manifest_tree(self, batch_dir: Path) -> list[BranchNode]:
+        manifest_path = batch_dir / "branched_profiles_manifest.json"
+        if not manifest_path.exists():
+            raise RuntimeError(f"branched_mat mode requires manifest: {manifest_path}")
+
+        entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(entries, list) or not entries:
+            raise RuntimeError(f"Invalid or empty branched manifest: {manifest_path}")
 
         nodes: list[BranchNode] = []
-        with h5py.File(h5_path, "r") as h5f:
-            for root_id in sorted(h5f.keys()):
-                root_grp = h5f[root_id]
-                for profile_id in sorted(root_grp.keys()):
-                    grp = root_grp[profile_id]
-                    t = np.asarray(grp["t"], dtype=float)
-                    theta_deg = np.asarray(grp["theta_deg"], dtype=float)
-                    v_deg_s = np.asarray(grp["v_deg_s"], dtype=float)
-                    a_deg_s2 = np.asarray(grp["a_deg_s2"], dtype=float)
+        for entry in entries:
+            root_id = str(entry["root_group_name"])
+            profile_id = str(entry["profile_id"])
+            mat_path = batch_dir / str(entry["mat_file"])
+            if not mat_path.exists():
+                raise RuntimeError(f"Manifest MAT file not found: {mat_path}")
+            m = loadmat(str(mat_path))
+            if self.cfg.table_name not in m:
+                raise RuntimeError(f"MAT file missing table '{self.cfg.table_name}': {mat_path}")
+            table = np.asarray(m[self.cfg.table_name], dtype=float)
+            if table.ndim != 2 or table.shape[1] < 4:
+                raise RuntimeError(f"Unexpected profile table shape in {mat_path}: {table.shape}")
 
-                    parent_attr = str(grp.attrs.get("parent_profile_id", "")).strip()
-                    parent_profile_id = parent_attr or None
-                    branch_time = grp.attrs.get("branch_time", np.nan)
-                    created_in_interval = int(grp.attrs.get("created_in_interval", -1))
-                    branch_label = int(grp.attrs.get("branch_label", -1))
+            parent_attr = str(entry.get("parent_profile_id", "")).strip()
+            parent_profile_id = parent_attr or None
+            branch_time_raw = entry.get("branch_time", None)
+            created_in_interval = int(entry.get("created_in_interval", -1))
+            branch_label = int(entry.get("branch_label", -1))
 
-                    nodes.append(BranchNode(
-                        root_id=root_id,
-                        profile_id=profile_id,
-                        parent_profile_id=parent_profile_id,
-                        branch_time=None if np.isnan(branch_time) else float(branch_time),
-                        created_in_interval=None if created_in_interval < 0 else created_in_interval,
-                        branch_label=None if branch_label < 0 else branch_label,
-                        t=t,
-                        theta_deg=theta_deg,
-                        v_deg_s=v_deg_s,
-                        a_deg_s2=a_deg_s2,
-                        depth=0,
-                        stop_time=float(t[-1]),
-                    ))
+            t = np.asarray(table[:, 0], dtype=float)
+            theta_deg = np.asarray(table[:, 1], dtype=float)
+            v_deg_s = np.asarray(table[:, 2], dtype=float)
+            a_deg_s2 = np.asarray(table[:, 3], dtype=float)
+
+            nodes.append(BranchNode(
+                root_id=root_id,
+                profile_id=profile_id,
+                parent_profile_id=parent_profile_id,
+                branch_time=None if branch_time_raw is None else float(branch_time_raw),
+                created_in_interval=None if created_in_interval < 0 else created_in_interval,
+                branch_label=None if branch_label < 0 else branch_label,
+                t=t,
+                theta_deg=theta_deg,
+                v_deg_s=v_deg_s,
+                a_deg_s2=a_deg_s2,
+                depth=0,
+                stop_time=float(t[-1]),
+            ))
         return self._validate_branch_tree(nodes)
 
     def _validate_branch_tree(self, nodes: list[BranchNode]) -> list[BranchNode]:
@@ -659,9 +669,9 @@ class DymolaBatchRunner:
         payload = msg + ("\n\n" + err if err else "")
         log_path.write_text(payload, encoding="utf-8")
 
-    def run_branched_hdf5(self):
+    def run_branched_mat(self):
         assert self.dymola is not None, "Call start() first."
-        nodes = self._load_branched_hdf5_tree(self.branched_hdf5_abs)
+        nodes = self._load_branched_manifest_tree(self.profiles_dir_abs)
         jobs = self._toposort_branch_jobs(nodes)
         jobs_by_root: dict[str, list[BranchNode]] = defaultdict(list)
         for job in jobs:
@@ -788,6 +798,10 @@ class DymolaBatchRunner:
         self._t_total_wall = time() - batch_t0
         self._cleanup_out_dir_branched()
 
+    # Backward-compatible alias for callers still using the old method name.
+    def run_branched_hdf5(self):
+        self.run_branched_mat()
+
     def _print_timing_summary(self, ran_count: int):
         def stats(x):
             return (float(np.mean(x)), float(np.min(x)), float(np.max(x))) if x else (0.0, 0.0, 0.0)
@@ -817,8 +831,8 @@ if __name__ == "__main__":
     runner = DymolaBatchRunner(cfg)
     runner.start()
     try:
-        if cfg.profile_mode == "branched_hdf5":
-            runner.run_branched_hdf5()
+        if cfg.profile_mode == "branched_mat":
+            runner.run_branched_mat()
         else:
             runner.run_all()
     finally:

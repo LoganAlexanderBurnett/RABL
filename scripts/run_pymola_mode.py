@@ -5,8 +5,8 @@ Examples
 # Independent flat MAT workflow (existing behavior)
 python scripts/run_pymola_mode.py --mode flat_mat --out outputs/sim_profiles/manual --profiles outputs/variography_profiles/test_batch
 
-# Branched HDF5 workflow
-python scripts/run_pymola_mode.py --mode branched_hdf5 --h5 tests/recursive_branching/profiles.h5 --out outputs/sim_profiles/branched_manual
+# Branched MAT+manifest workflow
+python scripts/run_pymola_mode.py --mode branched_mat --profiles outputs/variography_profiles/batch_0001 --out outputs/sim_profiles/branched_manual
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy.io import loadmat
 
 try:
     # Import directly from pymola so dependency/import errors surface clearly.
@@ -136,53 +135,20 @@ def _copy_stitched_results_to_batch_root_with_global_numbering(out_dir: Path, si
     print(f"[run-mode=production] Copied {copied} stitched result pairs to batch root with global profile numbering.")
 
 
-def _build_branched_h5_from_mat_batch(batch_dir: Path, output_h5: Path) -> Path:
-    try:
-        import h5py
-    except ModuleNotFoundError as exc:
-        raise RuntimeError("Building branched HDF5 from MAT batch requires h5py.") from exc
-
+def _load_branch_manifest_index(batch_dir: Path) -> dict[tuple[str, str], tuple[str | None, float | None]]:
     manifest_path = batch_dir / "branched_profiles_manifest.json"
     if not manifest_path.exists():
-        raise SystemExit(
-            f"Missing branched manifest in MAT batch directory: {manifest_path}. "
-            "Expected run_recursive_branching.py output."
-        )
-
+        raise SystemExit(f"Missing manifest for branched_mat mode: {manifest_path}")
     entries = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(entries, list) or not entries:
-        raise SystemExit(f"Invalid or empty branched manifest: {manifest_path}")
-
-    output_h5.parent.mkdir(parents=True, exist_ok=True)
-    with h5py.File(output_h5, "w") as h5f:
-        for entry in entries:
-            root_id = str(entry["root_group_name"])
-            profile_id = str(entry["profile_id"])
-            mat_path = batch_dir / str(entry["mat_file"])
-            if not mat_path.exists():
-                raise SystemExit(f"Manifest-referenced MAT file not found: {mat_path}")
-
-            m = loadmat(str(mat_path))
-            if "profile" not in m:
-                raise SystemExit(f"MAT file missing 'profile' table: {mat_path}")
-            table = np.asarray(m["profile"], dtype=float)
-            if table.ndim != 2 or table.shape[1] < 4:
-                raise SystemExit(f"Unexpected profile table shape in {mat_path}: {table.shape}")
-
-            root_grp = h5f.require_group(root_id)
-            grp = root_grp.create_group(profile_id)
-            grp.create_dataset("t", data=table[:, 0])
-            grp.create_dataset("theta_deg", data=table[:, 1])
-            grp.create_dataset("v_deg_s", data=table[:, 2])
-            grp.create_dataset("a_deg_s2", data=table[:, 3])
-            grp.attrs["parent_profile_id"] = str(entry.get("parent_profile_id", ""))
-            grp.attrs["created_in_interval"] = int(entry.get("created_in_interval", -1))
-            branch_time = entry.get("branch_time", None)
-            grp.attrs["branch_time"] = np.nan if branch_time is None else float(branch_time)
-            grp.attrs["branch_label"] = int(entry.get("branch_label", -1))
-
-    print(f"[branched_hdf5] Built input HDF5 from MAT batch manifest: {output_h5}")
-    return output_h5
+    out: dict[tuple[str, str], tuple[str | None, float | None]] = {}
+    for entry in entries:
+        root_id = str(entry["root_group_name"])
+        profile_id = str(entry["profile_id"])
+        parent = str(entry.get("parent_profile_id", "")).strip() or None
+        branch_time_val = entry.get("branch_time", None)
+        branch_time = None if branch_time_val is None else float(branch_time_val)
+        out[(root_id, profile_id)] = (parent, branch_time)
+    return out
 
 
 def _cleanup_production_artifacts(out_dir: Path) -> None:
@@ -218,8 +184,7 @@ def _cleanup_production_artifacts(out_dir: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Dymola batch workflow in flat or branched mode.")
-    parser.add_argument("--mode", choices=("flat_mat", "branched_hdf5"), required=True, help="Execution workflow mode.")
-    parser.add_argument("--h5", default=None, help="Path to profiles.h5 (required for --mode branched_hdf5).")
+    parser.add_argument("--mode", choices=("flat_mat", "branched_mat"), required=True, help="Execution workflow mode.")
     parser.add_argument("--run-mode", choices=("testing", "production"), default="testing", help="Run mode. testing requires --out; production auto-creates next batch dir.")
     parser.add_argument("--out", default=None, help="Output directory for run artifacts/results (required in testing mode).")
     parser.add_argument(
@@ -227,7 +192,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "For --mode flat_mat: directory of drum_profile_*.mat files. "
-            "For --mode branched_hdf5 without --h5: directory containing branched "
+            "For --mode branched_mat: directory containing branched "
             "drum_profile_*.mat files and branched_profiles_manifest.json."
         ),
     )
@@ -306,58 +271,47 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
     plt.close(fig)
 
 
-def _run_shared_prefix_checks(stitched_dir: Path, h5_path: Path, *, atol: float, rtol: float) -> list[str]:
-    try:
-        import h5py
-    except ModuleNotFoundError as exc:
-        raise RuntimeError("Shared-prefix checks require h5py.") from exc
-
+def _run_shared_prefix_checks(stitched_dir: Path, branch_index: dict[tuple[str, str], tuple[str | None, float | None]], *, atol: float, rtol: float) -> list[str]:
     failures: list[str] = []
-    with h5py.File(h5_path, "r") as h5f:
-        for root_id in sorted(h5f.keys()):
-            root_grp = h5f[root_id]
-            for profile_id in sorted(root_grp.keys()):
-                grp = root_grp[profile_id]
-                parent_id = str(grp.attrs.get("parent_profile_id", "")).strip()
-                if not parent_id:
-                    continue
-                branch_time = float(grp.attrs.get("branch_time", np.nan))
-                if np.isnan(branch_time):
-                    failures.append(f"{root_id}/{profile_id}: missing branch_time")
-                    continue
+    for (root_id, profile_id), (parent_id, branch_time) in sorted(branch_index.items()):
+        if not parent_id:
+            continue
+        if branch_time is None or np.isnan(branch_time):
+            failures.append(f"{root_id}/{profile_id}: missing branch_time")
+            continue
 
-                parent_csv = stitched_dir / f"results_{root_id}__{parent_id}.csv"
-                child_csv = stitched_dir / f"results_{root_id}__{profile_id}.csv"
-                if not parent_csv.exists() or not child_csv.exists():
-                    failures.append(f"{root_id}/{profile_id}: missing stitched csv parent={parent_csv.exists()} child={child_csv.exists()}")
-                    continue
+        parent_csv = stitched_dir / f"results_{root_id}__{parent_id}.csv"
+        child_csv = stitched_dir / f"results_{root_id}__{profile_id}.csv"
+        if not parent_csv.exists() or not child_csv.exists():
+            failures.append(f"{root_id}/{profile_id}: missing stitched csv parent={parent_csv.exists()} child={child_csv.exists()}")
+            continue
 
-                p_df = _read_results_csv(parent_csv)
-                c_df = _read_results_csv(child_csv)
-                p_pref = p_df[p_df["t"] <= branch_time].copy()
-                c_pref = c_df[c_df["t"] <= branch_time].copy()
+        p_df = _read_results_csv(parent_csv)
+        c_df = _read_results_csv(child_csv)
+        p_pref = p_df[p_df["t"] <= branch_time].copy()
+        c_pref = c_df[c_df["t"] <= branch_time].copy()
 
-                if p_pref.empty or c_pref.empty:
-                    failures.append(f"{root_id}/{profile_id}: empty shared prefix")
-                    continue
+        if p_pref.empty or c_pref.empty:
+            failures.append(f"{root_id}/{profile_id}: empty shared prefix")
+            continue
 
-                t_common = np.intersect1d(p_pref["t"].to_numpy(), c_pref["t"].to_numpy())
-                if t_common.size == 0:
-                    failures.append(f"{root_id}/{profile_id}: no common time grid in shared prefix")
-                    continue
+        t_common = np.intersect1d(p_pref["t"].to_numpy(), c_pref["t"].to_numpy())
+        if t_common.size == 0:
+            failures.append(f"{root_id}/{profile_id}: no common time grid in shared prefix")
+            continue
 
-                p_idx = p_pref.set_index("t")
-                c_idx = c_pref.set_index("t")
-                vars_to_check = [v for v in PLOT_VARS if v in p_idx.columns and v in c_idx.columns]
-                for v in vars_to_check:
-                    p_vals = p_idx.loc[t_common, v].to_numpy(dtype=float)
-                    c_vals = c_idx.loc[t_common, v].to_numpy(dtype=float)
-                    if not np.allclose(p_vals, c_vals, atol=atol, rtol=rtol, equal_nan=True):
-                        max_abs = float(np.nanmax(np.abs(p_vals - c_vals)))
-                        failures.append(
-                            f"{root_id}/{profile_id}: shared-prefix mismatch in '{v}' at t<={branch_time:.6f}, max_abs={max_abs:.3e}"
-                        )
-                        break
+        p_idx = p_pref.set_index("t")
+        c_idx = c_pref.set_index("t")
+        vars_to_check = [v for v in PLOT_VARS if v in p_idx.columns and v in c_idx.columns]
+        for v in vars_to_check:
+            p_vals = p_idx.loc[t_common, v].to_numpy(dtype=float)
+            c_vals = c_idx.loc[t_common, v].to_numpy(dtype=float)
+            if not np.allclose(p_vals, c_vals, atol=atol, rtol=rtol, equal_nan=True):
+                max_abs = float(np.nanmax(np.abs(p_vals - c_vals)))
+                failures.append(
+                    f"{root_id}/{profile_id}: shared-prefix mismatch in '{v}' at t<={branch_time:.6f}, max_abs={max_abs:.3e}"
+                )
+                break
     return failures
 
 
@@ -366,21 +320,18 @@ def main() -> None:
 
     out_dir = _resolve_output_dir(args)
     profiles_dir = _repo_rel(args.profiles, "../../../outputs/variography_profiles/test_batch")
-    h5_path = _repo_rel(args.h5, "../../../tests/recursive_branching/profiles.h5")
+    branch_index: dict[tuple[str, str], tuple[str | None, float | None]] = {}
 
-    if args.mode == "branched_hdf5":
-        if args.h5 is None:
-            if args.profiles is None:
-                raise SystemExit("--h5 is required when --mode=branched_hdf5 unless --profiles points to a MAT batch dir with branched_profiles_manifest.json")
-            mat_batch_dir = Path(_repo_rel(args.profiles, "../../../outputs/variography_profiles/test_batch"))
-            generated_h5 = Path(out_dir) / "profiles_from_mat_batch.h5"
-            h5_path = str(_build_branched_h5_from_mat_batch(mat_batch_dir, generated_h5))
+    if args.mode == "branched_mat":
+        if args.profiles is None:
+            raise SystemExit("--profiles is required when --mode=branched_mat")
+        mat_batch_dir = Path(_repo_rel(args.profiles, "../../../outputs/variography_profiles/test_batch"))
+        branch_index = _load_branch_manifest_index(mat_batch_dir)
 
     cfg = BatchConfig(
         profile_mode=args.mode,
         out_dir=out_dir,
         profiles_dir=profiles_dir,
-        branched_hdf5_path=h5_path,
         output_interval=args.output_interval,
         canonical_output_interval=args.output_interval,
         skip_existing=not args.no_skip_existing,
@@ -389,12 +340,12 @@ def main() -> None:
     runner = DymolaBatchRunner(cfg)
     runner.start()
     try:
-        if args.mode == "branched_hdf5":
-            runner.run_branched_hdf5()
+        if args.mode == "branched_mat":
+            runner.run_branched_mat()
             stitched_dir = Path(out_dir) / cfg.stitched_results_dir
             failures = _run_shared_prefix_checks(
                 stitched_dir=stitched_dir,
-                h5_path=Path(h5_path),
+                branch_index=branch_index,
                 atol=args.branch_check_atol,
                 rtol=args.branch_check_rtol,
             )
@@ -421,7 +372,7 @@ def main() -> None:
     if args.run_mode == "production":
         out_dir_path = Path(out_dir)
         _cleanup_production_artifacts(out_dir_path)
-        if args.mode == "branched_hdf5":
+        if args.mode == "branched_mat":
             sim_root = (REPO_ROOT / "outputs" / "sim_profiles").resolve()
             _copy_stitched_results_to_batch_root_with_global_numbering(out_dir_path, sim_root)
 
