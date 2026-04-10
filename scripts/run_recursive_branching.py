@@ -43,6 +43,7 @@ from rabl.machine_learning.recursive_branching import (
     generate_root_profile,
     load_trained_ensemble,
     run_recursive_branching,
+    save_profiles_as_mat_files,
     save_profiles_lineage_graph,
     save_recursive_branching_output,
 )
@@ -608,6 +609,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
     results: list[RecursiveBranchingResult] = []
     multiple_roots = config.Nr > 1
     profiles_h5_path = config.output_dir / "profiles.h5"
+    next_profile_index = _find_latest_variography_profile_index(REPO_ROOT / "outputs" / "variography_profiles") + 1
     for root_index in range(config.Nr):
         run_output_dir = config.output_dir / f"root_{root_index:03d}" if multiple_roots else config.output_dir
         print(f"\n=== Root Profile {root_index + 1}/{config.Nr} ===\n")
@@ -618,10 +620,27 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
             profiles_h5_path=profiles_h5_path,
         )
         results.append(result)
+        written_mats = save_profiles_as_mat_files(result, config.output_dir, start_index=next_profile_index)
+        next_profile_index += len(written_mats)
+        print(f"Saved {len(written_mats)} profile MAT files to {config.output_dir}")
 
     return results[0] if config.Nr == 1 else results
 
 
+
+def _find_latest_variography_profile_index(variography_root: Path) -> int:
+    if not variography_root.exists():
+        return 0
+
+    pattern = re.compile(r"^drum_profile_(\d{5})$")
+    max_idx = 0
+    for profile_path in variography_root.glob("batch_*/drum_profile_*.*"):
+        if profile_path.suffix.lower() not in {".csv", ".mat"}:
+            continue
+        match = pattern.match(profile_path.stem)
+        if match:
+            max_idx = max(max_idx, int(match.group(1)))
+    return max_idx
 
 
 def _next_batch_dir(base_dir: Path) -> Path:

@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib.lines import Line2D
+from scipy.io import savemat
 
 from rabl.machine_learning.branchpoint_finder import finite_difference
 from rabl.machine_learning.lstm_pipeline import build_model, rolling_forecast
@@ -354,6 +355,50 @@ def save_recursive_branching_output(
             grp.attrs["created_in_interval"] = -1 if node.created_in_interval is None else node.created_in_interval
             grp.attrs["branch_time"] = np.nan if node.branch_time is None else node.branch_time
             grp.attrs["branch_label"] = -1 if node.branch_label is None else node.branch_label
+
+
+def save_profiles_as_mat_files(
+    result: RecursiveBranchingResult,
+    output_dir: Path,
+    *,
+    start_index: int = 1,
+    table_name: str = "profile",
+) -> list[Path]:
+    """Save profile trajectories as ``drum_profile_XXXXX.mat`` files.
+
+    Parameters
+    ----------
+    result:
+        Recursive branching result containing profile trajectories.
+    output_dir:
+        Directory where MAT files are written.
+    start_index:
+        First global profile index to use.
+    table_name:
+        MAT variable name containing ``[t, theta_deg, v_deg_s, a_deg_s2]``.
+    """
+    if start_index < 1:
+        raise ValueError(f"start_index must be >= 1, got {start_index}.")
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    written: list[Path] = []
+    next_idx = int(start_index)
+    for _profile_id, node in sorted(result.final_profiles.items()):
+        table = np.column_stack(
+            [
+                np.asarray(node.profile.t, dtype=float),
+                np.asarray(node.profile.theta_deg, dtype=float),
+                np.asarray(node.profile.v_deg_s, dtype=float),
+                np.asarray(node.profile.a_deg_s2, dtype=float),
+            ]
+        )
+        out_path = output_dir / f"drum_profile_{next_idx:05d}.mat"
+        savemat(str(out_path), {table_name: table})
+        written.append(out_path)
+        next_idx += 1
+    return written
 
 
 def save_profiles_lineage_graph(
