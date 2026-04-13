@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from collections import defaultdict
 from typing import Literal
+import json
 
 import h5py
 import numpy as np
@@ -39,6 +40,10 @@ class LSTMDatasetScalerSplitter:
         output_name: str | None = None,
         seed: int = 123,
         split_mode: SplitMode = "sample",
+        holdout_manifest_path: Path | None = None,
+        val_count: int | None = None,
+        test_count: int | None = None,
+        save_holdout_manifest_path: Path | None = None,
     ) -> None:
         self.input_path = Path(input_path)
         self.scaling_type = scaling_type
@@ -47,6 +52,12 @@ class LSTMDatasetScalerSplitter:
         self.output_name = output_name
         self.seed = seed
         self.split_mode = split_mode
+        self.holdout_manifest_path = Path(holdout_manifest_path) if holdout_manifest_path else None
+        self.val_count = val_count
+        self.test_count = test_count
+        self.save_holdout_manifest_path = (
+            Path(save_holdout_manifest_path) if save_holdout_manifest_path else None
+        )
 
     def run(self) -> Path:
         if not self.input_path.exists():
@@ -68,11 +79,11 @@ class LSTMDatasetScalerSplitter:
                 raise ValueError("No per-file datasets found in the input HDF5.")
 
             rng = np.random.default_rng(self.seed)
-            split_payload = self._build_split_payload(files_group, file_keys, rng)
+            split_payload, split_definition = self._build_split_payload(files_group, file_keys, rng)
             train_stats = self._compute_stats(files_group, split_payload["train"])
 
             with h5py.File(output_path, "w") as out_h5f:
-                self._write_metadata(h5f, out_h5f, train_stats)
+                self._write_metadata(h5f, out_h5f, train_stats, split_definition)
                 self._write_split(out_h5f, "train", files_group, split_payload["train"], train_stats)
                 self._write_split(out_h5f, "val", files_group, split_payload["val"], train_stats)
                 self._write_split(out_h5f, "test", files_group, split_payload["test"], train_stats)
@@ -107,15 +118,30 @@ class LSTMDatasetScalerSplitter:
         files_group: h5py.Group,
         file_keys: list[str],
         rng: np.random.Generator,
-    ) -> dict[str, dict[str, np.ndarray | None]]:
+    ) -> tuple[dict[str, dict[str, np.ndarray | None]], dict[str, list[str] | str | int]]:
+        if self.holdout_manifest_path is not None:
+            return self._build_split_payload_from_manifest(file_keys)
+
+        if self.val_count is not None or self.test_count is not None:
+            return self._build_split_payload_from_counts(file_keys, rng)
+
         if self.split_mode == "profile":
             shuffled = rng.permutation(file_keys)
             train_keys, val_keys, test_keys = self._split_keys(shuffled)
-            return {
-                "train": {key: None for key in train_keys},
-                "val": {key: None for key in val_keys},
-                "test": {key: None for key in test_keys},
+            split_definition: dict[str, list[str] | str | int] = {
+                "split_strategy": "fractional",
+                "train_profiles": train_keys,
+                "val_profiles": val_keys,
+                "test_profiles": test_keys,
             }
+            return (
+                {
+                    "train": {key: None for key in train_keys},
+                    "val": {key: None for key in val_keys},
+                    "test": {key: None for key in test_keys},
+                },
+                split_definition,
+            )
 
         # sample mode semantics:
         # - test split remains profile-disjoint and uses whole, unseen profiles
@@ -141,11 +167,134 @@ class LSTMDatasetScalerSplitter:
         train_entries = shuffled_entries[:train_end]
         val_entries = shuffled_entries[train_end:]
 
-        return {
-            "train": self._entries_to_indices(train_entries),
-            "val": self._entries_to_indices(val_entries),
-            "test": {key: None for key in test_keys},
+        split_definition = {
+            "split_strategy": "fractional",
+            "train_profiles": sorted(self._entries_to_indices(train_entries).keys()),
+            "val_profiles": sorted(self._entries_to_indices(val_entries).keys()),
+            "test_profiles": sorted(test_keys),
         }
+        return (
+            {
+                "train": self._entries_to_indices(train_entries),
+                "val": self._entries_to_indices(val_entries),
+                "test": {key: None for key in test_keys},
+            },
+            split_definition,
+        )
+
+    def _build_split_payload_from_manifest(
+        self,
+        file_keys: list[str],
+    ) -> tuple[dict[str, dict[str, np.ndarray | None]], dict[str, list[str] | str | int]]:
+        if self.holdout_manifest_path is None:
+            raise ValueError("holdout_manifest_path must be provided for manifest split strategy.")
+        if not self.holdout_manifest_path.exists():
+            raise FileNotFoundError(f"Holdout manifest not found: {self.holdout_manifest_path}")
+
+        data = json.loads(self.holdout_manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Holdout manifest must be a JSON object.")
+        val_profiles = data.get("val_profiles")
+        test_profiles = data.get("test_profiles")
+        if not isinstance(val_profiles, list) or not isinstance(test_profiles, list):
+            raise ValueError("Holdout manifest must contain list fields: val_profiles and test_profiles.")
+
+        val_keys = [str(key) for key in val_profiles]
+        test_keys = [str(key) for key in test_profiles]
+        self._validate_fixed_profile_split(file_keys, val_keys, test_keys)
+
+        holdout = set(val_keys).union(test_keys)
+        train_keys = sorted(key for key in file_keys if key not in holdout)
+        if not train_keys:
+            raise ValueError("Holdout manifest leaves no profiles for train split.")
+
+        split_definition: dict[str, list[str] | str | int] = {
+            "split_strategy": "fixed_manifest",
+            "holdout_manifest_path": str(self.holdout_manifest_path),
+            "train_profiles": sorted(train_keys),
+            "val_profiles": sorted(val_keys),
+            "test_profiles": sorted(test_keys),
+        }
+        return (
+            {
+                "train": {key: None for key in train_keys},
+                "val": {key: None for key in val_keys},
+                "test": {key: None for key in test_keys},
+            },
+            split_definition,
+        )
+
+    def _build_split_payload_from_counts(
+        self,
+        file_keys: list[str],
+        rng: np.random.Generator,
+    ) -> tuple[dict[str, dict[str, np.ndarray | None]], dict[str, list[str] | str | int]]:
+        if self.val_count is None or self.test_count is None:
+            raise ValueError("Both val_count and test_count must be provided together.")
+        if self.val_count < 1 or self.test_count < 1:
+            raise ValueError("val_count and test_count must be positive integers.")
+
+        total = len(file_keys)
+        if self.val_count + self.test_count >= total:
+            raise ValueError(
+                f"val_count + test_count must be less than total profiles ({total}). "
+                f"Got val_count={self.val_count}, test_count={self.test_count}."
+            )
+
+        shuffled = list(rng.permutation(file_keys))
+        val_keys = sorted(shuffled[: self.val_count])
+        test_keys = sorted(shuffled[self.val_count : self.val_count + self.test_count])
+        holdout = set(val_keys).union(test_keys)
+        train_keys = sorted(key for key in file_keys if key not in holdout)
+
+        split_definition: dict[str, list[str] | str | int] = {
+            "split_strategy": "fixed_count",
+            "split_seed": int(self.seed),
+            "val_count": int(self.val_count),
+            "test_count": int(self.test_count),
+            "train_profiles": sorted(train_keys),
+            "val_profiles": sorted(val_keys),
+            "test_profiles": sorted(test_keys),
+        }
+
+        if self.save_holdout_manifest_path is not None:
+            payload = {
+                "val_profiles": sorted(val_keys),
+                "test_profiles": sorted(test_keys),
+            }
+            self.save_holdout_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            self.save_holdout_manifest_path.write_text(
+                json.dumps(payload, indent=2),
+                encoding="utf-8",
+            )
+
+        return (
+            {
+                "train": {key: None for key in train_keys},
+                "val": {key: None for key in val_keys},
+                "test": {key: None for key in test_keys},
+            },
+            split_definition,
+        )
+
+    @staticmethod
+    def _validate_fixed_profile_split(file_keys: list[str], val_keys: list[str], test_keys: list[str]) -> None:
+        file_key_set = set(file_keys)
+        unknown_val = sorted(set(val_keys) - file_key_set)
+        unknown_test = sorted(set(test_keys) - file_key_set)
+        if unknown_val:
+            raise ValueError(f"Manifest val_profiles contain unknown profile keys: {unknown_val[:10]}")
+        if unknown_test:
+            raise ValueError(f"Manifest test_profiles contain unknown profile keys: {unknown_test[:10]}")
+
+        overlap = sorted(set(val_keys).intersection(test_keys))
+        if overlap:
+            raise ValueError(f"Manifest val/test overlap is not allowed: {overlap[:10]}")
+
+        if not val_keys:
+            raise ValueError("Manifest val_profiles is empty.")
+        if not test_keys:
+            raise ValueError("Manifest test_profiles is empty.")
 
     @staticmethod
     def _entries_to_indices(entries: list[tuple[str, int]]) -> dict[str, np.ndarray]:
@@ -175,7 +324,13 @@ class LSTMDatasetScalerSplitter:
 
         return {"x": _finalize_stats(self.scaling_type, x_stats), "y": _finalize_stats(self.scaling_type, y_stats)}
 
-    def _write_metadata(self, src_h5f: h5py.File, dst_h5f: h5py.File, stats: dict) -> None:
+    def _write_metadata(
+        self,
+        src_h5f: h5py.File,
+        dst_h5f: h5py.File,
+        stats: dict,
+        split_definition: dict[str, list[str] | str | int],
+    ) -> None:
         for key, value in src_h5f.attrs.items():
             dst_h5f.attrs[key] = value
         dst_h5f.attrs["scaling_type"] = self.scaling_type
@@ -183,6 +338,30 @@ class LSTMDatasetScalerSplitter:
         dst_h5f.attrs["val_fraction"] = self.splits.val
         dst_h5f.attrs["test_fraction"] = self.splits.test
         dst_h5f.attrs["split_mode"] = self.split_mode
+        split_strategy = str(split_definition.get("split_strategy", "fractional"))
+        dst_h5f.attrs["split_strategy"] = split_strategy
+        if split_strategy == "fixed_manifest":
+            dst_h5f.attrs["holdout_manifest_path"] = str(
+                split_definition.get("holdout_manifest_path", "")
+            )
+        if split_strategy == "fixed_count":
+            dst_h5f.attrs["split_seed"] = int(split_definition.get("split_seed", self.seed))
+            dst_h5f.attrs["val_count"] = int(split_definition.get("val_count", 0))
+            dst_h5f.attrs["test_count"] = int(split_definition.get("test_count", 0))
+
+        split_group = dst_h5f.create_group("split_definition")
+        split_group.create_dataset(
+            "train_profiles",
+            data=np.asarray(split_definition.get("train_profiles", []), dtype="S"),
+        )
+        split_group.create_dataset(
+            "val_profiles",
+            data=np.asarray(split_definition.get("val_profiles", []), dtype="S"),
+        )
+        split_group.create_dataset(
+            "test_profiles",
+            data=np.asarray(split_definition.get("test_profiles", []), dtype="S"),
+        )
 
         scaling_group = dst_h5f.create_group("scaling")
         if self.scaling_type == "standard":
