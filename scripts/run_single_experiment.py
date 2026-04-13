@@ -301,7 +301,7 @@ def _plot_stitched_results(stitched_dir: Path) -> None:
     if not csv_paths:
         return
 
-    series: list[tuple[np.ndarray, dict[str, np.ndarray]]] = []
+    series: list[tuple[str, np.ndarray, dict[str, np.ndarray]]] = []
     vars_to_plot = [
         "drumAngleDeg",
         "drumVelDeg_s",
@@ -336,9 +336,20 @@ def _plot_stitched_results(stitched_dir: Path) -> None:
         for k in vars_to_plot:
             if k in keys:
                 payload[k] = np.asarray([float(r[k]) for r in rows], dtype=float)
-        series.append((t, payload))
+        root_id = _extract_root_id_from_results_stem(csv_path.stem)
+        series.append((root_id, t, payload))
     if not series or not vars_to_plot:
         return
+
+    root_ids = sorted({root_id for root_id, _, _ in series})
+    base_root_colors = ["crimson", "gold", "black"]
+    rng = np.random.default_rng()
+    root_colors: dict[str, tuple[float, float, float, float] | str] = {}
+    for i, root_id in enumerate(root_ids):
+        if i < len(base_root_colors):
+            root_colors[root_id] = base_root_colors[i]
+        else:
+            root_colors[root_id] = (float(rng.random()), float(rng.random()), float(rng.random()), 1.0)
 
     n = len(vars_to_plot)
     cols = 6
@@ -346,9 +357,9 @@ def _plot_stitched_results(stitched_dir: Path) -> None:
     fig, axes = plt.subplots(rows_n, cols, figsize=(30, 12), sharex=True)
     axes_flat = np.atleast_1d(axes).ravel()
     for ax, var in zip(axes_flat, vars_to_plot):
-        for t, payload in series:
+        for root_id, t, payload in series:
             if var in payload:
-                ax.plot(t, payload[var], alpha=0.25, linewidth=1.0)
+                ax.plot(t, payload[var], alpha=0.15, linewidth=1.0, color=root_colors[root_id])
         ax.set_title(var)
         ax.grid(alpha=0.3)
     for ax in axes_flat[n:]:
@@ -358,6 +369,13 @@ def _plot_stitched_results(stitched_dir: Path) -> None:
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f"[step] Saved stitched plot: {out_path}")
+
+
+def _extract_root_id_from_results_stem(stem: str) -> str:
+    parts = stem.split("__")
+    if len(parts) >= 2 and parts[0].startswith("results_"):
+        return parts[0].replace("results_", "", 1)
+    return "unknown_root"
 
 
 def _summarize_forecasts(forecast_h5: Path) -> dict[str, float]:
