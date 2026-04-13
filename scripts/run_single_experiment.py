@@ -35,6 +35,9 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from rabl.variography.DrumVariography import DrumProfileGenerator
+from rabl.machine_learning.dataset_scaling import LSTMDatasetScalerSplitter
+from rabl.machine_learning.tuner import GridSearchConfig, run_grid_search
+from rabl.machine_learning.bagging_ensemble import run_bagging_ensemble
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,8 @@ class ExperimentConfig:
     tune_command: list[str] | None = None
     retrain_command: list[str] | None = None
     evaluate_command: list[str] | None = None
+    initial_unscaled_h5: str | None = None
+    session_unscaled_h5: list[str] | None = None
 
 
 def _load_config(config_path: Path) -> ExperimentConfig:
@@ -367,6 +372,119 @@ def _append_summary_row(summary_csv: Path, row: dict[str, Any]) -> None:
             fp.write(f"{line}\n")
 
 
+def _decode_colnames(raw: np.ndarray) -> list[str]:
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, bytes):
+            out.append(item.decode("utf-8"))
+        else:
+            out.append(str(item))
+    return out
+
+
+def ingest_command(
+    *,
+    input_unscaled_h5: Path,
+    output_dir: Path,
+    holdout_manifest: Path,
+    val_count: int = 500,
+    test_count: int = 2000,
+    save_manifest_if_missing: bool = False,
+) -> Path:
+    """Scale + split dataset with fixed holdouts for retraining cycles."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    save_manifest_path = holdout_manifest if save_manifest_if_missing else None
+    splitter = LSTMDatasetScalerSplitter(
+        input_path=input_unscaled_h5,
+        scaling_type="standard",
+        split_mode="profile",
+        holdout_manifest_path=holdout_manifest if holdout_manifest.exists() else None,
+        val_count=None if holdout_manifest.exists() else val_count,
+        test_count=None if holdout_manifest.exists() else test_count,
+        save_holdout_manifest_path=save_manifest_path,
+    )
+    scaled_h5 = splitter.run()
+    return scaled_h5
+
+
+def evaluate_command(
+    *,
+    forecast_h5_path: Path,
+    output_json_path: Path,
+) -> dict[str, Any]:
+    """Compute simple forecast + uncertainty metrics from ensemble rolling-forecast HDF5."""
+    if not forecast_h5_path.exists():
+        raise FileNotFoundError(f"Forecast HDF5 not found: {forecast_h5_path}")
+
+    all_err: list[np.ndarray] = []
+    all_abs: list[np.ndarray] = []
+    all_sigma2: list[np.ndarray] = []
+    coverage_95_count = 0
+    coverage_95_total = 0
+
+    with h5py.File(forecast_h5_path, "r") as h5f:
+        for profile_name in h5f.keys():
+            grp = h5f[profile_name]
+            data = np.asarray(grp["data"][()], dtype=float)
+            columns = _decode_colnames(grp.attrs["column_names"])
+            true_cols = [i for i, c in enumerate(columns) if c.startswith("x_true(t)_")]
+            mean_cols = [i for i, c in enumerate(columns) if c.startswith("x_mean(t)_")]
+            sigma_cols = [i for i, c in enumerate(columns) if c.startswith("x_2sigma(t)_")]
+            if not true_cols or not mean_cols:
+                continue
+            y_true = data[:, true_cols]
+            y_mean = data[:, mean_cols]
+            if y_true.shape != y_mean.shape:
+                continue
+            err = y_mean - y_true
+            all_err.append(err)
+            all_abs.append(np.abs(err))
+
+            if sigma_cols and len(sigma_cols) == y_true.shape[1]:
+                sigma2 = data[:, sigma_cols]
+                all_sigma2.append(sigma2)
+                coverage_95_count += int(np.sum(np.abs(err) <= sigma2))
+                coverage_95_total += int(err.size)
+
+    if not all_err:
+        metrics = {
+            "forecast_quality": {},
+            "uncertainty_quality": {},
+            "robustness": {},
+            "warning": "No usable forecast groups found.",
+        }
+    else:
+        err_cat = np.concatenate(all_err, axis=0)
+        abs_cat = np.concatenate(all_abs, axis=0)
+        rmse = float(np.sqrt(np.mean(err_cat**2)))
+        mae = float(np.mean(abs_cat))
+        max_abs = float(np.max(abs_cat))
+        iae = float(np.sum(abs_cat))
+        metrics = {
+            "forecast_quality": {
+                "rmse": rmse,
+                "mae": mae,
+                "max_abs_error": max_abs,
+                "integrated_abs_error": iae,
+            },
+            "uncertainty_quality": {
+                "coverage_95_empirical": (
+                    float(coverage_95_count / coverage_95_total) if coverage_95_total > 0 else None
+                ),
+                "mean_interval_width_95": (
+                    float(np.mean(np.concatenate(all_sigma2, axis=0))) if all_sigma2 else None
+                ),
+            },
+            "robustness": {
+                "error_variance": float(np.var(err_cat)),
+            },
+        }
+
+    output_json_path.parent.mkdir(parents=True, exist_ok=True)
+    output_json_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    return metrics
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run one single experiment harness execution.")
     parser.add_argument("--config", type=Path, required=True, help="Path to JSON experiment config.")
@@ -379,6 +497,16 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = _load_config(args.config)
+    if cfg.initial_unscaled_h5 is None:
+        raise SystemExit("config.initial_unscaled_h5 is required.")
+    if cfg.session_unscaled_h5 is None or len(cfg.session_unscaled_h5) < 2:
+        raise SystemExit("config.session_unscaled_h5 must contain exactly 2 session dataset paths.")
+    if len(cfg.session_unscaled_h5) != 2:
+        raise SystemExit("This scripted scenario expects exactly 2 retraining sessions.")
+    if cfg.N_r != 8 or cfg.N_k != 3 or cfg.N_b != 2:
+        raise SystemExit("This scripted scenario is fixed to Nr=8, Nk=3, Nb=2 (216 profiles/session).")
+    if cfg.retrain_cycles != 2:
+        raise SystemExit("This scripted scenario requires retrain_cycles=2.")
 
     cfg_dir = _ensure_dir(args.base_output_dir / f"cfg_{cfg.N_r}_{cfg.N_k}_{cfg.N_b}")
     seed_dir = _ensure_dir(cfg_dir / f"seed_{cfg.seed}")
@@ -398,45 +526,88 @@ def main() -> None:
         "stages": {},
     }
 
-    if cfg.strategy == "branching":
-        profiles_dir, budget_profiles = _prepare_branching_profiles(cfg, run_dir)
-    else:
-        profiles_dir, budget_profiles = _prepare_random_profiles(cfg, run_dir)
-    run_meta["budget_profiles"] = int(budget_profiles)
-    run_meta["paths"]["profiles_dir"] = str(profiles_dir)
+    holdout_manifest = run_dir / "holdout_manifest.json"
 
-    sim_out = _simulate(cfg, cfg.strategy, profiles_dir, run_dir)
-    run_meta["paths"]["sim_profiles_dir"] = str(sim_out)
+    initial_scaled = ingest_command(
+        input_unscaled_h5=Path(cfg.initial_unscaled_h5),
+        output_dir=run_dir / "cycle_00" / "dataset",
+        holdout_manifest=holdout_manifest,
+        val_count=500,
+        test_count=2000,
+        save_manifest_if_missing=True,
+    )
+    with h5py.File(initial_scaled, "r") as h5f:
+        train_profiles = len(h5f["train"]["files"].keys())
+        val_profiles = len(h5f["val"]["files"].keys())
+        test_profiles = len(h5f["test"]["files"].keys())
+    if train_profiles != 500 or val_profiles != 500 or test_profiles != 2000:
+        raise SystemExit(
+            "Initial split counts do not match requested train/val/test = 500/500/2000. "
+            f"Got train={train_profiles}, val={val_profiles}, test={test_profiles}."
+        )
 
-    template_values = {
-        "run_dir": str(run_dir),
-        "strategy_dir": str(strategy_dir),
-        "profiles_dir": str(profiles_dir),
-        "sim_profiles_dir": str(sim_out),
-        "budget_profiles": str(budget_profiles),
-        "seed": str(cfg.seed),
-        "N_r": str(cfg.N_r),
-        "N_k": str(cfg.N_k),
-        "N_b": str(cfg.N_b),
-        "strategy": cfg.strategy,
-        "retrain_policy": cfg.retrain_policy,
-    }
-
-    if cfg.retrain_policy == "no-retune":
-        template_values["cycle"] = "0"
-        template_values["phase"] = "initial_tune"
-        _run_optional_hook("tune", cfg.tune_command, template_values)
-
+    all_cycle_metrics: list[dict[str, Any]] = []
+    budget_profiles = 216
     for cycle in range(cfg.retrain_cycles):
-        template_values["cycle"] = str(cycle)
-        template_values["phase"] = "cycle"
-        _run_optional_hook("ingest", cfg.ingest_command, template_values)
-        if cfg.retrain_policy == "retune":
-            _run_optional_hook("tune", cfg.tune_command, template_values)
-        _run_optional_hook("retrain", cfg.retrain_command, template_values)
-        _run_optional_hook("evaluate", cfg.evaluate_command, template_values)
+        cycle_dir = _ensure_dir(run_dir / f"cycle_{cycle + 1:02d}")
+        if cfg.strategy == "branching":
+            profiles_dir, observed_budget = _prepare_branching_profiles(cfg, cycle_dir)
+        else:
+            profiles_dir, observed_budget = _prepare_random_profiles(cfg, cycle_dir)
+        if observed_budget != budget_profiles:
+            raise SystemExit(f"Expected {budget_profiles} profiles/session, observed {observed_budget}.")
+        sim_out = _simulate(cfg, cfg.strategy, profiles_dir, cycle_dir)
 
-    metrics = _load_metrics_input(Path(cfg.metrics_input_json) if cfg.metrics_input_json else None)
+        scaled_h5 = ingest_command(
+            input_unscaled_h5=Path(cfg.session_unscaled_h5[cycle]),
+            output_dir=cycle_dir / "dataset",
+            holdout_manifest=holdout_manifest,
+            val_count=500,
+            test_count=2000,
+            save_manifest_if_missing=False,
+        )
+
+        tuning_dir = _ensure_dir(cycle_dir / "tuning")
+        tune_cfg = GridSearchConfig(
+            lookback_datasets={cfg.lookback: scaled_h5},
+            learning_rates=[1e-3, 5e-4, 1e-4],  # coarse 3-combination grid
+            batch_sizes=[64],
+            n_lstm_values=[1],
+            hidden_lstm_values=[cfg.lstm_hidden],
+            hidden_fc_values=[cfg.fc_hidden[0]],
+            n_fc=cfg.n_fc,
+            epochs=20,
+            seed=cfg.seed,
+            out_dir=tuning_dir,
+            prefer_gpu=True,
+        )
+        _trial_results, best_trial = run_grid_search(tune_cfg)
+
+        ensemble_dir = _ensure_dir(cycle_dir / "ensemble")
+        ensemble = run_bagging_ensemble(
+            scaled_h5,
+            out_dir=ensemble_dir,
+            n_models=3,
+            seed=cfg.seed,
+            n_lstm=best_trial.n_lstm,
+            lstm_hidden=best_trial.hidden_lstm,
+            n_fc=1,
+            fc_hidden=(best_trial.hidden_fc,),
+            learning_rate=best_trial.learning_rate,
+            batch_size=best_trial.batch_size,
+            epochs=20,
+        )
+
+        cycle_metrics = evaluate_command(
+            forecast_h5_path=Path(ensemble["forecast_output_path"]),
+            output_json_path=cycle_dir / "metrics.json",
+        )
+        cycle_metrics["cycle"] = cycle + 1
+        cycle_metrics["budget_profiles"] = budget_profiles
+        cycle_metrics["sim_profiles_dir"] = str(sim_out)
+        all_cycle_metrics.append(cycle_metrics)
+
+    metrics = {"cycles": all_cycle_metrics}
     metrics.setdefault("forecast_quality", {})
     metrics.setdefault("uncertainty_quality", {})
     metrics.setdefault("robustness", {})
