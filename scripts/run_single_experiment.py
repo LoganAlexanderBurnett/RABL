@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import h5py
+import matplotlib.pyplot as plt
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -168,6 +169,7 @@ def _tune(scaled_h5: Path, out_dir: Path, seed: int, grid: dict[str, Any]) -> An
         seed=seed,
         out_dir=out_dir,
         prefer_gpu=bool(grid.get("prefer_gpu", True)),
+        preload_train_to_device=True,
     )
     _results, best = run_grid_search(tune_cfg)
     return best
@@ -214,6 +216,106 @@ def _summarize_forecasts(forecast_h5: Path) -> dict[str, float]:
         "mae": float(np.mean(np.abs(cat))),
         "max_abs": float(np.max(np.abs(cat))),
     }
+
+
+def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
+    z_by_level = {
+        "50": 0.67448975,
+        "80": 1.28155157,
+        "95": 1.95996398,
+    }
+    all_err: list[np.ndarray] = []
+    all_sigma95: list[np.ndarray] = []
+    with h5py.File(forecast_h5, "r") as h5f:
+        for profile_name in h5f.keys():
+            grp = h5f[profile_name]
+            table = np.asarray(grp["data"][()], dtype=float)
+            cols_raw = grp.attrs.get("columns", [])
+            cols = [c.decode("utf-8") if isinstance(c, bytes) else str(c) for c in cols_raw]
+            true_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_true(t)_")]
+            mean_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_mean(t)_")]
+            sigma_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_2sigma(t)_")]
+            if not true_cols or len(true_cols) != len(mean_cols) or len(sigma_cols) != len(true_cols):
+                continue
+            y_true = table[:, true_cols]
+            y_mean = table[:, mean_cols]
+            sigma95 = table[:, sigma_cols]
+            all_err.append(np.abs(y_mean - y_true))
+            all_sigma95.append(sigma95)
+
+    if not all_err:
+        return {
+            "coverage": {"50": float("nan"), "80": float("nan"), "95": float("nan")},
+            "interval_width": {"50": float("nan"), "80": float("nan"), "95": float("nan")},
+            "calibration_error": float("nan"),
+        }
+
+    err = np.concatenate(all_err, axis=0)
+    sigma95 = np.concatenate(all_sigma95, axis=0)
+    std = sigma95 / 2.0
+
+    coverage: dict[str, float] = {}
+    width: dict[str, float] = {}
+    cal_terms: list[float] = []
+    for level, z in z_by_level.items():
+        half_width = z * std
+        cov = float(np.mean(err <= half_width))
+        coverage[level] = cov
+        width[level] = float(np.mean(2.0 * half_width))
+        cal_terms.append(abs(cov - (float(level) / 100.0)))
+
+    return {
+        "coverage": coverage,
+        "interval_width": width,
+        "calibration_error": float(np.mean(cal_terms)),
+    }
+
+
+def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cycles = [int(m["cycle"]) for m in cycle_metrics]
+    rmse = [float(m["forecast_quality"]["rmse"]) for m in cycle_metrics]
+    mae = [float(m["forecast_quality"]["mae"]) for m in cycle_metrics]
+    cal = [float(m["uncertainty_quality"]["calibration_error"]) for m in cycle_metrics]
+    cov50 = [float(m["uncertainty_quality"]["coverage"]["50"]) for m in cycle_metrics]
+    cov80 = [float(m["uncertainty_quality"]["coverage"]["80"]) for m in cycle_metrics]
+    cov95 = [float(m["uncertainty_quality"]["coverage"]["95"]) for m in cycle_metrics]
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    ax = axes[0, 0]
+    ax.plot(cycles, rmse, marker="o", label="RMSE")
+    ax.plot(cycles, mae, marker="o", label="MAE")
+    ax.set_title("Forecast error vs cycle")
+    ax.set_xlabel("Cycle")
+    ax.grid(alpha=0.3)
+    ax.legend()
+
+    ax = axes[0, 1]
+    ax.plot(cycles, cov50, marker="o", label="50%")
+    ax.plot(cycles, cov80, marker="o", label="80%")
+    ax.plot(cycles, cov95, marker="o", label="95%")
+    ax.set_title("Empirical coverage vs cycle")
+    ax.set_xlabel("Cycle")
+    ax.set_ylim(0, 1)
+    ax.grid(alpha=0.3)
+    ax.legend()
+
+    ax = axes[1, 0]
+    ax.plot(cycles, cal, marker="o", color="C3")
+    ax.set_title("Calibration error vs cycle")
+    ax.set_xlabel("Cycle")
+    ax.grid(alpha=0.3)
+
+    ax = axes[1, 1]
+    sharp95 = [float(m["uncertainty_quality"]["interval_width"]["95"]) for m in cycle_metrics]
+    ax.plot(cycles, sharp95, marker="o", color="C2")
+    ax.set_title("95% interval width (sharpness) vs cycle")
+    ax.set_xlabel("Cycle")
+    ax.grid(alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(out_dir / "metrics_vs_cycle.png", dpi=150)
+    plt.close(fig)
 
 
 def main() -> None:
@@ -287,10 +389,17 @@ def main() -> None:
         model_paths = [str(Path(d) / "model.pt") for d in ensemble["model_dirs"]]
         bagged_h5_path = Path(ensemble["bagged_h5_path"])
         forecast_h5 = Path(ensemble["forecast_output_path"])
-        metrics = _summarize_forecasts(forecast_h5)
+        point_metrics = _summarize_forecasts(forecast_h5)
+        unc_metrics = _compute_uncertainty_metrics(forecast_h5)
+        metrics = {
+            "forecast_quality": point_metrics,
+            "uncertainty_quality": unc_metrics,
+        }
         print(
             f"[cycle {cycle + 1}] Ensemble test summary: "
-            f"RMSE={metrics['rmse']:.6f}, MAE={metrics['mae']:.6f}, MAX_ABS={metrics['max_abs']:.6f}"
+            f"RMSE={point_metrics['rmse']:.6f}, MAE={point_metrics['mae']:.6f}, MAX_ABS={point_metrics['max_abs']:.6f}, "
+            f"COV50={unc_metrics['coverage']['50']:.4f}, COV80={unc_metrics['coverage']['80']:.4f}, "
+            f"COV95={unc_metrics['coverage']['95']:.4f}, CAL_ERR={unc_metrics['calibration_error']:.4f}"
         )
 
         forecast_pdf = cycle_dir / "ensemble" / "ensemble_test_forecasts.pdf"
@@ -300,6 +409,9 @@ def main() -> None:
             mode="ensemble",
         )
         print(f"[cycle {cycle + 1}] Saved forecast visualization PDF: {forecast_pdf}")
+        metrics_json = cycle_dir / "ensemble" / "ensemble_metrics.json"
+        metrics_json.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+        print(f"[cycle {cycle + 1}] Saved ensemble metrics JSON: {metrics_json}")
 
         # No need to generate/simulate new data after last training cycle.
         if cycle < cfg.retrain_cycles - 1:
@@ -379,10 +491,19 @@ def main() -> None:
                 "forecast_h5": str(forecast_h5),
                 "forecast_pdf": str(forecast_pdf),
                 "ensemble_test_metrics": metrics,
+                "ensemble_metrics_json": str(metrics_json),
                 "new_variography_batch": None if var_batch is None else str(var_batch),
                 "new_sim_batch": sim_batch,
             }
         )
+
+    _plot_metrics_over_cycles(
+        [
+            {"cycle": row["cycle"], **row["ensemble_test_metrics"]}
+            for row in metadata["cycles"]
+        ],
+        out_dir=run_dir / "metrics_plots",
+    )
 
     metadata_path = run_dir / "run_metadata.json"
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
