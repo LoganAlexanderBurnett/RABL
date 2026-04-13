@@ -387,21 +387,22 @@ def ingest_command(
     input_unscaled_h5: Path,
     output_dir: Path,
     holdout_manifest: Path,
-    val_count: int = 500,
     test_count: int = 2000,
     save_manifest_if_missing: bool = False,
 ) -> Path:
-    """Scale + split dataset with fixed holdouts for retraining cycles."""
+    """Scale + split dataset with fixed test and resampled train/val for retraining cycles."""
     output_dir.mkdir(parents=True, exist_ok=True)
     save_manifest_path = holdout_manifest if save_manifest_if_missing else None
     splitter = LSTMDatasetScalerSplitter(
         input_path=input_unscaled_h5,
         scaling_type="standard",
         split_mode="profile",
-        holdout_manifest_path=holdout_manifest if holdout_manifest.exists() else None,
-        val_count=None if holdout_manifest.exists() else val_count,
+        train_frac=0.5,
+        val_frac=0.5,
+        test_frac=0.0,
+        test_manifest_path=holdout_manifest if holdout_manifest.exists() else None,
         test_count=None if holdout_manifest.exists() else test_count,
-        save_holdout_manifest_path=save_manifest_path,
+        save_test_manifest_path=save_manifest_path,
     )
     scaled_h5 = splitter.run()
     return scaled_h5
@@ -532,7 +533,6 @@ def main() -> None:
         input_unscaled_h5=Path(cfg.initial_unscaled_h5),
         output_dir=run_dir / "cycle_00" / "dataset",
         holdout_manifest=holdout_manifest,
-        val_count=500,
         test_count=2000,
         save_manifest_if_missing=True,
     )
@@ -562,7 +562,6 @@ def main() -> None:
             input_unscaled_h5=Path(cfg.session_unscaled_h5[cycle]),
             output_dir=cycle_dir / "dataset",
             holdout_manifest=holdout_manifest,
-            val_count=500,
             test_count=2000,
             save_manifest_if_missing=False,
         )

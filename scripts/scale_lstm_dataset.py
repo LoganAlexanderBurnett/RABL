@@ -28,18 +28,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Split strategy used for train/val/test partitioning.",
     )
     parser.add_argument(
-        "--holdout-manifest",
-        dest="holdout_manifest",
+        "--test-manifest",
+        dest="test_manifest",
         type=Path,
         default=None,
-        help="Optional JSON manifest with fixed val/test profile keys.",
-    )
-    parser.add_argument(
-        "--val-count",
-        dest="val_count",
-        type=int,
-        default=None,
-        help="Optional exact number of profiles to place in val split.",
+        help="Optional JSON manifest with fixed test profile keys.",
     )
     parser.add_argument(
         "--test-count",
@@ -49,11 +42,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional exact number of profiles to place in test split.",
     )
     parser.add_argument(
-        "--save-holdout-manifest",
-        dest="save_holdout_manifest",
+        "--save-test-manifest",
+        dest="save_test_manifest",
         type=Path,
         default=None,
-        help="Optional path to save sampled val/test profile IDs as a reusable manifest.",
+        help="Optional path to save sampled test profile IDs as a reusable manifest.",
     )
     return parser
 
@@ -67,21 +60,20 @@ def main() -> None:
         raise SystemExit(f"Input file not found: {input_path}")
     if input_path.suffix.lower() != ".h5":
         raise SystemExit(f"Expected an .h5 file, got: {input_path}")
-    if args.holdout_manifest is not None and (args.val_count is not None or args.test_count is not None):
-        raise SystemExit("--holdout-manifest is mutually exclusive with --val-count/--test-count.")
-    if (args.val_count is None) ^ (args.test_count is None):
-        raise SystemExit("Both --val-count and --test-count must be provided together.")
-    if args.save_holdout_manifest is not None and args.holdout_manifest is not None:
-        raise SystemExit("--save-holdout-manifest cannot be used with --holdout-manifest.")
+    if args.test_manifest is not None and args.test_count is not None:
+        raise SystemExit("--test-manifest is mutually exclusive with --test-count.")
+    if args.save_test_manifest is not None and args.test_manifest is not None:
+        raise SystemExit("--save-test-manifest cannot be used with --test-manifest.")
+    if args.save_test_manifest is not None and args.test_count is None:
+        raise SystemExit("--save-test-manifest requires --test-count.")
 
     splitter = LSTMDatasetScalerSplitter(
         input_path=input_path,
         scaling_type=args.scaling_type,
         split_mode=args.split_mode,
-        holdout_manifest_path=args.holdout_manifest,
-        val_count=args.val_count,
+        test_manifest_path=args.test_manifest,
         test_count=args.test_count,
-        save_holdout_manifest_path=args.save_holdout_manifest,
+        save_test_manifest_path=args.save_test_manifest,
     )
     output_path = splitter.run()
     print(f"Saved scaled dataset to {output_path}")

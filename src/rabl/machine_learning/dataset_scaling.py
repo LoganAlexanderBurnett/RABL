@@ -40,10 +40,9 @@ class LSTMDatasetScalerSplitter:
         output_name: str | None = None,
         seed: int = 123,
         split_mode: SplitMode = "sample",
-        holdout_manifest_path: Path | None = None,
-        val_count: int | None = None,
+        test_manifest_path: Path | None = None,
         test_count: int | None = None,
-        save_holdout_manifest_path: Path | None = None,
+        save_test_manifest_path: Path | None = None,
     ) -> None:
         self.input_path = Path(input_path)
         self.scaling_type = scaling_type
@@ -52,11 +51,10 @@ class LSTMDatasetScalerSplitter:
         self.output_name = output_name
         self.seed = seed
         self.split_mode = split_mode
-        self.holdout_manifest_path = Path(holdout_manifest_path) if holdout_manifest_path else None
-        self.val_count = val_count
+        self.test_manifest_path = Path(test_manifest_path) if test_manifest_path else None
         self.test_count = test_count
-        self.save_holdout_manifest_path = (
-            Path(save_holdout_manifest_path) if save_holdout_manifest_path else None
+        self.save_test_manifest_path = (
+            Path(save_test_manifest_path) if save_test_manifest_path else None
         )
 
     def run(self) -> Path:
@@ -66,7 +64,11 @@ class LSTMDatasetScalerSplitter:
             raise ValueError("scaling_type must be 'standard', 'minmax', or 'none'.")
         if self.split_mode not in ("profile", "sample"):
             raise ValueError("split_mode must be 'profile' or 'sample'.")
-        self.splits.validate()
+        if self.test_manifest_path is None and self.test_count is None:
+            self.splits.validate()
+        else:
+            if self.splits.train <= 0 or self.splits.val <= 0:
+                raise ValueError("train_frac and val_frac must be positive when using fixed test splits.")
 
         output_path = self._resolve_output_path()
 
@@ -119,11 +121,11 @@ class LSTMDatasetScalerSplitter:
         file_keys: list[str],
         rng: np.random.Generator,
     ) -> tuple[dict[str, dict[str, np.ndarray | None]], dict[str, list[str] | str | int]]:
-        if self.holdout_manifest_path is not None:
-            return self._build_split_payload_from_manifest(file_keys)
+        if self.test_manifest_path is not None:
+            return self._build_split_payload_from_manifest(files_group, file_keys, rng)
 
-        if self.val_count is not None or self.test_count is not None:
-            return self._build_split_payload_from_counts(file_keys, rng)
+        if self.test_count is not None:
+            return self._build_split_payload_from_count(files_group, file_keys, rng)
 
         if self.split_mode == "profile":
             shuffled = rng.permutation(file_keys)
@@ -184,117 +186,141 @@ class LSTMDatasetScalerSplitter:
 
     def _build_split_payload_from_manifest(
         self,
-        file_keys: list[str],
-    ) -> tuple[dict[str, dict[str, np.ndarray | None]], dict[str, list[str] | str | int]]:
-        if self.holdout_manifest_path is None:
-            raise ValueError("holdout_manifest_path must be provided for manifest split strategy.")
-        if not self.holdout_manifest_path.exists():
-            raise FileNotFoundError(f"Holdout manifest not found: {self.holdout_manifest_path}")
-
-        data = json.loads(self.holdout_manifest_path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("Holdout manifest must be a JSON object.")
-        val_profiles = data.get("val_profiles")
-        test_profiles = data.get("test_profiles")
-        if not isinstance(val_profiles, list) or not isinstance(test_profiles, list):
-            raise ValueError("Holdout manifest must contain list fields: val_profiles and test_profiles.")
-
-        val_keys = [str(key) for key in val_profiles]
-        test_keys = [str(key) for key in test_profiles]
-        self._validate_fixed_profile_split(file_keys, val_keys, test_keys)
-
-        holdout = set(val_keys).union(test_keys)
-        train_keys = sorted(key for key in file_keys if key not in holdout)
-        if not train_keys:
-            raise ValueError("Holdout manifest leaves no profiles for train split.")
-
-        split_definition: dict[str, list[str] | str | int] = {
-            "split_strategy": "fixed_manifest",
-            "holdout_manifest_path": str(self.holdout_manifest_path),
-            "train_profiles": sorted(train_keys),
-            "val_profiles": sorted(val_keys),
-            "test_profiles": sorted(test_keys),
-        }
-        return (
-            {
-                "train": {key: None for key in train_keys},
-                "val": {key: None for key in val_keys},
-                "test": {key: None for key in test_keys},
-            },
-            split_definition,
-        )
-
-    def _build_split_payload_from_counts(
-        self,
+        files_group: h5py.Group,
         file_keys: list[str],
         rng: np.random.Generator,
     ) -> tuple[dict[str, dict[str, np.ndarray | None]], dict[str, list[str] | str | int]]:
-        if self.val_count is None or self.test_count is None:
-            raise ValueError("Both val_count and test_count must be provided together.")
-        if self.val_count < 1 or self.test_count < 1:
-            raise ValueError("val_count and test_count must be positive integers.")
+        if self.test_manifest_path is None:
+            raise ValueError("test_manifest_path must be provided for manifest split strategy.")
+        if not self.test_manifest_path.exists():
+            raise FileNotFoundError(f"Test manifest not found: {self.test_manifest_path}")
+
+        data = json.loads(self.test_manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Test manifest must be a JSON object.")
+        test_profiles = data.get("test_profiles")
+        if not isinstance(test_profiles, list):
+            raise ValueError("Test manifest must contain list field: test_profiles.")
+
+        test_keys = [str(key) for key in test_profiles]
+        self._validate_fixed_test_split(file_keys, test_keys)
+
+        return self._build_split_with_fixed_test(
+            files_group=files_group,
+            file_keys=file_keys,
+            test_keys=test_keys,
+            rng=rng,
+            split_strategy="fixed_manifest",
+            extra_meta={"test_manifest_path": str(self.test_manifest_path)},
+        )
+
+    def _build_split_payload_from_count(
+        self,
+        files_group: h5py.Group,
+        file_keys: list[str],
+        rng: np.random.Generator,
+    ) -> tuple[dict[str, dict[str, np.ndarray | None]], dict[str, list[str] | str | int]]:
+        if self.test_count is None:
+            raise ValueError("test_count must be provided.")
+        if self.test_count < 1:
+            raise ValueError("test_count must be a positive integer.")
 
         total = len(file_keys)
-        if self.val_count + self.test_count >= total:
+        if self.test_count >= total:
             raise ValueError(
-                f"val_count + test_count must be less than total profiles ({total}). "
-                f"Got val_count={self.val_count}, test_count={self.test_count}."
+                f"test_count must be less than total profiles ({total}). "
+                f"Got test_count={self.test_count}."
             )
 
         shuffled = list(rng.permutation(file_keys))
-        val_keys = sorted(shuffled[: self.val_count])
-        test_keys = sorted(shuffled[self.val_count : self.val_count + self.test_count])
-        holdout = set(val_keys).union(test_keys)
-        train_keys = sorted(key for key in file_keys if key not in holdout)
-
-        split_definition: dict[str, list[str] | str | int] = {
-            "split_strategy": "fixed_count",
+        test_keys = sorted(shuffled[: self.test_count])
+        extra_meta: dict[str, list[str] | str | int] = {
             "split_seed": int(self.seed),
-            "val_count": int(self.val_count),
             "test_count": int(self.test_count),
-            "train_profiles": sorted(train_keys),
-            "val_profiles": sorted(val_keys),
-            "test_profiles": sorted(test_keys),
         }
-
-        if self.save_holdout_manifest_path is not None:
+        if self.save_test_manifest_path is not None:
             payload = {
-                "val_profiles": sorted(val_keys),
                 "test_profiles": sorted(test_keys),
             }
-            self.save_holdout_manifest_path.parent.mkdir(parents=True, exist_ok=True)
-            self.save_holdout_manifest_path.write_text(
+            self.save_test_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            self.save_test_manifest_path.write_text(
                 json.dumps(payload, indent=2),
                 encoding="utf-8",
             )
-
-        return (
-            {
-                "train": {key: None for key in train_keys},
-                "val": {key: None for key in val_keys},
-                "test": {key: None for key in test_keys},
-            },
-            split_definition,
+            extra_meta["test_manifest_path"] = str(self.save_test_manifest_path)
+        return self._build_split_with_fixed_test(
+            files_group=files_group,
+            file_keys=file_keys,
+            test_keys=test_keys,
+            rng=rng,
+            split_strategy="fixed_count",
+            extra_meta=extra_meta,
         )
 
     @staticmethod
-    def _validate_fixed_profile_split(file_keys: list[str], val_keys: list[str], test_keys: list[str]) -> None:
+    def _validate_fixed_test_split(file_keys: list[str], test_keys: list[str]) -> None:
         file_key_set = set(file_keys)
-        unknown_val = sorted(set(val_keys) - file_key_set)
         unknown_test = sorted(set(test_keys) - file_key_set)
-        if unknown_val:
-            raise ValueError(f"Manifest val_profiles contain unknown profile keys: {unknown_val[:10]}")
         if unknown_test:
             raise ValueError(f"Manifest test_profiles contain unknown profile keys: {unknown_test[:10]}")
-
-        overlap = sorted(set(val_keys).intersection(test_keys))
-        if overlap:
-            raise ValueError(f"Manifest val/test overlap is not allowed: {overlap[:10]}")
-
-        if not val_keys:
-            raise ValueError("Manifest val_profiles is empty.")
         if not test_keys:
             raise ValueError("Manifest test_profiles is empty.")
+
+    def _build_split_with_fixed_test(
+        self,
+        files_group: h5py.Group,
+        file_keys: list[str],
+        test_keys: list[str],
+        rng: np.random.Generator,
+        *,
+        split_strategy: str,
+        extra_meta: dict[str, list[str] | str | int] | None = None,
+    ) -> tuple[dict[str, dict[str, np.ndarray | None]], dict[str, list[str] | str | int]]:
+        test_set = set(test_keys)
+        train_val_keys = [key for key in file_keys if key not in test_set]
+        if not train_val_keys:
+            raise ValueError("Fixed test selection leaves no profiles for train/val.")
+
+        if self.split_mode == "profile":
+            shuffled = list(rng.permutation(train_val_keys))
+            train_end = int(len(shuffled) * (self.splits.train / (self.splits.train + self.splits.val)))
+            train_keys = shuffled[:train_end]
+            val_keys = shuffled[train_end:]
+            if not train_keys or not val_keys:
+                raise ValueError("Fixed test split produced empty train or val split.")
+            payload = {
+                "train": {key: None for key in train_keys},
+                "val": {key: None for key in val_keys},
+                "test": {key: None for key in test_keys},
+            }
+        else:
+            sample_entries: list[tuple[str, int]] = []
+            for key in train_val_keys:
+                num_samples = int(files_group[key]["X"].shape[0])
+                sample_entries.extend((key, idx) for idx in range(num_samples))
+            if not sample_entries:
+                raise ValueError("No train/val samples found after fixed test selection.")
+            perm_indices = rng.permutation(len(sample_entries))
+            shuffled_entries = [sample_entries[idx] for idx in perm_indices]
+            train_weight = self.splits.train / (self.splits.train + self.splits.val)
+            train_end = int(len(shuffled_entries) * train_weight)
+            train_entries = shuffled_entries[:train_end]
+            val_entries = shuffled_entries[train_end:]
+            payload = {
+                "train": self._entries_to_indices(train_entries),
+                "val": self._entries_to_indices(val_entries),
+                "test": {key: None for key in test_keys},
+            }
+
+        split_definition: dict[str, list[str] | str | int] = {
+            "split_strategy": split_strategy,
+            "train_profiles": sorted(payload["train"].keys()),
+            "val_profiles": sorted(payload["val"].keys()),
+            "test_profiles": sorted(test_keys),
+        }
+        if extra_meta:
+            split_definition.update(extra_meta)
+        return payload, split_definition
 
     @staticmethod
     def _entries_to_indices(entries: list[tuple[str, int]]) -> dict[str, np.ndarray]:
@@ -341,12 +367,11 @@ class LSTMDatasetScalerSplitter:
         split_strategy = str(split_definition.get("split_strategy", "fractional"))
         dst_h5f.attrs["split_strategy"] = split_strategy
         if split_strategy == "fixed_manifest":
-            dst_h5f.attrs["holdout_manifest_path"] = str(
-                split_definition.get("holdout_manifest_path", "")
+            dst_h5f.attrs["test_manifest_path"] = str(
+                split_definition.get("test_manifest_path", "")
             )
         if split_strategy == "fixed_count":
             dst_h5f.attrs["split_seed"] = int(split_definition.get("split_seed", self.seed))
-            dst_h5f.attrs["val_count"] = int(split_definition.get("val_count", 0))
             dst_h5f.attrs["test_count"] = int(split_definition.get("test_count", 0))
 
         split_group = dst_h5f.create_group("split_definition")
