@@ -578,7 +578,8 @@ class DrumProfileGenerator:
         if P < 0 or P > M:
             raise ValueError(f"n_past_intervals must be in [0, {M}], got {P}")
 
-        v_past = np.asarray(v_past, float).squeeze()
+        # Keep 1D semantics even when P==1; avoid scalar shape () from squeeze.
+        v_past = np.asarray(v_past, float).reshape(-1)
         if P == 0:
             if v_past.size != 0:
                 raise ValueError("v_past must be empty when n_past_intervals=0")
