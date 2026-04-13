@@ -13,7 +13,10 @@ This module orchestrates a persistent branching workflow:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib.util
+import json
 from pathlib import Path
+import re
 from typing import Callable, Protocol
 
 import h5py
@@ -24,7 +27,8 @@ from matplotlib.lines import Line2D
 from scipy.io import savemat
 
 from rabl.machine_learning.branchpoint_finder import finite_difference
-from rabl.machine_learning.lstm_pipeline import build_model, rolling_forecast
+from rabl.machine_learning.lstm_pipeline import build_model, rolling_forecast, _load_scaling_stats
+from rabl.machine_learning.build_lstm_dataset import CONTROL_COLUMN, STATE_COLUMNS
 from rabl.variography.DrumVariography import DrumProfile, DrumProfileGenerator
 
 
@@ -76,6 +80,29 @@ class RecursiveBranchingResult:
     branch_events: list[BranchEvent]
 
 
+@dataclass(frozen=True)
+class RecursiveBranchingBatchConfig:
+    model_paths: tuple[Path, ...]
+    bagged_h5_path: Path
+    output_dir: Path
+    config_path: Path
+    T: float = 200.0
+    dt: float = 0.4
+    Nk: int = 3
+    Nb: int = 2
+    Nr: int = 1
+    baseline_angle_deg: float = 45.0
+    seed: int = 123
+    lookback: int = 12
+    n_lstm: int = 1
+    lstm_hidden: int = 64
+    n_fc: int = 1
+    fc_hidden: tuple[int, ...] = (64,)
+    kernel: str = "matern52"
+    finite_difference_order: int = 4
+    device: str = "cpu"
+
+
 class LSTMEnsembleForecaster:
     """Forecast adapter for saved LSTM ensemble members.
 
@@ -111,6 +138,119 @@ class LSTMEnsembleForecaster:
             pred = rolling_forecast(model, x_profile, state_dim=self._state_dim)
             per_model.append(pred)
         return np.stack(per_model, axis=0)
+
+
+def _load_config_module(config_path: Path):
+    spec = importlib.util.spec_from_file_location("rabl_recursive_branch_cfg", config_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load config module from {config_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _steady_state_rows(steady_state: dict, *, state_dim: int, lookback: int) -> tuple[np.ndarray, np.ndarray]:
+    control_value = steady_state.get(CONTROL_COLUMN)
+    if control_value is None:
+        raise ValueError(f"STEADY_STATE must contain key '{CONTROL_COLUMN}'.")
+    missing = [key for key in STATE_COLUMNS if key not in steady_state]
+    if missing:
+        raise ValueError(f"STEADY_STATE missing required keys: {missing}")
+    state_values = [steady_state[key] for key in STATE_COLUMNS]
+    if state_dim > len(state_values):
+        raise ValueError(f"state_dim={state_dim} exceeds available state columns.")
+    state_row = np.asarray(state_values[:state_dim], dtype=np.float32)
+    control_row = np.asarray([float(control_value)], dtype=np.float32)
+    return (
+        np.repeat(state_row[None, :], lookback, axis=0),
+        np.repeat(control_row[None, :], lookback, axis=0),
+    )
+
+
+def _make_control_window(u_series: np.ndarray, step: int, lookback: int, control_steady: float) -> np.ndarray:
+    start = max(0, step - lookback + 1)
+    history = u_series[start : step + 1]
+    out = np.empty(lookback, dtype=np.float32)
+    out[: lookback - history.size] = np.float32(control_steady)
+    out[lookback - history.size :] = history
+    return out
+
+
+def _build_profile_to_x_adapter(
+    *,
+    n_steps: int,
+    lookback: int,
+    n_features: int,
+    state_dim: int,
+    steady_state: dict,
+    scaling_stats: dict,
+    control_channel: int = 0,
+) -> Callable[[DrumProfile], np.ndarray]:
+    control_dim = n_features - state_dim
+    if not (0 <= control_channel < control_dim):
+        raise ValueError("control_channel out of range.")
+    control_idx = state_dim + control_channel
+    state_pad, control_pad = _steady_state_rows(steady_state, state_dim=state_dim, lookback=lookback)
+    control_steady = float(control_pad[0, 0])
+
+    def _adapter(profile: DrumProfile) -> np.ndarray:
+        u = np.asarray(profile.theta_deg, dtype=np.float32)
+        x = np.zeros((n_steps, lookback, n_features), dtype=np.float32)
+        x[:, :, :state_dim] = state_pad[None, :, :]
+        for step in range(n_steps):
+            x[step, :, control_idx] = _make_control_window(u, step, lookback, control_steady)
+        if scaling_stats["type"] == "standard":
+            x = (x - scaling_stats["x"]["mean"][None, None, :]) / scaling_stats["x"]["std"][None, None, :]
+        elif scaling_stats["type"] == "minmax":
+            x = (x - scaling_stats["x"]["min"][None, None, :]) / scaling_stats["x"]["span"][None, None, :]
+        else:
+            raise ValueError(f"Unsupported scaling type: {scaling_stats['type']}")
+        return x
+
+    return _adapter
+
+
+def _infer_checkpoint_io_shapes(model_path: Path) -> tuple[int, int]:
+    state_dict = torch.load(Path(model_path), map_location="cpu")
+    return int(state_dict["lstm.weight_ih_l0"].shape[1]), int(state_dict["output_layer.bias"].shape[0])
+
+
+def _find_latest_variography_profile_index(variography_root: Path) -> int:
+    if not variography_root.exists():
+        return 0
+    pattern = re.compile(r"^drum_profile_(\d{5})$")
+    max_idx = 0
+    for p in variography_root.glob("batch_*/drum_profile_*.*"):
+        if p.suffix.lower() not in {".csv", ".mat"}:
+            continue
+        m = pattern.match(p.stem)
+        if m:
+            max_idx = max(max_idx, int(m.group(1)))
+    return max_idx
+
+
+def _append_manifest(
+    manifest_path: Path,
+    *,
+    root_group_name: str,
+    result: RecursiveBranchingResult,
+    written_mats: list[Path],
+) -> None:
+    entries = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else []
+    sorted_nodes = sorted(result.final_profiles.items())
+    for (profile_id, node), mat_path in zip(sorted_nodes, written_mats, strict=True):
+        entries.append(
+            {
+                "root_group_name": root_group_name,
+                "profile_id": profile_id,
+                "parent_profile_id": "" if node.parent_profile_id is None else node.parent_profile_id,
+                "created_in_interval": -1 if node.created_in_interval is None else int(node.created_in_interval),
+                "branch_time": None if node.branch_time is None else float(node.branch_time),
+                "branch_label": -1 if node.branch_label is None else int(node.branch_label),
+                "mat_file": mat_path.name,
+            }
+        )
+    manifest_path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
 
 def load_trained_ensemble(
@@ -514,3 +654,89 @@ def _interval_colors(n_intervals: int) -> list[str]:
     """Use the same interval palette as branched profile plotting."""
     palette = ["darkcyan", "aquamarine", "mediumturquoise"]
     return [palette[i % len(palette)] for i in range(max(1, n_intervals))]
+
+
+def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path:
+    """Run recursive branching for Nr roots and write MAT + manifest artifacts."""
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    if config.Nr < 1:
+        raise ValueError("Nr must be >=1.")
+    if not config.model_paths:
+        raise ValueError("model_paths must be non-empty.")
+
+    inferred = [_infer_checkpoint_io_shapes(path) for path in config.model_paths]
+    n_features, num_targets = inferred[0]
+    if any(shape != inferred[0] for shape in inferred[1:]):
+        raise ValueError("All model checkpoints must share input/output shapes.")
+
+    scaling_stats = _load_scaling_stats(config.bagged_h5_path)
+    cfg_mod = _load_config_module(config.config_path)
+    steady_state = getattr(cfg_mod, "STEADY_STATE", None)
+    if not isinstance(steady_state, dict):
+        raise ValueError("STEADY_STATE must exist in provided config file.")
+
+    t_grid = np.arange(0.0, config.T + config.dt, config.dt, dtype=float)
+    if not np.isclose(t_grid[-1], config.T):
+        t_grid = np.append(t_grid, config.T)
+    n_steps = t_grid.size
+    state_dim = int(num_targets)
+    profile_to_x = _build_profile_to_x_adapter(
+        n_steps=n_steps,
+        lookback=config.lookback,
+        n_features=n_features,
+        state_dim=state_dim,
+        steady_state=steady_state,
+        scaling_stats=scaling_stats,
+    )
+
+    models = load_trained_ensemble(
+        list(config.model_paths),
+        timesteps=config.lookback,
+        num_features=n_features,
+        num_targets=num_targets,
+        n_lstm=config.n_lstm,
+        lstm_hidden=config.lstm_hidden,
+        n_fc=config.n_fc,
+        fc_hidden=config.fc_hidden,
+        device=config.device,
+    )
+    forecaster = LSTMEnsembleForecaster(models, profile_to_x=profile_to_x, state_dim=state_dim)
+    generator = DrumProfileGenerator(kernel=config.kernel)
+    weights = np.ones((num_targets,), dtype=float)
+
+    profiles_h5 = config.output_dir / "profiles.h5"
+    manifest_path = config.output_dir / "branched_profiles_manifest.json"
+    if manifest_path.exists():
+        manifest_path.unlink()
+
+    next_idx = _find_latest_variography_profile_index(config.output_dir.parents[0]) + 1
+    for root_idx in range(config.Nr):
+        root = generate_root_profile(
+            generator,
+            t_grid,
+            baseline_angle_deg=config.baseline_angle_deg,
+            seed=config.seed + root_idx,
+        )
+        result = run_recursive_branching(
+            forecaster=forecaster,
+            generator=generator,
+            root_profile=root,
+            n_intervals=config.Nk,
+            n_branches=config.Nb,
+            weights=weights,
+            finite_difference_order=config.finite_difference_order,
+            seed=config.seed + root_idx,
+            verbose=True,
+        )
+        root_group = f"root_{root_idx + 1:03d}"
+        save_recursive_branching_output(result, profiles_h5, root_group_name=root_group)
+        mats = save_profiles_as_mat_files(result, config.output_dir, start_index=next_idx)
+        next_idx += len(mats)
+        _append_manifest(
+            manifest_path,
+            root_group_name=root_group,
+            result=result,
+            written_mats=mats,
+        )
+
+    return config.output_dir

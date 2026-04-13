@@ -12,10 +12,8 @@ Workflow:
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import re
-import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -36,6 +34,10 @@ from rabl.machine_learning.dataset_scaling import LSTMDatasetScalerSplitter
 from rabl.machine_learning.tuner import GridSearchConfig, run_grid_search
 from rabl.machine_learning.bagging_ensemble import run_bagging_ensemble
 from rabl.machine_learning.lstm_pipeline import save_forecast_profiles_pdf
+from rabl.machine_learning.recursive_branching import (
+    RecursiveBranchingBatchConfig,
+    run_recursive_branching_batch,
+)
 from rabl.interface.pymola import BatchConfig, DymolaBatchRunner
 from rabl.variography.DrumVariography import DrumProfileGenerator
 
@@ -87,16 +89,6 @@ def _next_batch_dir(base_dir: Path) -> Path:
     out = base_dir / f"batch_{max_idx + 1:04d}"
     out.mkdir(parents=False, exist_ok=False)
     return out
-
-
-def _load_recursive_branching_module():
-    module_path = REPO_ROOT / "scripts" / "run_recursive_branching.py"
-    spec = importlib.util.spec_from_file_location("run_recursive_branching_module", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load module from {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _build_from_batches(
@@ -224,10 +216,9 @@ def _run_recursive_branching_internal(
     seed: int,
     variography_root: Path,
 ) -> Path:
-    rb = _load_recursive_branching_module()
     out_dir = _next_batch_dir(variography_root)
     print(f"[step] Running recursive branching into {out_dir}")
-    run_cfg = rb.RecursiveBranchingRunConfig(
+    run_cfg = RecursiveBranchingBatchConfig(
         model_paths=tuple(Path(p) for p in model_paths),
         bagged_h5_path=Path(bagged_h5_path),
         output_dir=out_dir,
@@ -249,7 +240,7 @@ def _run_recursive_branching_internal(
         device=str(cfg.branching.get("device", "cpu")),
         config_path=Path(cfg.config_py_path),
     )
-    rb.run_recursive_branching_workflow(run_cfg)
+    run_recursive_branching_batch(run_cfg)
     return out_dir
 
 
