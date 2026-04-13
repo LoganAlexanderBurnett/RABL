@@ -33,6 +33,7 @@ from rabl.machine_learning import build_lstm_dataset
 from rabl.machine_learning.dataset_scaling import LSTMDatasetScalerSplitter
 from rabl.machine_learning.tuner import GridSearchConfig, run_grid_search
 from rabl.machine_learning.bagging_ensemble import run_bagging_ensemble
+from rabl.machine_learning.lstm_pipeline import save_forecast_profiles_pdf
 from rabl.variography.DrumVariography import DrumProfileGenerator
 
 
@@ -59,12 +60,27 @@ class ExperimentConfig:
 
 
 def _run_cmd_capture(cmd: list[str]) -> str:
-    proc = subprocess.run(cmd, cwd=str(REPO_ROOT), text=True, capture_output=True, check=True)
-    if proc.stdout:
-        print(proc.stdout, end="")
-    if proc.stderr:
-        print(proc.stderr, end="")
-    return proc.stdout + "\n" + proc.stderr
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(REPO_ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+    chunks: list[str] = []
+    for line in proc.stdout:
+        print(line, end="")
+        chunks.append(line)
+    return_code = proc.wait()
+    output_text = "".join(chunks)
+    if return_code != 0:
+        raise RuntimeError(
+            f"Command failed with exit code {return_code}: {' '.join(cmd)}\n"
+            f"--- begin subprocess output ---\n{output_text}\n--- end subprocess output ---"
+        )
+    return output_text
 
 
 def _load_cfg(path: Path) -> ExperimentConfig:
@@ -176,6 +192,30 @@ def _expected_new_profiles(nr: int, nk: int, nb: int) -> int:
     return int(nr * ((nb + 1) ** nk))
 
 
+def _summarize_forecasts(forecast_h5: Path) -> dict[str, float]:
+    all_err: list[np.ndarray] = []
+    with h5py.File(forecast_h5, "r") as h5f:
+        for profile_name in h5f.keys():
+            grp = h5f[profile_name]
+            table = np.asarray(grp["data"][()], dtype=float)
+            cols_raw = grp.attrs.get("columns", [])
+            cols = [c.decode("utf-8") if isinstance(c, bytes) else str(c) for c in cols_raw]
+            true_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_true(t)_")]
+            pred_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_mean(t)_")]
+            if not true_cols or len(true_cols) != len(pred_cols):
+                continue
+            err = table[:, pred_cols] - table[:, true_cols]
+            all_err.append(err)
+    if not all_err:
+        return {"rmse": float("nan"), "mae": float("nan"), "max_abs": float("nan")}
+    cat = np.concatenate(all_err, axis=0)
+    return {
+        "rmse": float(np.sqrt(np.mean(cat**2))),
+        "mae": float(np.mean(np.abs(cat))),
+        "max_abs": float(np.max(np.abs(cat))),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run one full experiment starting from sim batch folders.")
     parser.add_argument("--config", type=Path, required=True)
@@ -246,6 +286,20 @@ def main() -> None:
         )
         model_paths = [str(Path(d) / "model.pt") for d in ensemble["model_dirs"]]
         bagged_h5_path = Path(ensemble["bagged_h5_path"])
+        forecast_h5 = Path(ensemble["forecast_output_path"])
+        metrics = _summarize_forecasts(forecast_h5)
+        print(
+            f"[cycle {cycle + 1}] Ensemble test summary: "
+            f"RMSE={metrics['rmse']:.6f}, MAE={metrics['mae']:.6f}, MAX_ABS={metrics['max_abs']:.6f}"
+        )
+
+        forecast_pdf = cycle_dir / "ensemble" / "ensemble_test_forecasts.pdf"
+        save_forecast_profiles_pdf(
+            forecast_h5_path=forecast_h5,
+            output_pdf_path=forecast_pdf,
+            mode="ensemble",
+        )
+        print(f"[cycle {cycle + 1}] Saved forecast visualization PDF: {forecast_pdf}")
 
         # No need to generate/simulate new data after last training cycle.
         if cycle < cfg.retrain_cycles - 1:
@@ -322,6 +376,9 @@ def main() -> None:
                 },
                 "bagged_h5_path": str(bagged_h5_path),
                 "model_paths": model_paths,
+                "forecast_h5": str(forecast_h5),
+                "forecast_pdf": str(forecast_pdf),
+                "ensemble_test_metrics": metrics,
                 "new_variography_batch": None if var_batch is None else str(var_batch),
                 "new_sim_batch": sim_batch,
             }
