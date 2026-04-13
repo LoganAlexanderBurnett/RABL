@@ -77,6 +77,7 @@ def _extract_created_batch_dir(output_text: str) -> Path:
 
 
 def _next_batch_dir(base_dir: Path) -> Path:
+    base_dir = base_dir.resolve()
     base_dir.mkdir(parents=True, exist_ok=True)
     pattern = re.compile(r"^batch_(\d{4})$")
     max_idx = 0
@@ -249,7 +250,8 @@ def _run_dymola_internal(
     output_interval: float,
     sim_root: Path,
 ) -> Path:
-    out_dir = _next_batch_dir(sim_root)
+    out_dir = _next_batch_dir(sim_root).resolve()
+    profiles_dir = profiles_dir.resolve()
     print(f"[step] Running Dymola simulation mode={mode} into {out_dir}")
     batch_cfg = BatchConfig(
         profile_mode=mode,
@@ -411,9 +413,9 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     test_manifest = run_dir / "test_manifest.json"
 
-    sim_root = Path(cfg.sim_root)
-    var_root = Path(cfg.variography_root)
-    cfg_py = Path(cfg.config_py_path)
+    sim_root = Path(cfg.sim_root).resolve()
+    var_root = Path(cfg.variography_root).resolve()
+    cfg_py = Path(cfg.config_py_path).resolve()
     known_batches = list(cfg.initial_sim_batches)
     metadata: dict[str, Any] = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
