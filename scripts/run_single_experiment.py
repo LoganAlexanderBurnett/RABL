@@ -12,6 +12,7 @@ Workflow:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -35,6 +36,7 @@ from rabl.machine_learning.dataset_scaling import LSTMDatasetScalerSplitter
 from rabl.machine_learning.tuner import GridSearchConfig, run_grid_search
 from rabl.machine_learning.bagging_ensemble import run_bagging_ensemble
 from rabl.machine_learning.lstm_pipeline import save_forecast_profiles_pdf
+from rabl.interface.pymola import BatchConfig, DymolaBatchRunner
 from rabl.variography.DrumVariography import DrumProfileGenerator
 
 
@@ -58,30 +60,6 @@ class ExperimentConfig:
     config_py_path: str = str(REPO_ROOT / "scripts" / "config.py")
     sim_root: str = str(REPO_ROOT / "outputs" / "sim_profiles")
     variography_root: str = str(REPO_ROOT / "outputs" / "variography_profiles")
-
-
-def _run_cmd_capture(cmd: list[str]) -> str:
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(REPO_ROOT),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    assert proc.stdout is not None
-    chunks: list[str] = []
-    for line in proc.stdout:
-        print(line, end="")
-        chunks.append(line)
-    return_code = proc.wait()
-    output_text = "".join(chunks)
-    if return_code != 0:
-        raise RuntimeError(
-            f"Command failed with exit code {return_code}: {' '.join(cmd)}\n"
-            f"--- begin subprocess output ---\n{output_text}\n--- end subprocess output ---"
-        )
-    return output_text
 
 
 def _load_cfg(path: Path) -> ExperimentConfig:
@@ -109,6 +87,16 @@ def _next_batch_dir(base_dir: Path) -> Path:
     out = base_dir / f"batch_{max_idx + 1:04d}"
     out.mkdir(parents=False, exist_ok=False)
     return out
+
+
+def _load_recursive_branching_module():
+    module_path = REPO_ROOT / "scripts" / "run_recursive_branching.py"
+    spec = importlib.util.spec_from_file_location("run_recursive_branching_module", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _build_from_batches(
@@ -192,6 +180,108 @@ def _sample_random_profiles(batch_dir: Path, *, n_profiles: int, T: float, dt: f
 
 def _expected_new_profiles(nr: int, nk: int, nb: int) -> int:
     return int(nr * ((nb + 1) ** nk))
+
+
+def _find_latest_global_result_index(sim_root: Path) -> int:
+    pattern = re.compile(r"^results_drum_profile_(\d{5})$")
+    max_idx = 0
+    for result_path in sim_root.glob("batch_*/results_drum_profile_*.*"):
+        if result_path.suffix.lower() not in {".csv", ".mat"}:
+            continue
+        m = pattern.match(result_path.stem)
+        if m:
+            max_idx = max(max_idx, int(m.group(1)))
+    return max_idx
+
+
+def _copy_stitched_results_to_batch_root_with_global_numbering(out_dir: Path, sim_root: Path) -> None:
+    stitched = out_dir / "stitched_results"
+    if not stitched.exists():
+        return
+    sources = sorted(stitched.glob("results_*.csv"))
+    if not sources:
+        return
+    next_idx = _find_latest_global_result_index(sim_root) + 1
+    for csv_src in sources:
+        mat_src = csv_src.with_suffix(".mat")
+        stem = f"results_drum_profile_{next_idx:05d}"
+        csv_dst = out_dir / f"{stem}.csv"
+        mat_dst = out_dir / f"{stem}.mat"
+        csv_dst.write_bytes(csv_src.read_bytes())
+        if mat_src.exists():
+            mat_dst.write_bytes(mat_src.read_bytes())
+        next_idx += 1
+
+
+def _run_recursive_branching_internal(
+    *,
+    cfg: ExperimentConfig,
+    model_paths: list[str],
+    bagged_h5_path: Path,
+    lstm_hidden: int,
+    n_lstm: int,
+    fc_hidden: int,
+    seed: int,
+    variography_root: Path,
+) -> Path:
+    rb = _load_recursive_branching_module()
+    out_dir = _next_batch_dir(variography_root)
+    print(f"[step] Running recursive branching into {out_dir}")
+    run_cfg = rb.RecursiveBranchingRunConfig(
+        model_paths=tuple(Path(p) for p in model_paths),
+        bagged_h5_path=Path(bagged_h5_path),
+        output_dir=out_dir,
+        T=float(cfg.branching["T"]),
+        dt=float(cfg.branching["dt"]),
+        Nk=int(cfg.branching["N_k"]),
+        Nb=int(cfg.branching["N_b"]),
+        Nr=int(cfg.branching["N_r"]),
+        baseline_angle_deg=float(cfg.branching["baseline_angle_deg"]),
+        seed=int(seed),
+        visualize=True,
+        lookback=int(cfg.lookback),
+        n_features=14,
+        n_lstm=int(n_lstm),
+        lstm_hidden=int(lstm_hidden),
+        n_fc=1,
+        fc_hidden=(int(fc_hidden),),
+        kernel=str(cfg.branching["kernel"]),
+        device=str(cfg.branching.get("device", "cpu")),
+        config_path=Path(cfg.config_py_path),
+    )
+    rb.run_recursive_branching_workflow(run_cfg)
+    return out_dir
+
+
+def _run_dymola_internal(
+    *,
+    mode: str,
+    profiles_dir: Path,
+    output_interval: float,
+    sim_root: Path,
+) -> Path:
+    out_dir = _next_batch_dir(sim_root)
+    print(f"[step] Running Dymola simulation mode={mode} into {out_dir}")
+    batch_cfg = BatchConfig(
+        profile_mode=mode,
+        out_dir=str(out_dir),
+        profiles_dir=str(profiles_dir),
+        output_interval=float(output_interval),
+        canonical_output_interval=float(output_interval),
+        skip_existing=True,
+    )
+    runner = DymolaBatchRunner(batch_cfg)
+    runner.start()
+    try:
+        if mode == "branched_mat":
+            runner.run_branched_mat()
+        else:
+            runner.run_all()
+    finally:
+        runner.close()
+    if mode == "branched_mat":
+        _copy_stitched_results_to_batch_root_with_global_numbering(out_dir, sim_root)
+    return out_dir
 
 
 def _summarize_forecasts(forecast_h5: Path) -> dict[str, float]:
@@ -345,6 +435,7 @@ def main() -> None:
     for cycle in range(cfg.retrain_cycles):
         cycle_dir = run_dir / f"cycle_{cycle + 1:02d}"
         cycle_dir.mkdir(parents=True, exist_ok=True)
+        print(f"\n==== Cycle {cycle + 1}/{cfg.retrain_cycles}: build dataset ====")
 
         unscaled_h5 = _build_from_batches(
             sim_root=sim_root,
@@ -363,14 +454,18 @@ def main() -> None:
             test_count=cfg.test_count,
             seed=cfg.seed + cycle,
         )
+        print(f"[step] Built scaled dataset: {scaled_h5}")
 
+        print(f"[step] Hyperparameter tuning...")
         best = _tune(
             scaled_h5=scaled_h5,
             out_dir=cycle_dir / "tuning",
             seed=cfg.seed + cycle,
             grid=cfg.hp_grid,
         )
+        print(f"[step] Best trial: lr={best.learning_rate}, bs={best.batch_size}, n_lstm={best.n_lstm}, hl={best.hidden_lstm}, hf={best.hidden_fc}")
 
+        print(f"[step] Training bagged ensemble...")
         ensemble = run_bagging_ensemble(
             scaled_h5,
             out_dir=cycle_dir / "ensemble",
@@ -416,31 +511,16 @@ def main() -> None:
         # No need to generate/simulate new data after last training cycle.
         if cycle < cfg.retrain_cycles - 1:
             if cfg.strategy == "branching":
-                cmd = [
-                    sys.executable,
-                    str(REPO_ROOT / "scripts" / "run_recursive_branching.py"),
-                    "--run-mode", "production",
-                    "--model-path", *model_paths,
-                    "--bagged-h5-path", str(bagged_h5_path),
-                    "--lstm-hidden", str(best.hidden_lstm),
-                    "--fc-hidden", str(best.hidden_fc),
-                    "--lookback", str(cfg.lookback),
-                    "--n-features", "14",
-                    "--n-lstm", str(best.n_lstm),
-                    "--n-fc", "1",
-                    "--T", str(cfg.branching["T"]),
-                    "--dt", str(cfg.branching["dt"]),
-                    "--Nk", str(cfg.branching["N_k"]),
-                    "--Nb", str(cfg.branching["N_b"]),
-                    "--Nr", str(cfg.branching["N_r"]),
-                    "--baseline-angle-deg", str(cfg.branching["baseline_angle_deg"]),
-                    "--kernel", str(cfg.branching["kernel"]),
-                    "--device", str(cfg.branching.get("device", "cpu")),
-                    "--visualize", "1",
-                    "--seed", str(cfg.seed + cycle),
-                ]
-                out_text = _run_cmd_capture(cmd)
-                var_batch = _extract_created_batch_dir(out_text)
+                var_batch = _run_recursive_branching_internal(
+                    cfg=cfg,
+                    model_paths=model_paths,
+                    bagged_h5_path=bagged_h5_path,
+                    lstm_hidden=int(best.hidden_lstm),
+                    n_lstm=int(best.n_lstm),
+                    fc_hidden=int(best.hidden_fc),
+                    seed=cfg.seed + cycle,
+                    variography_root=var_root,
+                )
                 pymola_mode = "branched_mat"
             else:
                 n_new = _expected_new_profiles(
@@ -458,16 +538,13 @@ def main() -> None:
                 )
                 pymola_mode = "flat_mat"
 
-            sim_cmd = [
-                sys.executable,
-                str(REPO_ROOT / "scripts" / "run_pymola_mode.py"),
-                "--mode", pymola_mode,
-                "--run-mode", "production",
-                "--profiles", str(var_batch),
-                "--output-interval", str(cfg.dymola["output_interval"]),
-            ]
-            sim_out_text = _run_cmd_capture(sim_cmd)
-            sim_batch = _extract_created_batch_dir(sim_out_text).name
+            sim_out_dir = _run_dymola_internal(
+                mode=pymola_mode,
+                profiles_dir=Path(var_batch),
+                output_interval=float(cfg.dymola["output_interval"]),
+                sim_root=sim_root,
+            )
+            sim_batch = sim_out_dir.name
             known_batches.append(sim_batch.replace("batch_", ""))
         else:
             var_batch = None
