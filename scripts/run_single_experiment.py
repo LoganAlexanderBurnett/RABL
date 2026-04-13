@@ -302,7 +302,26 @@ def _plot_stitched_results(stitched_dir: Path) -> None:
         return
 
     series: list[tuple[np.ndarray, dict[str, np.ndarray]]] = []
-    vars_to_plot: list[str] = []
+    vars_to_plot = [
+        "drumAngleDeg",
+        "drumVelDeg_s",
+        "TN2",
+        "Tm",
+        "Thp",
+        "Tf",
+        "c[1]",
+        "c[2]",
+        "c[3]",
+        "c[4]",
+        "c[5]",
+        "c[6]",
+        "P_MW",
+        "rho_dollars",
+        "rho_drums_dollars",
+        "rho_fuel_dollars",
+        "rho_moderator_dollars",
+        "Q_to_steam",
+    ]
     for idx, csv_path in enumerate(csv_paths):
         with csv_path.open(newline="") as fp:
             reader = csv.DictReader(fp)
@@ -314,8 +333,6 @@ def _plot_stitched_results(stitched_dir: Path) -> None:
             continue
         t = np.asarray([float(r["t"]) for r in rows], dtype=float)
         payload: dict[str, np.ndarray] = {}
-        if idx == 0:
-            vars_to_plot = [k for k in keys if k in {"drumAngleDeg", "TN2", "Tm", "Thp", "Tf", "Q_to_steam"}]
         for k in vars_to_plot:
             if k in keys:
                 payload[k] = np.asarray([float(r[k]) for r in rows], dtype=float)
@@ -324,9 +341,9 @@ def _plot_stitched_results(stitched_dir: Path) -> None:
         return
 
     n = len(vars_to_plot)
-    cols = 3
-    rows_n = int(np.ceil(n / cols))
-    fig, axes = plt.subplots(rows_n, cols, figsize=(6 * cols, 3.5 * rows_n), sharex=True)
+    cols = 6
+    rows_n = 3
+    fig, axes = plt.subplots(rows_n, cols, figsize=(30, 12), sharex=True)
     axes_flat = np.atleast_1d(axes).ravel()
     for ax, var in zip(axes_flat, vars_to_plot):
         for t, payload in series:
