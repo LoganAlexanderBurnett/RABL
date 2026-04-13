@@ -12,8 +12,10 @@ Workflow:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -271,8 +273,74 @@ def _run_dymola_internal(
     finally:
         runner.close()
     if mode == "branched_mat":
+        _plot_stitched_results(out_dir / "stitched_results")
         _copy_stitched_results_to_batch_root_with_global_numbering(out_dir, sim_root)
+        _cleanup_production_artifacts(out_dir)
     return out_dir
+
+
+def _cleanup_production_artifacts(out_dir: Path) -> None:
+    generated_profiles = out_dir / "generated_profiles"
+    if generated_profiles.exists():
+        shutil.rmtree(generated_profiles, ignore_errors=True)
+
+    stitched_dir = out_dir / "stitched_results"
+    for file_path in out_dir.rglob("*"):
+        if not file_path.is_file():
+            continue
+        if stitched_dir in file_path.parents:
+            continue
+        if file_path.suffix.lower() in {".txt", ".c", ".exe", ".mat"}:
+            file_path.unlink(missing_ok=True)
+
+
+def _plot_stitched_results(stitched_dir: Path) -> None:
+    if not stitched_dir.exists():
+        return
+    csv_paths = sorted(stitched_dir.glob("results_*.csv"))
+    if not csv_paths:
+        return
+
+    series: list[tuple[np.ndarray, dict[str, np.ndarray]]] = []
+    vars_to_plot: list[str] = []
+    for idx, csv_path in enumerate(csv_paths):
+        with csv_path.open(newline="") as fp:
+            reader = csv.DictReader(fp)
+            rows = list(reader)
+        if not rows:
+            continue
+        keys = list(rows[0].keys())
+        if "t" not in keys:
+            continue
+        t = np.asarray([float(r["t"]) for r in rows], dtype=float)
+        payload: dict[str, np.ndarray] = {}
+        if idx == 0:
+            vars_to_plot = [k for k in keys if k in {"drumAngleDeg", "TN2", "Tm", "Thp", "Tf", "Q_to_steam"}]
+        for k in vars_to_plot:
+            if k in keys:
+                payload[k] = np.asarray([float(r[k]) for r in rows], dtype=float)
+        series.append((t, payload))
+    if not series or not vars_to_plot:
+        return
+
+    n = len(vars_to_plot)
+    cols = 3
+    rows_n = int(np.ceil(n / cols))
+    fig, axes = plt.subplots(rows_n, cols, figsize=(6 * cols, 3.5 * rows_n), sharex=True)
+    axes_flat = np.atleast_1d(axes).ravel()
+    for ax, var in zip(axes_flat, vars_to_plot):
+        for t, payload in series:
+            if var in payload:
+                ax.plot(t, payload[var], alpha=0.25, linewidth=1.0)
+        ax.set_title(var)
+        ax.grid(alpha=0.3)
+    for ax in axes_flat[n:]:
+        ax.set_axis_off()
+    fig.tight_layout()
+    out_path = stitched_dir / "timeseries_stitched_ALL_PROFILES.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"[step] Saved stitched plot: {out_path}")
 
 
 def _summarize_forecasts(forecast_h5: Path) -> dict[str, float]:
