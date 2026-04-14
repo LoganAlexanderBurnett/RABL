@@ -20,6 +20,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import h5py
@@ -502,10 +503,36 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     plt.close(fig)
 
 
+def _save_forecast_pdf_subset(
+    *,
+    forecast_h5_path: Path,
+    output_pdf_path: Path,
+    max_profiles: int,
+) -> None:
+    with h5py.File(forecast_h5_path, "r") as src:
+        names = sorted(src.keys())[:max(0, int(max_profiles))]
+        subset_h5 = output_pdf_path.with_suffix(".subset_tmp.h5")
+        with h5py.File(subset_h5, "w") as dst:
+            for name in names:
+                src.copy(name, dst)
+        save_forecast_profiles_pdf(
+            forecast_h5_path=subset_h5,
+            output_pdf_path=output_pdf_path,
+            mode="ensemble",
+        )
+    subset_h5.unlink(missing_ok=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run one full experiment starting from sim batch folders.")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--base-output-dir", type=Path, default=REPO_ROOT / "outputs" / "experiments")
+    parser.add_argument(
+        "--plot-n-forecasts",
+        type=int,
+        default=10,
+        help="Number of forecast profiles to include in the ensemble forecast PDF per cycle.",
+    )
     args = parser.parse_args()
 
     cfg = _load_cfg(args.config)
@@ -526,11 +553,15 @@ def main() -> None:
         "cycles": [],
     }
 
+    all_start = perf_counter()
     for cycle in range(cfg.retrain_cycles):
+        cycle_start = perf_counter()
+        step_times: dict[str, float] = {}
         cycle_dir = run_dir / f"cycle_{cycle + 1:02d}"
         cycle_dir.mkdir(parents=True, exist_ok=True)
         print(f"\n==== Cycle {cycle + 1}/{cfg.retrain_cycles}: build dataset ====")
 
+        t0 = perf_counter()
         unscaled_h5 = _build_from_batches(
             sim_root=sim_root,
             batch_ids=known_batches,
@@ -538,7 +569,9 @@ def main() -> None:
             cfg_py=cfg_py,
             out_dir=cycle_dir / "unscaled",
         )
+        step_times["build_unscaled_dataset_sec"] = perf_counter() - t0
 
+        t0 = perf_counter()
         scaled_h5 = _scale_with_fixed_test(
             unscaled_h5=unscaled_h5,
             out_dir=cycle_dir / "scaled",
@@ -548,18 +581,22 @@ def main() -> None:
             test_count=cfg.test_count,
             seed=cfg.seed + cycle,
         )
+        step_times["scale_split_dataset_sec"] = perf_counter() - t0
         print(f"[step] Built scaled dataset: {scaled_h5}")
 
         print(f"[step] Hyperparameter tuning...")
+        t0 = perf_counter()
         best = _tune(
             scaled_h5=scaled_h5,
             out_dir=cycle_dir / "tuning",
             seed=cfg.seed + cycle,
             grid=cfg.hp_grid,
         )
+        step_times["hyperparameter_tuning_sec"] = perf_counter() - t0
         print(f"[step] Best trial: lr={best.learning_rate}, bs={best.batch_size}, n_lstm={best.n_lstm}, hl={best.hidden_lstm}, hf={best.hidden_fc}")
 
         print(f"[step] Training bagged ensemble...")
+        t0 = perf_counter()
         ensemble = run_bagging_ensemble(
             scaled_h5,
             out_dir=cycle_dir / "ensemble",
@@ -575,11 +612,14 @@ def main() -> None:
             fc_hidden=(best.hidden_fc,),
             prefer_gpu=cfg.prefer_gpu,
         )
+        step_times["ensemble_training_sec"] = perf_counter() - t0
         model_paths = [str(Path(d) / "model.pt") for d in ensemble["model_dirs"]]
         bagged_h5_path = Path(ensemble["bagged_h5_path"])
         forecast_h5 = Path(ensemble["forecast_output_path"])
+        t0 = perf_counter()
         point_metrics = _summarize_forecasts(forecast_h5)
         unc_metrics = _compute_uncertainty_metrics(forecast_h5)
+        step_times["ensemble_metrics_compute_sec"] = perf_counter() - t0
         metrics = {
             "forecast_quality": point_metrics,
             "uncertainty_quality": unc_metrics,
@@ -592,11 +632,13 @@ def main() -> None:
         )
 
         forecast_pdf = cycle_dir / "ensemble" / "ensemble_test_forecasts.pdf"
-        save_forecast_profiles_pdf(
+        t0 = perf_counter()
+        _save_forecast_pdf_subset(
             forecast_h5_path=forecast_h5,
             output_pdf_path=forecast_pdf,
-            mode="ensemble",
+            max_profiles=args.plot_n_forecasts,
         )
+        step_times["forecast_pdf_render_sec"] = perf_counter() - t0
         print(f"[cycle {cycle + 1}] Saved forecast visualization PDF: {forecast_pdf}")
         metrics_json = cycle_dir / "ensemble" / "ensemble_metrics.json"
         metrics_json.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
@@ -605,6 +647,7 @@ def main() -> None:
         # No need to generate/simulate new data after last training cycle.
         if cycle < cfg.retrain_cycles - 1:
             if cfg.strategy == "branching":
+                t0 = perf_counter()
                 var_batch = _run_recursive_branching_internal(
                     cfg=cfg,
                     model_paths=model_paths,
@@ -615,8 +658,10 @@ def main() -> None:
                     seed=cfg.seed + cycle,
                     variography_root=var_root,
                 )
+                step_times["profile_generation_sec"] = perf_counter() - t0
                 pymola_mode = "branched_mat"
             else:
+                t0 = perf_counter()
                 n_new = _expected_new_profiles(
                     int(cfg.branching["N_r"]), int(cfg.branching["N_k"]), int(cfg.branching["N_b"])
                 )
@@ -630,19 +675,28 @@ def main() -> None:
                     baseline=float(cfg.branching["baseline_angle_deg"]),
                     kernel=str(cfg.branching["kernel"]),
                 )
+                step_times["profile_generation_sec"] = perf_counter() - t0
                 pymola_mode = "flat_mat"
 
+            t0 = perf_counter()
             sim_out_dir = _run_dymola_internal(
                 mode=pymola_mode,
                 profiles_dir=Path(var_batch),
                 output_interval=float(cfg.dymola["output_interval"]),
                 sim_root=sim_root,
             )
+            step_times["dymola_simulation_sec"] = perf_counter() - t0
             sim_batch = sim_out_dir.name
             known_batches.append(sim_batch.replace("batch_", ""))
         else:
             var_batch = None
             sim_batch = None
+            step_times["profile_generation_sec"] = 0.0
+            step_times["dymola_simulation_sec"] = 0.0
+
+        cycle_total = perf_counter() - cycle_start
+        step_times["cycle_total_sec"] = cycle_total
+        print(f"[timing] cycle {cycle + 1} total: {cycle_total:.2f} s")
 
         metadata["cycles"].append(
             {
@@ -665,6 +719,7 @@ def main() -> None:
                 "ensemble_metrics_json": str(metrics_json),
                 "new_variography_batch": None if var_batch is None else str(var_batch),
                 "new_sim_batch": sim_batch,
+                "timing": step_times,
             }
         )
 
@@ -677,6 +732,8 @@ def main() -> None:
     )
 
     metadata_path = run_dir / "run_metadata.json"
+    metadata["total_runtime_sec"] = perf_counter() - all_start
+    print(f"[timing] all cycles total: {metadata['total_runtime_sec']:.2f} s")
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     print(f"Done. Metadata: {metadata_path}")
 
