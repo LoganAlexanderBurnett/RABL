@@ -1,0 +1,49 @@
+{
+  "experiment_id": "single_exp_smoke_002",
+  "strategy": "branching",
+  "seed": 123,
+  "retrain_cycles": 5,
+
+  "initial_sim_batches": ["0003", "0004", "0005"],
+
+  "lookback": 12,
+  "scaling_type": "minmax",
+  "split_mode": "sample",
+
+  "test_count": 2000,
+
+  "n_models": 3,
+  "bag_fraction": 0.6,
+  "prefer_gpu": true,
+
+  "hp_grid": {
+    "lookback": 12,
+    "learning_rates": [1e-3, 1e-4],
+    "batch_sizes": [128, 256],
+    "n_lstm_values": [1],
+    "hidden_lstm_values": [32, 64],
+    "hidden_fc_values": [192, 384],
+    "n_fc": 1,
+    "epochs": 50,
+    "prefer_gpu": true
+  },
+
+  "branching": {
+    "N_r": 9,
+    "N_k": 3,
+    "N_b": 2,
+    "T": 200.0,
+    "dt": 0.4,
+    "baseline_angle_deg": 45.0,
+    "kernel": "matern52",
+    "device": "cpu"
+  },
+
+  "dymola": {
+    "output_interval": 0.4
+  },
+
+  "config_py_path": "scripts/config.py",
+  "sim_root": "outputs/sim_profiles",
+  "variography_root": "outputs/variography_profiles"
+}

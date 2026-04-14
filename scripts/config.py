@@ -3,10 +3,10 @@
 # Change for each batch as necessary
 NUM_PROFILES       = 1000
 ELL                = 10.0
-SIGMA_THETA_TARGET = 2.5
-BATCH_NUMBER       = 3
-SEED               = 123    # avoid duplicate drum profiles across batches, but ensure reproducibility
-PLOT_BATCH_NUMBERS = [3]
+SIGMA_THETA_TARGET = 2.5     # CHANGE BACK TO 2.5!
+BATCH_NUMBER       = 6
+SEED               = 789    # avoid duplicate drum profiles across batches, but ensure reproducibility
+PLOT_BATCH_NUMBERS = [6]
 
 # Should never need to change
 NUGGET_V_DEG2_S2   = 0.0
