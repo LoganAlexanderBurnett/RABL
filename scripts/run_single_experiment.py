@@ -511,6 +511,9 @@ def _save_forecast_pdf_subset(
 ) -> None:
     with h5py.File(forecast_h5_path, "r") as src:
         names = sorted(src.keys())[:max(0, int(max_profiles))]
+        if not names:
+            print("[step] No forecast profiles selected for PDF; skipping PDF generation.")
+            return
         subset_h5 = output_pdf_path.with_suffix(".subset_tmp.h5")
         with h5py.File(subset_h5, "w") as dst:
             for name in names:
@@ -534,6 +537,8 @@ def main() -> None:
         help="Number of forecast profiles to include in the ensemble forecast PDF per cycle.",
     )
     args = parser.parse_args()
+    if args.plot_n_forecasts < 0:
+        raise SystemExit("--plot-n-forecasts must be >= 0.")
 
     cfg = _load_cfg(args.config)
     if cfg.strategy not in {"branching", "random"}:
@@ -557,6 +562,7 @@ def main() -> None:
     for cycle in range(cfg.retrain_cycles):
         cycle_start = perf_counter()
         step_times: dict[str, float] = {}
+        cycle_input_batches = list(known_batches)
         cycle_dir = run_dir / f"cycle_{cycle + 1:02d}"
         cycle_dir.mkdir(parents=True, exist_ok=True)
         print(f"\n==== Cycle {cycle + 1}/{cfg.retrain_cycles}: build dataset ====")
@@ -697,11 +703,22 @@ def main() -> None:
         cycle_total = perf_counter() - cycle_start
         step_times["cycle_total_sec"] = cycle_total
         print(f"[timing] cycle {cycle + 1} total: {cycle_total:.2f} s")
+        for key in (
+            "build_unscaled_dataset_sec",
+            "scale_split_dataset_sec",
+            "hyperparameter_tuning_sec",
+            "ensemble_training_sec",
+            "ensemble_metrics_compute_sec",
+            "forecast_pdf_render_sec",
+            "profile_generation_sec",
+            "dymola_simulation_sec",
+        ):
+            print(f"[timing] cycle {cycle + 1} {key}: {step_times.get(key, 0.0):.2f} s")
 
         metadata["cycles"].append(
             {
                 "cycle": cycle + 1,
-                "input_batches": list(known_batches),
+                "input_batches": cycle_input_batches,
                 "unscaled_h5": str(unscaled_h5),
                 "scaled_h5": str(scaled_h5),
                 "best_trial": {
@@ -715,6 +732,7 @@ def main() -> None:
                 "model_paths": model_paths,
                 "forecast_h5": str(forecast_h5),
                 "forecast_pdf": str(forecast_pdf),
+                "forecast_profiles_plotted": int(max(args.plot_n_forecasts, 0)),
                 "ensemble_test_metrics": metrics,
                 "ensemble_metrics_json": str(metrics_json),
                 "new_variography_batch": None if var_batch is None else str(var_batch),
