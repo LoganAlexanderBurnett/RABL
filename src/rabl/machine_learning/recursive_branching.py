@@ -99,6 +99,9 @@ class RecursiveBranchingBatchConfig:
     n_fc: int = 1
     fc_hidden: tuple[int, ...] = (64,)
     kernel: str = "matern52"
+    ell: float = 5.0
+    sigma_theta_target: float = 2.5
+    nugget_v_deg2_s2: float = 0.0
     finite_difference_order: int = 4
     device: str = "cpu"
 
@@ -701,7 +704,18 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
         device=config.device,
     )
     forecaster = LSTMEnsembleForecaster(models, profile_to_x=profile_to_x, state_dim=state_dim)
-    generator = DrumProfileGenerator(kernel=config.kernel)
+    generator = DrumProfileGenerator(
+        kernel=config.kernel,
+        ell=float(config.ell),
+        nugget_v_deg2_s2=float(config.nugget_v_deg2_s2),
+    )
+    generator.solve_params_for_sigma_theta(
+        t_grid=t_grid,
+        sigma_theta_target=float(config.sigma_theta_target),
+        ell=float(config.ell),
+        nugget=float(config.nugget_v_deg2_s2),
+        update_instance=True,
+    )
     weights = np.ones((num_targets,), dtype=float)
 
     profiles_h5 = config.output_dir / "profiles.h5"

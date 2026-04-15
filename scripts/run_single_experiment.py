@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import json
 import re
 import shutil
@@ -92,6 +93,30 @@ class ExperimentConfig:
 def _load_cfg(path: Path) -> ExperimentConfig:
     data = json.loads(path.read_text(encoding="utf-8"))
     return ExperimentConfig(**data)
+
+
+def _load_variography_params(config_path: Path) -> dict[str, Any]:
+    if not config_path.exists():
+        raise SystemExit(f"Missing config file: {config_path}")
+    spec = importlib.util.spec_from_file_location("single_experiment_variography_config", config_path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"Unable to load config file: {config_path}")
+    config_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config_module)
+    required_keys = (
+        "ELL",
+        "SIGMA_THETA_TARGET",
+        "NUGGET_V_DEG2_S2",
+        "KERNEL",
+        "T_GRID_DURATION",
+        "T_GRID_INTERVALS",
+        "BASELINE_ANGLE_DEG",
+    )
+    params = {key: getattr(config_module, key, None) for key in required_keys}
+    missing = [key for key, value in params.items() if value is None]
+    if missing:
+        raise SystemExit(f"config.py is missing required variography keys: {missing}")
+    return params
 
 
 def _extract_created_batch_dir(output_text: str) -> Path:
@@ -182,11 +207,28 @@ def _tune(scaled_h5: Path, out_dir: Path, seed: int, grid: dict[str, Any]) -> An
     return best
 
 
-def _sample_random_profiles(batch_dir: Path, *, n_profiles: int, T: float, dt: float, seed: int, baseline: float, kernel: str) -> None:
-    t_grid = np.arange(0.0, T + dt, dt, dtype=float)
-    if not np.isclose(t_grid[-1], T):
-        t_grid = np.append(t_grid, T)
-    gen = DrumProfileGenerator(kernel=kernel)
+def _sample_random_profiles(batch_dir: Path, *, n_profiles: int, seed: int, variography_params: dict[str, Any]) -> None:
+    duration = float(variography_params["T_GRID_DURATION"])
+    intervals = int(variography_params["T_GRID_INTERVALS"])
+    if intervals < 1:
+        raise ValueError("T_GRID_INTERVALS must be >= 1.")
+    dt = duration / intervals
+    baseline = float(variography_params["BASELINE_ANGLE_DEG"])
+    kernel = str(variography_params["KERNEL"])
+    ell = float(variography_params["ELL"])
+    sigma_target = float(variography_params["SIGMA_THETA_TARGET"])
+    nugget = float(variography_params["NUGGET_V_DEG2_S2"])
+    t_grid = np.arange(0.0, duration + dt, dt, dtype=float)
+    if not np.isclose(t_grid[-1], duration):
+        t_grid = np.append(t_grid, duration)
+    gen = DrumProfileGenerator(kernel=kernel, ell=ell, nugget_v_deg2_s2=nugget)
+    gen.solve_params_for_sigma_theta(
+        t_grid=t_grid,
+        sigma_theta_target=sigma_target,
+        ell=ell,
+        nugget=nugget,
+        update_instance=True,
+    )
     profiles = gen.generate(
         t_grid=t_grid,
         n_realizations=n_profiles,
@@ -235,6 +277,7 @@ def _copy_stitched_results_to_batch_root_with_global_numbering(out_dir: Path, si
 def _run_recursive_branching_internal(
     *,
     cfg: ExperimentConfig,
+    variography_params: dict[str, Any],
     model_paths: list[str],
     bagged_h5_path: Path,
     lstm_hidden: int,
@@ -245,23 +288,31 @@ def _run_recursive_branching_internal(
 ) -> Path:
     out_dir = _next_batch_dir(variography_root)
     print(f"[step] Running recursive branching into {out_dir}")
+    duration = float(variography_params["T_GRID_DURATION"])
+    intervals = int(variography_params["T_GRID_INTERVALS"])
+    if intervals < 1:
+        raise ValueError("T_GRID_INTERVALS must be >= 1.")
+    dt = duration / intervals
     run_cfg = RecursiveBranchingBatchConfig(
         model_paths=tuple(Path(p) for p in model_paths),
         bagged_h5_path=Path(bagged_h5_path),
         output_dir=out_dir,
-        T=float(cfg.branching["T"]),
-        dt=float(cfg.branching["dt"]),
+        T=duration,
+        dt=dt,
         Nk=int(cfg.branching["N_k"]),
         Nb=int(cfg.branching["N_b"]),
         Nr=int(cfg.branching["N_r"]),
-        baseline_angle_deg=float(cfg.branching["baseline_angle_deg"]),
+        baseline_angle_deg=float(variography_params["BASELINE_ANGLE_DEG"]),
         seed=int(seed),
         lookback=int(cfg.lookback),
         n_lstm=int(n_lstm),
         lstm_hidden=int(lstm_hidden),
         n_fc=1,
         fc_hidden=(int(fc_hidden),),
-        kernel=str(cfg.branching["kernel"]),
+        kernel=str(variography_params["KERNEL"]),
+        ell=float(variography_params["ELL"]),
+        sigma_theta_target=float(variography_params["SIGMA_THETA_TARGET"]),
+        nugget_v_deg2_s2=float(variography_params["NUGGET_V_DEG2_S2"]),
         device=str(cfg.branching.get("device", "cpu")),
         config_path=Path(cfg.config_py_path),
     )
@@ -655,6 +706,7 @@ def main() -> None:
     sim_root = Path(cfg.sim_root).resolve()
     var_root = Path(cfg.variography_root).resolve()
     cfg_py = Path(cfg.config_py_path).resolve()
+    variography_params = _load_variography_params(cfg_py)
     known_batches = list(cfg.initial_sim_batches)
     metadata: dict[str, Any] = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -767,6 +819,7 @@ def main() -> None:
                 t0 = perf_counter()
                 var_batch = _run_recursive_branching_internal(
                     cfg=cfg,
+                    variography_params=variography_params,
                     model_paths=model_paths,
                     bagged_h5_path=bagged_h5_path,
                     lstm_hidden=int(best.hidden_lstm),
@@ -786,11 +839,8 @@ def main() -> None:
                 _sample_random_profiles(
                     var_batch,
                     n_profiles=n_new,
-                    T=float(cfg.branching["T"]),
-                    dt=float(cfg.branching["dt"]),
                     seed=cycle_seed,
-                    baseline=float(cfg.branching["baseline_angle_deg"]),
-                    kernel=str(cfg.branching["kernel"]),
+                    variography_params=variography_params,
                 )
                 step_times["profile_generation_sec"] = perf_counter() - t0
                 pymola_mode = "flat_mat"
