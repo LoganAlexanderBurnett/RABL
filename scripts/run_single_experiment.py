@@ -68,6 +68,24 @@ PLOT_VARS = [
 ]
 
 
+def _print_block_header(title: str, *, width: int = 96, fill: str = "=") -> None:
+    bar = fill * width
+    print(f"\n{bar}\n{title.center(width)}\n{bar}\n")
+
+
+def _print_step_banner(cycle: int, label: str, *, width: int = 96) -> None:
+    bar = "-" * width
+    print(f"\n{bar}\n[cycle {cycle:02d}] {label}\n{bar}")
+
+
+def _print_step_result(cycle: int, label: str, detail: str | None = None, *, width: int = 96) -> None:
+    bar = "." * width
+    print(f"{bar}\n[cycle {cycle:02d}] ✅ {label}")
+    if detail:
+        print(detail)
+    print(f"{bar}\n")
+
+
 @dataclass(frozen=True)
 class ExperimentConfig:
     experiment_id: str
@@ -727,8 +745,11 @@ def main() -> None:
         cycle_input_batches = list(known_batches)
         cycle_dir = run_dir / f"cycle_{cycle + 1:02d}"
         cycle_dir.mkdir(parents=True, exist_ok=True)
-        print(f"\n==== Cycle {cycle + 1}/{cfg.retrain_cycles}: build dataset ====")
+        _print_block_header(
+            f"CYCLE {cycle + 1}/{cfg.retrain_cycles}  |  SEED={cycle_seed}  |  OUTPUT={cycle_dir}"
+        )
 
+        _print_step_banner(cycle + 1, "Build unscaled dataset")
         t0 = perf_counter()
         unscaled_h5 = _build_from_batches(
             sim_root=sim_root,
@@ -738,7 +759,9 @@ def main() -> None:
             out_dir=cycle_dir / "unscaled",
         )
         step_times["build_unscaled_dataset_sec"] = perf_counter() - t0
+        _print_step_result(cycle + 1, "Build unscaled dataset complete", f"Output: {unscaled_h5}")
 
+        _print_step_banner(cycle + 1, "Scale + split dataset")
         t0 = perf_counter()
         scaled_h5 = _scale_with_fixed_test(
             unscaled_h5=unscaled_h5,
@@ -750,9 +773,9 @@ def main() -> None:
             seed=cycle_seed,
         )
         step_times["scale_split_dataset_sec"] = perf_counter() - t0
-        print(f"[step] Built scaled dataset: {scaled_h5}")
+        _print_step_result(cycle + 1, "Scale + split complete", f"Output: {scaled_h5}")
 
-        print(f"[step] Hyperparameter tuning...")
+        _print_step_banner(cycle + 1, "Hyperparameter tuning")
         t0 = perf_counter()
         best = _tune(
             scaled_h5=scaled_h5,
@@ -761,9 +784,16 @@ def main() -> None:
             grid=cfg.hp_grid,
         )
         step_times["hyperparameter_tuning_sec"] = perf_counter() - t0
-        print(f"[step] Best trial: lr={best.learning_rate}, bs={best.batch_size}, n_lstm={best.n_lstm}, hl={best.hidden_lstm}, hf={best.hidden_fc}")
+        _print_step_result(
+            cycle + 1,
+            "Hyperparameter tuning complete",
+            (
+                f"Best trial: lr={best.learning_rate}, bs={best.batch_size}, "
+                f"n_lstm={best.n_lstm}, hl={best.hidden_lstm}, hf={best.hidden_fc}"
+            ),
+        )
 
-        print(f"[step] Training bagged ensemble...")
+        _print_step_banner(cycle + 1, "Train bagged ensemble")
         t0 = perf_counter()
         ensemble = run_bagging_ensemble(
             scaled_h5,
@@ -808,7 +838,7 @@ def main() -> None:
             max_profiles=args.plot_n_forecasts,
         )
         step_times["forecast_pdf_render_sec"] = perf_counter() - t0
-        print(f"[cycle {cycle + 1}] Saved forecast visualization PDF: {forecast_pdf}")
+        _print_step_result(cycle + 1, "Ensemble training + evaluation complete", f"Forecast PDF: {forecast_pdf}")
         metrics_json = cycle_dir / "ensemble" / "ensemble_metrics.json"
         metrics_json.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         print(f"[cycle {cycle + 1}] Saved ensemble metrics JSON: {metrics_json}")
@@ -816,6 +846,7 @@ def main() -> None:
         # No need to generate/simulate new data after last training cycle.
         if cycle < cfg.retrain_cycles - 1:
             if cfg.strategy == "branching":
+                _print_step_banner(cycle + 1, "Generate new profiles via recursive branching")
                 t0 = perf_counter()
                 var_batch = _run_recursive_branching_internal(
                     cfg=cfg,
@@ -830,7 +861,9 @@ def main() -> None:
                 )
                 step_times["profile_generation_sec"] = perf_counter() - t0
                 pymola_mode = "branched_mat"
+                _print_step_result(cycle + 1, "Recursive branching profile generation complete", f"Profiles dir: {var_batch}")
             else:
+                _print_step_banner(cycle + 1, "Generate new random profiles")
                 t0 = perf_counter()
                 n_new = _expected_new_profiles(
                     int(cfg.branching["N_r"]), int(cfg.branching["N_k"]), int(cfg.branching["N_b"])
@@ -844,7 +877,9 @@ def main() -> None:
                 )
                 step_times["profile_generation_sec"] = perf_counter() - t0
                 pymola_mode = "flat_mat"
+                _print_step_result(cycle + 1, "Random profile generation complete", f"Profiles dir: {var_batch}")
 
+            _print_step_banner(cycle + 1, f"Run Dymola simulation ({pymola_mode})")
             t0 = perf_counter()
             sim_out_dir = _run_dymola_internal(
                 mode=pymola_mode,
@@ -855,6 +890,7 @@ def main() -> None:
             step_times["dymola_simulation_sec"] = perf_counter() - t0
             sim_batch = sim_out_dir.name
             known_batches.append(sim_batch.replace("batch_", ""))
+            _print_step_result(cycle + 1, "Dymola simulation complete", f"New simulation batch: {sim_batch}")
         else:
             var_batch = None
             sim_batch = None
@@ -863,7 +899,7 @@ def main() -> None:
 
         cycle_total = perf_counter() - cycle_start
         step_times["cycle_total_sec"] = cycle_total
-        print(f"[timing] cycle {cycle + 1} total: {cycle_total:.2f} s")
+        _print_block_header(f"CYCLE {cycle + 1} COMPLETE  |  TOTAL={cycle_total:.2f}s", fill="#")
         for key in (
             "build_unscaled_dataset_sec",
             "scale_split_dataset_sec",
