@@ -708,6 +708,7 @@ def train_model(
     profiler_repeat: int = 1,
     profiler_row_limit: int = 30,
     use_tqdm: bool = True,
+    resume_from_weights: Path | None = None,
 ) -> tuple[nn.Module, dict[str, list[float]], Path]:
     """
     Train the LSTM and save a train/val curve plot.
@@ -752,6 +753,9 @@ def train_model(
         n_fc=n_fc,
         fc_hidden=fc_hidden,
     ).to(training_device)
+    if resume_from_weights is not None:
+        state_dict = torch.load(resume_from_weights, map_location=training_device)
+        model.load_state_dict(state_dict)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer,
@@ -1036,6 +1040,7 @@ def train_with_fallback(
     profiler_repeat: int = 1,
     profiler_row_limit: int = 30,
     use_tqdm: bool = True,
+    resume_from_weights: Path | None = None,
 ) -> tuple[nn.Module, dict[str, list[float]], torch.device]:
     """
     Try GPU first (if prefer_gpu). If anything fails, retry on CPU.
@@ -1075,6 +1080,7 @@ def train_with_fallback(
             profiler_repeat=profiler_repeat,
             profiler_row_limit=profiler_row_limit,
             use_tqdm=use_tqdm,
+            resume_from_weights=resume_from_weights,
         )
         return model, history, preferred
     except Exception as e:
@@ -1110,6 +1116,7 @@ def train_with_fallback(
         profiler_repeat=profiler_repeat,
         profiler_row_limit=profiler_row_limit,
         use_tqdm=use_tqdm,
+        resume_from_weights=resume_from_weights,
     )
     return model, history, torch.device("cpu")
 

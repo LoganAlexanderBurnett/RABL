@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import random
 from dataclasses import asdict, dataclass
 from itertools import product
 from pathlib import Path
@@ -48,6 +50,28 @@ class GridSearchConfig:
     step_lr_gamma: float = 0.5
     use_tqdm: bool = True
     verbose: int = 1
+    min_epochs: int | None = None
+    max_epochs: int | None = None
+    reduction_factor: int = 3
+    prune_strategy: str = "successive_halving"
+
+    def __post_init__(self) -> None:
+        if self.min_epochs is None and self.max_epochs is None:
+            return
+        if self.min_epochs is None or self.max_epochs is None:
+            raise ValueError("Both min_epochs and max_epochs must be provided for Hyperband tuning.")
+        if self.min_epochs < 1:
+            raise ValueError("min_epochs must be >= 1.")
+        if self.max_epochs < self.min_epochs:
+            raise ValueError("max_epochs must be >= min_epochs.")
+        if self.reduction_factor <= 1:
+            raise ValueError("reduction_factor must be > 1.")
+        if self.prune_strategy != "successive_halving":
+            raise ValueError("prune_strategy must be 'successive_halving'.")
+
+    @property
+    def use_hyperband(self) -> bool:
+        return self.min_epochs is not None and self.max_epochs is not None
 
 
 @dataclass(slots=True)
@@ -64,6 +88,15 @@ class TrialResult:
     used_device: str
     trial_dir: str
     weights_path: str
+    hyperband: dict[str, Any] | None = None
+
+
+@dataclass(slots=True)
+class HyperbandBracket:
+    bracket_index: int
+    initial_trial_count: int
+    rung_count: int
+    rung_budgets: list[int]
 
 
 def _parse_lookback_entry(raw: str) -> tuple[int, Path]:
@@ -97,6 +130,119 @@ def count_grid_combinations(config: GridSearchConfig) -> int:
         * len(config.n_lstm_values)
         * len(config.hidden_lstm_values)
         * len(config.hidden_fc_values)
+    )
+
+
+def construct_hyperband_brackets(config: GridSearchConfig) -> list[HyperbandBracket]:
+    """Build full Hyperband bracket definitions for configured budgets."""
+    if not config.use_hyperband:
+        return []
+
+    assert config.min_epochs is not None
+    assert config.max_epochs is not None
+    eta = config.reduction_factor
+    s_max = int(math.floor(math.log(config.max_epochs / config.min_epochs, eta)))
+    if s_max < 0:
+        raise ValueError("Hyperband requires max_epochs >= min_epochs.")
+    total_budget = (s_max + 1) * config.max_epochs
+    brackets: list[HyperbandBracket] = []
+
+    for s in range(s_max, -1, -1):
+        n = int(math.ceil((total_budget / config.max_epochs) * (eta**s) / (s + 1)))
+        r = config.max_epochs * (eta ** (-s))
+        rung_budgets = [min(config.max_epochs, int(math.ceil(r * (eta**i)))) for i in range(s + 1)]
+        rung_budgets = sorted(set(rung_budgets))
+        if not rung_budgets:
+            continue
+        brackets.append(
+            HyperbandBracket(
+                bracket_index=s,
+                initial_trial_count=max(1, n),
+                rung_count=len(rung_budgets),
+                rung_budgets=rung_budgets,
+            )
+        )
+    return brackets
+
+
+def _all_trial_params(config: GridSearchConfig) -> list[dict[str, Any]]:
+    trial_grid = product(
+        sorted(config.lookback_datasets.items(), key=lambda item: item[0]),
+        config.learning_rates,
+        config.batch_sizes,
+        config.n_lstm_values,
+        config.hidden_lstm_values,
+        config.hidden_fc_values,
+    )
+    params: list[dict[str, Any]] = []
+    for (lookback, dataset_path), learning_rate, batch_size, n_lstm, hidden_lstm, hidden_fc in trial_grid:
+        params.append(
+            {
+                "lookback": lookback,
+                "dataset_path": dataset_path,
+                "learning_rate": learning_rate,
+                "batch_size": batch_size,
+                "n_lstm": n_lstm,
+                "hidden_lstm": hidden_lstm,
+                "hidden_fc": hidden_fc,
+            }
+        )
+    return params
+
+
+def _stage_train_trial(
+    config: GridSearchConfig,
+    params: dict[str, Any],
+    trial_dir: Path,
+    epochs_to_run: int,
+    resume_state_path: Path | None,
+) -> tuple[dict[str, Any], Path, Path]:
+    datasets = build_datasets(
+        h5_path=params["dataset_path"],
+        batch_size=params["batch_size"],
+        seed=config.seed,
+    )
+    model, history, used_device = train_with_fallback(
+        datasets,
+        epochs=epochs_to_run,
+        out_dir=trial_dir,
+        n_lstm=params["n_lstm"],
+        lstm_hidden=params["hidden_lstm"],
+        lstm_dropout=config.lstm_dropout,
+        n_fc=config.n_fc,
+        fc_hidden=(params["hidden_fc"],),
+        learning_rate=params["learning_rate"],
+        step_lr_step_size=config.step_lr_step_size,
+        step_lr_gamma=config.step_lr_gamma,
+        verbose=config.verbose,
+        prefer_gpu=config.prefer_gpu,
+        preload_train_to_device=config.preload_train_to_device,
+        preload_val_to_device=config.preload_val_to_device,
+        deterministic_seed=config.seed,
+        early_stopping_patience=config.early_stopping_patience,
+        early_stopping_min_delta=config.early_stopping_min_delta,
+        restore_best_weights=config.restore_best_weights,
+        use_tqdm=config.use_tqdm,
+        resume_from_weights=resume_state_path,
+    )
+    checkpoint_path = trial_dir / f"checkpoint_stage_{epochs_to_run}.pt"
+    torch.save(model.state_dict(), checkpoint_path)
+    weights_path = trial_dir / "best_model_weights.pt"
+    torch.save(model.state_dict(), weights_path)
+    best_val_loss = float(min(history["val_loss"]))
+    actual_epochs = len(history["val_loss"])
+    cleanup_cuda(model, used_device)
+    del model
+    return (
+        {
+            "best_val_loss": best_val_loss,
+            "final_val_loss": float(history["val_loss"][-1]),
+            "actual_epochs_trained": int(actual_epochs),
+            "used_device": str(used_device),
+            "early_stopped": bool(actual_epochs < epochs_to_run),
+        },
+        checkpoint_path,
+        weights_path,
     )
 
 
@@ -218,6 +364,222 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
     return results, best_result
 
 
+def run_hyperband_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialResult]:
+    """Run full Hyperband schedule and return trial metrics plus best trial."""
+    if not config.use_hyperband:
+        raise ValueError("Hyperband search requires min_epochs/max_epochs configuration.")
+    if config.prune_strategy != "successive_halving":
+        raise ValueError("Only successive_halving prune_strategy is supported.")
+
+    brackets = construct_hyperband_brackets(config)
+    if not brackets:
+        raise ValueError("No Hyperband brackets were constructed from the provided config.")
+
+    config.out_dir.mkdir(parents=True, exist_ok=True)
+    all_params = _all_trial_params(config)
+    if not all_params:
+        raise ValueError("Hyperparameter space is empty.")
+    rng = random.Random(config.seed)
+
+    results: list[TrialResult] = []
+    hyperband_brackets_meta: list[dict[str, Any]] = []
+    trial_counter = 0
+
+    for bracket in brackets:
+        bracket_trials: list[dict[str, Any]] = []
+        for _ in range(bracket.initial_trial_count):
+            sampled = dict(rng.choice(all_params))
+            trial_counter += 1
+            trial_dir = config.out_dir / f"hb_b{bracket.bracket_index}_trial_{trial_counter:04d}"
+            trial_dir.mkdir(parents=True, exist_ok=True)
+            bracket_trials.append(
+                {
+                    "trial_index": trial_counter,
+                    "params": sampled,
+                    "trial_dir": trial_dir,
+                    "checkpoint_path": None,
+                    "weights_path": None,
+                    "rungs": [],
+                    "status": "pending",
+                    "used_device": "",
+                    "best_val_loss": float("inf"),
+                    "final_val_loss": float("inf"),
+                    "cumulative_epochs": 0,
+                }
+            )
+
+        active_trials = bracket_trials
+        rung_meta: list[dict[str, Any]] = []
+        for rung_idx, allocated_epochs in enumerate(bracket.rung_budgets):
+            rung_records: list[dict[str, Any]] = []
+            completed_trials: list[dict[str, Any]] = []
+            for trial in active_trials:
+                params = trial["params"]
+                resume_path = trial["checkpoint_path"]
+                try:
+                    epochs_to_run = max(0, allocated_epochs - int(trial["cumulative_epochs"]))
+                    if epochs_to_run <= 0:
+                        raise ValueError(
+                            f"Invalid cumulative rung budget ordering for trial {trial['trial_index']}."
+                        )
+                    metrics, checkpoint_path, weights_path = _stage_train_trial(
+                        config=config,
+                        params=params,
+                        trial_dir=trial["trial_dir"],
+                        epochs_to_run=epochs_to_run,
+                        resume_state_path=resume_path,
+                    )
+                    trial["checkpoint_path"] = checkpoint_path
+                    trial["weights_path"] = weights_path
+                    trial["status"] = "completed"
+                    trial["best_val_loss"] = min(trial["best_val_loss"], metrics["best_val_loss"])
+                    trial["final_val_loss"] = metrics["final_val_loss"]
+                    trial["used_device"] = metrics["used_device"]
+                    trial["cumulative_epochs"] = int(trial["cumulative_epochs"]) + int(metrics["actual_epochs_trained"])
+                    rung_entry = {
+                        "rung_index": rung_idx,
+                        "allocated_epochs": allocated_epochs,
+                        "actual_epochs_trained": trial["cumulative_epochs"],
+                        "stage_epochs_trained": metrics["actual_epochs_trained"],
+                        "best_val_loss": metrics["best_val_loss"],
+                        "final_val_loss": metrics["final_val_loss"],
+                        "checkpoint_path": str(checkpoint_path),
+                        "resumed_from_checkpoint": bool(resume_path is not None),
+                        "resume_checkpoint_path": str(resume_path) if resume_path is not None else None,
+                        "early_stopped": metrics["early_stopped"],
+                        "decision": "completed",
+                    }
+                    trial["rungs"].append(rung_entry)
+                    completed_trials.append(trial)
+                    rung_records.append({"trial_index": trial["trial_index"], **rung_entry})
+                except Exception as exc:
+                    rung_entry = {
+                        "rung_index": rung_idx,
+                        "allocated_epochs": allocated_epochs,
+                        "actual_epochs_trained": 0,
+                        "stage_epochs_trained": 0,
+                        "best_val_loss": None,
+                        "final_val_loss": None,
+                        "checkpoint_path": None,
+                        "resumed_from_checkpoint": bool(resume_path is not None),
+                        "resume_checkpoint_path": str(resume_path) if resume_path is not None else None,
+                        "early_stopped": False,
+                        "decision": "failed",
+                        "failure_reason": repr(exc),
+                    }
+                    trial["rungs"].append(rung_entry)
+                    trial["status"] = "failed"
+                    rung_records.append({"trial_index": trial["trial_index"], **rung_entry})
+
+            completed_trials.sort(key=lambda item: item["best_val_loss"])
+            promotion_count = 0
+            promoted_trial_ids: set[int] = set()
+            if rung_idx < bracket.rung_count - 1 and completed_trials:
+                promotion_count = max(1, len(completed_trials) // config.reduction_factor)
+                promoted = completed_trials[:promotion_count]
+                promoted_trial_ids = {int(item["trial_index"]) for item in promoted}
+            for trial in completed_trials:
+                decision = "completed" if rung_idx == bracket.rung_count - 1 else "pruned"
+                if int(trial["trial_index"]) in promoted_trial_ids:
+                    decision = "promoted"
+                elif bool(trial["rungs"][-1].get("early_stopped")):
+                    decision = "early_stopped"
+                trial["rungs"][-1]["decision"] = decision
+
+            rung_meta.append(
+                {
+                    "rung_index": rung_idx,
+                    "allocated_epochs": allocated_epochs,
+                    "promotion_count": promotion_count,
+                    "trial_records": rung_records,
+                }
+            )
+            active_trials = [trial for trial in completed_trials if int(trial["trial_index"]) in promoted_trial_ids]
+
+        hyperband_brackets_meta.append(
+            {
+                "bracket_index": bracket.bracket_index,
+                "initial_trial_count": bracket.initial_trial_count,
+                "rung_count": bracket.rung_count,
+                "rung_budgets": bracket.rung_budgets,
+                "rungs": rung_meta,
+                "trials": [
+                    {
+                        "trial_index": trial["trial_index"],
+                        "sampled_hyperparameters": {
+                            **trial["params"],
+                            "dataset_path": str(trial["params"]["dataset_path"]),
+                        },
+                        "trial_dir": str(trial["trial_dir"]),
+                        "status": trial["status"],
+                        "checkpoint_resume_status": "resumed" if any(
+                            rung.get("resumed_from_checkpoint") for rung in trial["rungs"]
+                        ) else "fresh",
+                        "rung_metrics": trial["rungs"],
+                    }
+                    for trial in bracket_trials
+                ],
+            }
+        )
+
+        for trial in bracket_trials:
+            if trial["status"] == "failed":
+                continue
+            params = trial["params"]
+            weights_path = Path(trial["weights_path"]) if trial["weights_path"] is not None else trial["trial_dir"] / "best_model_weights.pt"
+            result = TrialResult(
+                lookback=params["lookback"],
+                dataset_path=str(params["dataset_path"]),
+                learning_rate=float(params["learning_rate"]),
+                batch_size=int(params["batch_size"]),
+                n_lstm=int(params["n_lstm"]),
+                hidden_lstm=int(params["hidden_lstm"]),
+                hidden_fc=int(params["hidden_fc"]),
+                best_val_loss=float(trial["best_val_loss"]),
+                final_val_loss=float(trial["final_val_loss"]),
+                used_device=str(trial["used_device"]),
+                trial_dir=str(trial["trial_dir"]),
+                weights_path=str(weights_path),
+                hyperband={
+                    "bracket_index": bracket.bracket_index,
+                    "rung_metrics": trial["rungs"],
+                },
+            )
+            results.append(result)
+
+    if not results:
+        raise RuntimeError("Hyperband search finished without successful trials.")
+    best_result = min(results, key=lambda item: item.best_val_loss)
+
+    summary_payload = {
+        "config": {
+            **asdict(config),
+            "lookback_datasets": {k: str(v) for k, v in config.lookback_datasets.items()},
+            "out_dir": str(config.out_dir),
+        },
+        "num_trials": len(results),
+        "best_trial": asdict(best_result),
+        "results": [asdict(item) for item in results],
+        "hyperband": {
+            "config": {
+                "min_epochs": config.min_epochs,
+                "max_epochs": config.max_epochs,
+                "reduction_factor": config.reduction_factor,
+                "prune_strategy": config.prune_strategy,
+            },
+            "brackets": hyperband_brackets_meta,
+            "best_trial": asdict(best_result),
+        },
+    }
+    with (config.out_dir / "grid_search_results.json").open("w", encoding="utf-8") as fp:
+        json.dump(summary_payload, fp, indent=2)
+
+    print("\nBest trial:")
+    print(json.dumps(asdict(best_result), indent=2))
+    print(f"Saved tuning summary to: {config.out_dir / 'grid_search_results.json'}")
+    return results, best_result
+
+
 def test_best_model(config: GridSearchConfig, best_result: TrialResult) -> dict[str, float]:
     """Load the best model weights and run test-time rolling forecasts."""
     dataset_path = Path(best_result.dataset_path)
@@ -309,6 +671,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-fc", type=int, nargs="+", required=True, dest="hidden_fc_values")
     parser.add_argument("--n-fc", type=int, default=1, help="Number of FC layers in the model head.")
     parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument(
+        "--min-epochs",
+        type=int,
+        default=None,
+        help="Enable Hyperband with this minimum rung budget (cumulative epochs).",
+    )
+    parser.add_argument(
+        "--max-epochs",
+        type=int,
+        default=None,
+        help="Enable Hyperband with this maximum rung budget (cumulative epochs).",
+    )
+    parser.add_argument(
+        "--reduction-factor",
+        type=int,
+        default=3,
+        help="Hyperband downsampling factor eta (>1).",
+    )
+    parser.add_argument(
+        "--prune-strategy",
+        type=str,
+        default="successive_halving",
+        help="Rung pruning strategy (currently only successive_halving).",
+    )
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--out-dir", type=Path, default=Path("outputs") / "ml_tuning")
     parser.add_argument(
@@ -416,6 +802,10 @@ def main() -> None:
         early_stopping_min_delta=args.early_stopping_min_delta,
         restore_best_weights=not args.no_restore_best_weights,
         test_output_dirname=args.test_output_dirname,
+        min_epochs=args.min_epochs,
+        max_epochs=args.max_epochs,
+        reduction_factor=args.reduction_factor,
+        prune_strategy=args.prune_strategy,
     )
 
     num_combinations = count_grid_combinations(config)
@@ -427,7 +817,10 @@ def main() -> None:
         test_model_from_trial_dir(config, args.test_trial_dir)
         return
 
-    _results, best_result = run_grid_search(config)
+    if config.use_hyperband:
+        _results, best_result = run_hyperband_search(config)
+    else:
+        _results, best_result = run_grid_search(config)
     test_best_model(config, best_result)
 
 
