@@ -177,3 +177,42 @@ def test_hyperband_promotes_and_resumes(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert timing_payload["run_type"] == "hyperband"
     assert timing_payload["total_duration_s"] >= 0.0
     assert timing_payload["num_timed_trials"] == len(timing_payload["trial_timings"])
+
+
+def test_forecast_metrics_support_single_and_ensemble_schema(tmp_path: Path) -> None:
+    h5py = pytest.importorskip("h5py")
+    np = pytest.importorskip("numpy")
+
+    single_h5 = tmp_path / "single_schema.h5"
+    with h5py.File(single_h5, "w") as h5f:
+        grp = h5f.create_group("profile_a")
+        table = np.array(
+            [
+                [0.0, 0.0, 1.0, 1.2],
+                [1.0, 0.1, 2.0, 2.1],
+            ],
+            dtype=float,
+        )
+        grp.create_dataset("data", data=table)
+        grp.attrs["columns"] = np.array(["t", "u(t)", "x(t)_x1", "x^~(t)_x1"], dtype="S")
+
+    single_metrics = tuner._compute_forecast_quality_metrics(single_h5)
+    assert single_metrics["per_target"]
+    assert single_metrics["aggregated"]["smape"] == single_metrics["aggregated"]["smape"]
+
+    ensemble_h5 = tmp_path / "ensemble_schema.h5"
+    with h5py.File(ensemble_h5, "w") as h5f:
+        grp = h5f.create_group("profile_b")
+        table = np.array(
+            [
+                [0.0, 0.0, 1.0, 1.1],
+                [1.0, 0.1, 2.0, 2.3],
+            ],
+            dtype=float,
+        )
+        grp.create_dataset("data", data=table)
+        grp.attrs["columns"] = np.array(["t", "u(t)", "x_true(t)_x1", "x_mean(t)_x1"], dtype="S")
+
+    ensemble_metrics = tuner._compute_forecast_quality_metrics(ensemble_h5)
+    assert ensemble_metrics["per_target"]
+    assert ensemble_metrics["aggregated"]["nrmse"] == ensemble_metrics["aggregated"]["nrmse"]

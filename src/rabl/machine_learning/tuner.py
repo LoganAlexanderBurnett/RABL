@@ -281,11 +281,25 @@ def _compute_forecast_quality_metrics(forecast_h5: Path) -> dict[str, Any]:
             table = np.asarray(grp["data"][()], dtype=float)
             cols_raw = grp.attrs.get("columns", [])
             cols = [c.decode("utf-8") if isinstance(c, bytes) else str(c) for c in cols_raw]
-            true_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_true(t)_")]
-            pred_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_mean(t)_")]
-            if not true_cols or len(true_cols) != len(pred_cols):
+            ensemble_true = [idx for idx, c in enumerate(cols) if c.startswith("x_true(t)_")]
+            ensemble_pred = [idx for idx, c in enumerate(cols) if c.startswith("x_mean(t)_")]
+            single_true = [idx for idx, c in enumerate(cols) if c.startswith("x(t)_")]
+            single_pred = [idx for idx, c in enumerate(cols) if c.startswith("x^~(t)_")]
+
+            true_cols: list[int]
+            pred_cols: list[int]
+            target_prefix: str
+            if ensemble_true and len(ensemble_true) == len(ensemble_pred):
+                true_cols = ensemble_true
+                pred_cols = ensemble_pred
+                target_prefix = "x_true(t)_"
+            elif single_true and len(single_true) == len(single_pred):
+                true_cols = single_true
+                pred_cols = single_pred
+                target_prefix = "x(t)_"
+            else:
                 continue
-            profile_target_names = [cols[idx].replace("x_true(t)_", "", 1) for idx in true_cols]
+            profile_target_names = [cols[idx].replace(target_prefix, "", 1) for idx in true_cols]
             if target_names is None:
                 target_names = profile_target_names
             y_true_profiles.append(table[:, true_cols])
@@ -334,29 +348,89 @@ def _print_tuning_overview(config: GridSearchConfig, best_result: TrialResult, t
         timing_payload = json.loads(timing_path.read_text(encoding="utf-8"))
 
     print("\n" + "=" * 100)
-    print("TUNING OVERVIEW (SEQUENTIAL SUMMARY)")
+    print("TUNING OVERVIEW (STORY MODE)")
     print("=" * 100)
-    print(f"1) Search mode: {run_type}")
-    print(f"2) Search space combinations available: {count_grid_combinations(config)}")
-    print(f"3) Successful trained trials recorded: {len(results)}")
+    print(f"1) We started a {run_type} search over {count_grid_combinations(config)} candidate combinations.")
+    print(f"2) The run completed with {len(results)} successful trained trials recorded in the summary.")
     if timing_payload:
         print(
-            "4) Timing: "
+            "3) Timing snapshot: "
             f"total_duration_s={float(timing_payload.get('total_duration_s', float('nan'))):.2f}, "
-            f"timed_entries={int(timing_payload.get('num_timed_trials', 0))}"
+            f"timed_entries={int(timing_payload.get('num_timed_trials', 0))}."
         )
     else:
-        print("4) Timing: no timing summary file found.")
+        print("3) Timing snapshot: no timing summary file found.")
+
+    if run_type == "hyperband":
+        print("4) Hyperband progression details:")
+        for bracket in summary_payload.get("hyperband", {}).get("brackets", []):
+            bracket_index = int(bracket.get("bracket_index", -1))
+            initial_trials = int(bracket.get("initial_trial_count", 0))
+            budgets = bracket.get("rung_budgets", [])
+            print(
+                f"   - Bracket s={bracket_index} began with {initial_trials} sampled trials "
+                f"and budgets {budgets}."
+            )
+            trials = bracket.get("trials", [])
+            rung_indices = sorted(
+                {
+                    int(metric.get("rung_index", -1))
+                    for trial in trials
+                    for metric in trial.get("rung_metrics", [])
+                    if metric.get("rung_index") is not None
+                }
+            )
+            for rung_idx in rung_indices:
+                advanced: list[str] = []
+                removed: list[str] = []
+                failed: list[str] = []
+                for trial in trials:
+                    trial_idx = int(trial.get("trial_index", -1))
+                    hp = trial.get("sampled_hyperparameters", {})
+                    trial_name = (
+                        f"trial_{trial_idx:04d}(lr={hp.get('learning_rate')},bs={hp.get('batch_size')},"
+                        f"nl={hp.get('n_lstm')},hl={hp.get('hidden_lstm')},hf={hp.get('hidden_fc')})"
+                    )
+                    rung_metrics = trial.get("rung_metrics", [])
+                    match = next((m for m in rung_metrics if int(m.get("rung_index", -1)) == rung_idx), None)
+                    if match is None:
+                        continue
+                    decision = str(match.get("decision", "unknown"))
+                    if decision == "promoted":
+                        advanced.append(trial_name)
+                    elif decision == "failed":
+                        failed.append(trial_name)
+                    else:
+                        removed.append(f"{trial_name}:{decision}")
+                print(
+                    f"     • Rung {rung_idx}: advanced={len(advanced)}, removed={len(removed)}, failed={len(failed)}"
+                )
+                if advanced:
+                    print("       advanced -> " + ", ".join(advanced))
+                if removed:
+                    print("       removed  -> " + ", ".join(removed))
+                if failed:
+                    print("       failed   -> " + ", ".join(failed))
+    else:
+        print("4) Grid progression details:")
+        for idx, result in enumerate(results, start=1):
+            print(
+                f"   - Trial {idx:04d}: "
+                f"lb={result.get('lookback')}, lr={result.get('learning_rate')}, bs={result.get('batch_size')}, "
+                f"nl={result.get('n_lstm')}, hl={result.get('hidden_lstm')}, hf={result.get('hidden_fc')} "
+                f"-> best_val_loss={result.get('best_val_loss')}"
+            )
+
     print(
-        "5) Best hyperparameters: "
+        "5) The winning configuration was: "
         f"lookback={best_result.lookback}, lr={best_result.learning_rate:g}, "
         f"batch={best_result.batch_size}, n_lstm={best_result.n_lstm}, "
-        f"hidden_lstm={best_result.hidden_lstm}, hidden_fc={best_result.hidden_fc}"
+        f"hidden_lstm={best_result.hidden_lstm}, hidden_fc={best_result.hidden_fc}."
     )
-    print(f"6) Best validation loss observed: {best_result.best_val_loss:.6e}")
-    print(f"7) Best model directory: {best_result.trial_dir}")
+    print(f"6) Its best validation loss was {best_result.best_val_loss:.6e}.")
+    print(f"7) The selected model artifacts live in: {best_result.trial_dir}")
     print(
-        "8) Final test timing metrics: "
+        "8) Final best-model test timing metrics: "
         + ", ".join(f"{k}={float(v):.6f}" for k, v in sorted(test_metrics.items()))
     )
     print("=" * 100)
