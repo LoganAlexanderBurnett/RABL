@@ -13,6 +13,7 @@ import random
 from dataclasses import asdict, dataclass
 from itertools import product
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import torch
@@ -40,8 +41,8 @@ class GridSearchConfig:
     out_dir: Path = Path("outputs") / "ml_tuning"
     prefer_gpu: bool = True
     lstm_dropout: float = 0.0
-    preload_train_to_device: bool = False
-    preload_val_to_device: bool = False
+    preload_train_to_device: bool = True
+    preload_val_to_device: bool = True
     early_stopping_patience: int | None = None
     early_stopping_min_delta: float = 0.0
     restore_best_weights: bool = True
@@ -197,6 +198,7 @@ def _stage_train_trial(
     epochs_to_run: int,
     resume_state_path: Path | None,
 ) -> tuple[dict[str, Any], Path, Path]:
+    stage_t0 = perf_counter()
     datasets = build_datasets(
         h5_path=params["dataset_path"],
         batch_size=params["batch_size"],
@@ -233,6 +235,7 @@ def _stage_train_trial(
     actual_epochs = len(history["val_loss"])
     cleanup_cuda(model, used_device)
     del model
+    stage_duration_s = perf_counter() - stage_t0
     return (
         {
             "best_val_loss": best_val_loss,
@@ -240,10 +243,132 @@ def _stage_train_trial(
             "actual_epochs_trained": int(actual_epochs),
             "used_device": str(used_device),
             "early_stopped": bool(actual_epochs < epochs_to_run),
+            "duration_s": float(stage_duration_s),
         },
         checkpoint_path,
         weights_path,
     )
+
+
+def _save_timing_summary(
+    out_dir: Path,
+    *,
+    run_type: str,
+    total_duration_s: float,
+    trial_timings: list[dict[str, Any]],
+) -> Path:
+    payload = {
+        "run_type": run_type,
+        "total_duration_s": float(total_duration_s),
+        "num_timed_trials": len(trial_timings),
+        "trial_timings": trial_timings,
+    }
+    out_path = out_dir / "tuning_timing.json"
+    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return out_path
+
+
+def _compute_forecast_quality_metrics(forecast_h5: Path) -> dict[str, Any]:
+    import h5py
+    import numpy as np
+
+    y_true_profiles: list[np.ndarray] = []
+    y_pred_profiles: list[np.ndarray] = []
+    target_names: list[str] | None = None
+    with h5py.File(forecast_h5, "r") as h5f:
+        for profile_name in h5f.keys():
+            grp = h5f[profile_name]
+            table = np.asarray(grp["data"][()], dtype=float)
+            cols_raw = grp.attrs.get("columns", [])
+            cols = [c.decode("utf-8") if isinstance(c, bytes) else str(c) for c in cols_raw]
+            true_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_true(t)_")]
+            pred_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_mean(t)_")]
+            if not true_cols or len(true_cols) != len(pred_cols):
+                continue
+            profile_target_names = [cols[idx].replace("x_true(t)_", "", 1) for idx in true_cols]
+            if target_names is None:
+                target_names = profile_target_names
+            y_true_profiles.append(table[:, true_cols])
+            y_pred_profiles.append(table[:, pred_cols])
+
+    if not y_true_profiles or target_names is None:
+        return {"per_target": {}, "aggregated": {"smape": float("nan"), "nrmse": float("nan")}}
+
+    y_true_cat = np.concatenate(y_true_profiles, axis=0)
+    y_pred_cat = np.concatenate(y_pred_profiles, axis=0)
+    err_cat = y_pred_cat - y_true_cat
+    abs_err_cat = np.abs(err_cat)
+
+    rmse_by_target = np.sqrt(np.mean(err_cat**2, axis=0))
+    mae_by_target = np.mean(abs_err_cat, axis=0)
+    target_range = np.max(y_true_cat, axis=0) - np.min(y_true_cat, axis=0)
+    nrmse_by_target = np.where(target_range > 0.0, rmse_by_target / target_range, np.nan)
+    denom = np.abs(y_true_cat) + np.abs(y_pred_cat)
+    smape = float(np.mean(200.0 * abs_err_cat / np.maximum(denom, 1e-12)))
+
+    per_target: dict[str, dict[str, float]] = {}
+    for idx, target_name in enumerate(target_names):
+        per_target[target_name] = {
+            "rmse": float(rmse_by_target[idx]),
+            "mae": float(mae_by_target[idx]),
+            "nrmse": float(nrmse_by_target[idx]),
+        }
+
+    return {
+        "per_target": per_target,
+        "aggregated": {"smape": smape, "nrmse": float(np.nanmean(nrmse_by_target))},
+    }
+
+
+def _compute_uncertainty_quality_metrics(forecast_h5: Path) -> dict[str, Any]:
+    import h5py
+    import numpy as np
+
+    z_by_level = {"50": 0.67448975, "80": 1.28155157, "95": 1.95996398}
+    all_err: list[np.ndarray] = []
+    all_sigma95: list[np.ndarray] = []
+    with h5py.File(forecast_h5, "r") as h5f:
+        for profile_name in h5f.keys():
+            grp = h5f[profile_name]
+            table = np.asarray(grp["data"][()], dtype=float)
+            cols_raw = grp.attrs.get("columns", [])
+            cols = [c.decode("utf-8") if isinstance(c, bytes) else str(c) for c in cols_raw]
+            true_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_true(t)_")]
+            mean_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_mean(t)_")]
+            sigma_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_2sigma(t)_")]
+            if not true_cols or len(true_cols) != len(mean_cols) or len(sigma_cols) != len(true_cols):
+                continue
+            y_true = table[:, true_cols]
+            y_mean = table[:, mean_cols]
+            sigma95 = table[:, sigma_cols]
+            all_err.append(np.abs(y_mean - y_true))
+            all_sigma95.append(sigma95)
+
+    if not all_err:
+        return {
+            "coverage": {"50": float("nan"), "80": float("nan"), "95": float("nan")},
+            "interval_width": {"50": float("nan"), "80": float("nan"), "95": float("nan")},
+            "calibration_error": float("nan"),
+        }
+
+    err = np.concatenate(all_err, axis=0)
+    sigma95 = np.concatenate(all_sigma95, axis=0)
+    std = sigma95 / 2.0
+
+    coverage: dict[str, float] = {}
+    width: dict[str, float] = {}
+    cal_terms: list[float] = []
+    for level, z in z_by_level.items():
+        half_width = z * std
+        cov = float((err <= half_width).mean())
+        coverage[level] = cov
+        width[level] = float((2.0 * half_width).mean())
+        cal_terms.append(abs(cov - (float(level) / 100.0)))
+    return {
+        "coverage": coverage,
+        "interval_width": width,
+        "calibration_error": float(sum(cal_terms) / len(cal_terms)),
+    }
 
 
 def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialResult]:
@@ -254,6 +379,9 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
 
     config.out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Total combinations: {total_trials}")
+    print("\n" + "=" * 100)
+    print("STARTING GRID SEARCH TUNING RUN")
+    print("=" * 100)
 
     trial_grid = product(
         sorted(config.lookback_datasets.items(), key=lambda item: item[0]),
@@ -265,6 +393,8 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
     )
 
     results: list[TrialResult] = []
+    trial_timings: list[dict[str, Any]] = []
+    run_t0 = perf_counter()
 
     for trial_index, (
         (lookback, dataset_path),
@@ -274,6 +404,10 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
         hidden_lstm,
         hidden_fc,
     ) in enumerate(trial_grid, start=1):
+        print("\n" + "#" * 100)
+        print(f"GRID TRIAL {trial_index}/{total_trials}")
+        print("#" * 100)
+        trial_t0 = perf_counter()
         if not dataset_path.exists():
             raise FileNotFoundError(f"Dataset path not found for lookback={lookback}: {dataset_path}")
 
@@ -341,6 +475,21 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
 
         cleanup_cuda(model, used_device)
         del model
+        trial_duration_s = perf_counter() - trial_t0
+        trial_timings.append(
+            {
+                "trial_index": trial_index,
+                "trial_dir": str(trial_dir),
+                "duration_s": float(trial_duration_s),
+                "lookback": lookback,
+                "learning_rate": learning_rate,
+                "batch_size": batch_size,
+                "n_lstm": n_lstm,
+                "hidden_lstm": hidden_lstm,
+                "hidden_fc": hidden_fc,
+            }
+        )
+        print(f"GRID TRIAL DURATION: {trial_duration_s:.2f} sec")
 
     best_result = min(results, key=lambda item: item.best_val_loss)
 
@@ -357,9 +506,19 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
     with (config.out_dir / "grid_search_results.json").open("w", encoding="utf-8") as fp:
         json.dump(summary_payload, fp, indent=2)
 
+    total_duration_s = perf_counter() - run_t0
+    timing_path = _save_timing_summary(
+        config.out_dir,
+        run_type="grid",
+        total_duration_s=total_duration_s,
+        trial_timings=trial_timings,
+    )
+
     print("\nBest trial:")
     print(json.dumps(asdict(best_result), indent=2))
     print(f"Saved tuning summary to: {config.out_dir / 'grid_search_results.json'}")
+    print(f"Saved timing summary to: {timing_path}")
+    print(f"TOTAL GRID SEARCH DURATION: {total_duration_s:.2f} sec")
 
     return results, best_result
 
@@ -380,12 +539,26 @@ def run_hyperband_search(config: GridSearchConfig) -> tuple[list[TrialResult], T
     if not all_params:
         raise ValueError("Hyperparameter space is empty.")
     rng = random.Random(config.seed)
+    run_t0 = perf_counter()
+    trial_timings: list[dict[str, Any]] = []
+    print("\n" + "=" * 100)
+    print("STARTING HYPERBAND TUNING RUN")
+    print("=" * 100)
+    print(f"Hyperband brackets: {len(brackets)}")
 
     results: list[TrialResult] = []
     hyperband_brackets_meta: list[dict[str, Any]] = []
     trial_counter = 0
 
     for bracket in brackets:
+        bracket_t0 = perf_counter()
+        print("\n" + "*" * 100)
+        print(
+            f"HYPERBAND BRACKET s={bracket.bracket_index} | "
+            f"initial_trials={bracket.initial_trial_count} | "
+            f"rungs={bracket.rung_count} | budgets={bracket.rung_budgets}"
+        )
+        print("*" * 100)
         bracket_trials: list[dict[str, Any]] = []
         for _ in range(bracket.initial_trial_count):
             sampled = dict(rng.choice(all_params))
@@ -411,6 +584,12 @@ def run_hyperband_search(config: GridSearchConfig) -> tuple[list[TrialResult], T
         active_trials = bracket_trials
         rung_meta: list[dict[str, Any]] = []
         for rung_idx, allocated_epochs in enumerate(bracket.rung_budgets):
+            print("\n" + "-" * 100)
+            print(
+                f"BRACKET s={bracket.bracket_index} RUNG {rung_idx + 1}/{bracket.rung_count} "
+                f"target_cumulative_epochs={allocated_epochs}"
+            )
+            print("-" * 100)
             rung_records: list[dict[str, Any]] = []
             completed_trials: list[dict[str, Any]] = []
             for trial in active_trials:
@@ -448,10 +627,23 @@ def run_hyperband_search(config: GridSearchConfig) -> tuple[list[TrialResult], T
                         "resume_checkpoint_path": str(resume_path) if resume_path is not None else None,
                         "early_stopped": metrics["early_stopped"],
                         "decision": "completed",
+                        "duration_s": metrics["duration_s"],
                     }
                     trial["rungs"].append(rung_entry)
                     completed_trials.append(trial)
                     rung_records.append({"trial_index": trial["trial_index"], **rung_entry})
+                    trial_timings.append(
+                        {
+                            "run_type": "hyperband",
+                            "bracket_index": bracket.bracket_index,
+                            "rung_index": rung_idx,
+                            "trial_index": int(trial["trial_index"]),
+                            "trial_dir": str(trial["trial_dir"]),
+                            "duration_s": float(metrics["duration_s"]),
+                            "allocated_epochs": allocated_epochs,
+                            "actual_epochs_trained": int(trial["cumulative_epochs"]),
+                        }
+                    )
                 except Exception as exc:
                     rung_entry = {
                         "rung_index": rung_idx,
@@ -495,6 +687,10 @@ def run_hyperband_search(config: GridSearchConfig) -> tuple[list[TrialResult], T
                 }
             )
             active_trials = [trial for trial in completed_trials if int(trial["trial_index"]) in promoted_trial_ids]
+            print(
+                f"Completed rung with {len(completed_trials)} successful trials; "
+                f"promoted={len(promoted_trial_ids)}"
+            )
 
         hyperband_brackets_meta.append(
             {
@@ -521,6 +717,8 @@ def run_hyperband_search(config: GridSearchConfig) -> tuple[list[TrialResult], T
                 ],
             }
         )
+        bracket_duration_s = perf_counter() - bracket_t0
+        print(f"BRACKET s={bracket.bracket_index} DURATION: {bracket_duration_s:.2f} sec")
 
         for trial in bracket_trials:
             if trial["status"] == "failed":
@@ -573,10 +771,19 @@ def run_hyperband_search(config: GridSearchConfig) -> tuple[list[TrialResult], T
     }
     with (config.out_dir / "grid_search_results.json").open("w", encoding="utf-8") as fp:
         json.dump(summary_payload, fp, indent=2)
+    total_duration_s = perf_counter() - run_t0
+    timing_path = _save_timing_summary(
+        config.out_dir,
+        run_type="hyperband",
+        total_duration_s=total_duration_s,
+        trial_timings=trial_timings,
+    )
 
     print("\nBest trial:")
     print(json.dumps(asdict(best_result), indent=2))
     print(f"Saved tuning summary to: {config.out_dir / 'grid_search_results.json'}")
+    print(f"Saved timing summary to: {timing_path}")
+    print(f"TOTAL HYPERBAND DURATION: {total_duration_s:.2f} sec")
     return results, best_result
 
 
@@ -620,6 +827,39 @@ def test_best_model(config: GridSearchConfig, best_result: TrialResult) -> dict[
         h5_path=datasets["h5_path"],
         use_tqdm=config.use_tqdm,
     )
+    forecast_h5 = test_out_dir / "rolling_forecasts.h5"
+    if forecast_h5.exists():
+        forecast_quality = _compute_forecast_quality_metrics(forecast_h5)
+        uncertainty_quality = _compute_uncertainty_quality_metrics(forecast_h5)
+        per_target = forecast_quality.get("per_target", {})
+        target_rmse_values = [float(per_target[name]["rmse"]) for name in per_target]
+        target_mae_values = [float(per_target[name]["mae"]) for name in per_target]
+        if target_rmse_values:
+            mean_target_rmse = sum(target_rmse_values) / len(target_rmse_values)
+            mean_target_mae = sum(target_mae_values) / len(target_mae_values)
+        else:
+            mean_target_rmse = float("nan")
+            mean_target_mae = float("nan")
+        print(
+            "BEST MODEL TEST SUMMARY: "
+            f"mean_target_RMSE={mean_target_rmse:.6f}, mean_target_MAE={mean_target_mae:.6f}, "
+            f"sMAPE={forecast_quality['aggregated']['smape']:.4f}%, "
+            f"NRMSE={forecast_quality['aggregated']['nrmse']:.6f}, "
+            f"COV50={uncertainty_quality['coverage']['50']:.4f}, "
+            f"COV80={uncertainty_quality['coverage']['80']:.4f}, "
+            f"COV95={uncertainty_quality['coverage']['95']:.4f}, "
+            f"CAL_ERR={uncertainty_quality['calibration_error']:.4f}"
+        )
+        metrics_payload = {
+            "forecast_quality": forecast_quality,
+            "uncertainty_quality": uncertainty_quality,
+            "timing": test_metrics,
+        }
+        metrics_json = test_out_dir / "ensemble_metrics_like_summary.json"
+        metrics_json.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
+        print(f"Saved best-model metrics summary to: {metrics_json}")
+    else:
+        print(f"WARNING: rolling_forecasts.h5 not found at {forecast_h5}; skipping metrics summary.")
     print(f"Saved best-model test outputs to: {test_out_dir}")
     return test_metrics
 
@@ -728,8 +968,29 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--preload-train-to-device",
+        dest="preload_train_to_device",
         action="store_true",
-        help="Preload training batches to the selected training device.",
+        default=True,
+        help="Preload training batches to the selected training device (default: enabled).",
+    )
+    parser.add_argument(
+        "--no-preload-train-to-device",
+        dest="preload_train_to_device",
+        action="store_false",
+        help="Disable preloading training batches to device.",
+    )
+    parser.add_argument(
+        "--preload-val-to-device",
+        dest="preload_val_to_device",
+        action="store_true",
+        default=True,
+        help="Preload validation batches to the selected training device (default: enabled).",
+    )
+    parser.add_argument(
+        "--no-preload-val-to-device",
+        dest="preload_val_to_device",
+        action="store_false",
+        help="Disable preloading validation batches to device.",
     )
     parser.add_argument(
         "--early-stopping-patience",
@@ -798,6 +1059,7 @@ def main() -> None:
         use_tqdm=not args.no_tqdm,
         verbose=args.verbose,
         preload_train_to_device=args.preload_train_to_device,
+        preload_val_to_device=args.preload_val_to_device,
         early_stopping_patience=args.early_stopping_patience,
         early_stopping_min_delta=args.early_stopping_min_delta,
         restore_best_weights=not args.no_restore_best_weights,
@@ -821,6 +1083,9 @@ def main() -> None:
         _results, best_result = run_hyperband_search(config)
     else:
         _results, best_result = run_grid_search(config)
+    print("\n" + "=" * 100)
+    print("STARTING FINAL BEST-MODEL TEST EVALUATION")
+    print("=" * 100)
     test_best_model(config, best_result)
 
 

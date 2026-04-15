@@ -106,6 +106,8 @@ def test_hyperband_config_validation_rejects_invalid_ranges(tmp_path: Path) -> N
 
 
 def test_construct_hyperband_brackets_and_rung_budgets(base_config) -> None:
+    assert base_config.preload_train_to_device is True
+    assert base_config.preload_val_to_device is True
     brackets = tuner.construct_hyperband_brackets(base_config)
     assert len(brackets) == 3
     assert [b.bracket_index for b in brackets] == [2, 1, 0]
@@ -171,3 +173,7 @@ def test_hyperband_promotes_and_resumes(monkeypatch: pytest.MonkeyPatch, tmp_pat
         for rung in trial["rung_metrics"]
     ]
     assert any(dec in {"promoted", "pruned", "completed", "early_stopped"} for dec in all_decisions)
+    timing_payload = json.loads((cfg.out_dir / "tuning_timing.json").read_text(encoding="utf-8"))
+    assert timing_payload["run_type"] == "hyperband"
+    assert timing_payload["total_duration_s"] >= 0.0
+    assert timing_payload["num_timed_trials"] == len(timing_payload["trial_timings"])
