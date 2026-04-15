@@ -644,12 +644,13 @@ def _preload_train_batches_to_device(
 
 def _evaluate(
     model: nn.Module,
-    loader: DataLoader,
+    loader: Iterable[tuple[torch.Tensor, torch.Tensor]],
     loss_fn: nn.Module,
     device: torch.device,
     *,
     epoch: int,
     total_epochs: int,
+    data_already_on_device: bool = False,
     use_tqdm: bool = True,
     verbose: int = 1,
 ) -> float:
@@ -669,8 +670,9 @@ def _evaluate(
             unit="batch",
         )
         for x_batch, y_batch in val_iter:
-            x_batch = x_batch.to(device)
-            y_batch = y_batch.to(device)
+            if not data_already_on_device:
+                x_batch = x_batch.to(device)
+                y_batch = y_batch.to(device)
             preds = model(x_batch)
             loss = loss_fn(preds, y_batch)
             total_loss += float(loss.item())
@@ -694,6 +696,7 @@ def train_model(
     step_lr_gamma: float = 0.5,
     verbose: int = 1,
     preload_train_to_device: bool = False,
+    preload_val_to_device: bool = False,
     deterministic_seed: int | None = None,
     early_stopping_patience: int | None = None,
     early_stopping_min_delta: float = 0.0,
@@ -769,8 +772,11 @@ def train_model(
     best_epoch = 0
 
     train_source: Iterable[tuple[torch.Tensor, torch.Tensor]] = datasets["train"]
+    val_source: Iterable[tuple[torch.Tensor, torch.Tensor]] = datasets["val_samples"]
     preloaded_in_gpu = False
+    val_preloaded_in_gpu = False
     preload_time_s = 0.0
+    val_preload_time_s = 0.0
     if preload_train_to_device:
         if training_device.type != "cuda":
             print("preload_train_to_device=True requested, but training device is CPU. Skipping preload.")
@@ -784,6 +790,20 @@ def train_model(
             preloaded_in_gpu = True
             print(
                 f"Preloaded {len(train_source)} training batches to {training_device} in {preload_time_s:.2f}s."
+            )
+    if preload_val_to_device:
+        if training_device.type != "cuda":
+            print("preload_val_to_device=True requested, but training device is CPU. Skipping preload.")
+        else:
+            val_source, val_preload_time_s = _preload_train_batches_to_device(
+                datasets["val_samples"],
+                training_device,
+                use_tqdm=use_tqdm,
+                verbose=verbose,
+            )
+            val_preloaded_in_gpu = True
+            print(
+                f"Preloaded {len(val_source)} validation batches to {training_device} in {val_preload_time_s:.2f}s."
             )
 
     resolved_plot_path = Path(plot_path) if plot_path is not None else Path("outputs") / "plots" / "lstm_training_curves.png"
@@ -835,11 +855,12 @@ def train_model(
             val_start = perf_counter()
             val_loss = _evaluate(
                 model,
-                datasets["val_samples"],
+                val_source,
                 loss_fn,
                 training_device,
                 epoch=epoch,
                 total_epochs=epochs,
+                data_already_on_device=val_preloaded_in_gpu,
                 use_tqdm=use_tqdm,
                 verbose=verbose,
             )
@@ -882,7 +903,9 @@ def train_model(
                 f"- h2d: {h2d_time_s:.2f}s - compute: {compute_time_s:.2f}s "
                 f"- val_time: {val_time_s:.2f}s - epoch_total: {epoch_total_time_s:.2f}s "
                 f"- preloaded: {preloaded_in_gpu} "
-                f"- preload_time: {preload_time_s:.2f}s - max_cuda_mem: {mem_mb:.2f} MB"
+                f"- preload_time: {preload_time_s:.2f}s "
+                f"- val_preloaded: {val_preloaded_in_gpu} "
+                f"- val_preload_time: {val_preload_time_s:.2f}s - max_cuda_mem: {mem_mb:.2f} MB"
                 f"{io_msg}"
             )
             print(f"Epoch {epoch}/{epochs} total_time_s: {epoch_total_time_s:.2f}")
@@ -962,9 +985,10 @@ def train_model(
         total_compute_s = float(sum(history["compute_time"]))
         total_val_s = float(sum(history["val_time"]))
         total_train_epoch_s = total_data_wait_s + total_h2d_s + total_compute_s
-        total_wall_estimate_s = preload_time_s + total_train_epoch_s + total_val_s
+        total_wall_estimate_s = preload_time_s + val_preload_time_s + total_train_epoch_s + total_val_s
         print("\nTiming summary (cumulative):")
         print(f"  preload_time: {preload_time_s:.2f}s")
+        print(f"  val_preload_time: {val_preload_time_s:.2f}s")
         print(f"  train_data_wait_time: {total_data_wait_s:.2f}s")
         print(f"  train_h2d_time: {total_h2d_s:.2f}s")
         print(f"  train_compute_time: {total_compute_s:.2f}s")
@@ -991,6 +1015,7 @@ def train_with_fallback(
     verbose: int = 1,
     prefer_gpu: bool = True,
     preload_train_to_device: bool = False,
+    preload_val_to_device: bool = False,
     deterministic_seed: int | None = None,
     early_stopping_patience: int | None = None,
     early_stopping_min_delta: float = 0.0,
@@ -1029,6 +1054,7 @@ def train_with_fallback(
             step_lr_gamma=step_lr_gamma,
             verbose=verbose,
             preload_train_to_device=preload_train_to_device,
+            preload_val_to_device=preload_val_to_device,
             deterministic_seed=deterministic_seed,
             early_stopping_patience=early_stopping_patience,
             early_stopping_min_delta=early_stopping_min_delta,
@@ -1063,6 +1089,7 @@ def train_with_fallback(
         step_lr_gamma=step_lr_gamma,
         verbose=verbose,
         preload_train_to_device=False,
+        preload_val_to_device=False,
         deterministic_seed=deterministic_seed,
         early_stopping_patience=early_stopping_patience,
         early_stopping_min_delta=early_stopping_min_delta,

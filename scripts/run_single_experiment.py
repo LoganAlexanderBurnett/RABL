@@ -154,6 +154,7 @@ def _tune(scaled_h5: Path, out_dir: Path, seed: int, grid: dict[str, Any]) -> An
         out_dir=out_dir,
         prefer_gpu=bool(grid.get("prefer_gpu", True)),
         preload_train_to_device=True,
+        preload_val_to_device=True,
     )
     _results, best = run_grid_search(tune_cfg)
     return best

@@ -39,6 +39,7 @@ class GridSearchConfig:
     prefer_gpu: bool = True
     lstm_dropout: float = 0.0
     preload_train_to_device: bool = False
+    preload_val_to_device: bool = False
     early_stopping_patience: int | None = None
     early_stopping_min_delta: float = 0.0
     restore_best_weights: bool = True
@@ -163,6 +164,7 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
             verbose=config.verbose,
             prefer_gpu=config.prefer_gpu,
             preload_train_to_device=config.preload_train_to_device,
+            preload_val_to_device=config.preload_val_to_device,
             deterministic_seed=config.seed,
             early_stopping_patience=config.early_stopping_patience,
             early_stopping_min_delta=config.early_stopping_min_delta,
