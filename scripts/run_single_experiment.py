@@ -27,6 +27,7 @@ from typing import Any
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LogNorm
 from matplotlib.lines import Line2D
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -552,8 +553,10 @@ def _extract_root_id_from_results_stem(stem: str) -> str:
     return "unknown_root"
 
 
-def _summarize_forecasts(forecast_h5: Path) -> dict[str, float]:
-    all_err: list[np.ndarray] = []
+def _compute_forecast_metrics(forecast_h5: Path) -> dict[str, Any]:
+    y_true_profiles: list[np.ndarray] = []
+    y_pred_profiles: list[np.ndarray] = []
+    target_names: list[str] | None = None
     with h5py.File(forecast_h5, "r") as h5f:
         for profile_name in h5f.keys():
             grp = h5f[profile_name]
@@ -564,15 +567,81 @@ def _summarize_forecasts(forecast_h5: Path) -> dict[str, float]:
             pred_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_mean(t)_")]
             if not true_cols or len(true_cols) != len(pred_cols):
                 continue
-            err = table[:, pred_cols] - table[:, true_cols]
-            all_err.append(err)
-    if not all_err:
-        return {"rmse": float("nan"), "mae": float("nan"), "max_abs": float("nan")}
-    cat = np.concatenate(all_err, axis=0)
+            profile_target_names = [cols[idx].replace("x_true(t)_", "", 1) for idx in true_cols]
+            if target_names is None:
+                target_names = profile_target_names
+            y_true = table[:, true_cols]
+            y_pred = table[:, pred_cols]
+            y_true_profiles.append(y_true)
+            y_pred_profiles.append(y_pred)
+
+    if not y_true_profiles or target_names is None:
+        return {
+            "per_target": {},
+            "aggregated": {"smape": float("nan"), "nrmse": float("nan")},
+            "horizon": {"rmse": {}, "mae": {}},
+        }
+
+    y_true_cat = np.concatenate(y_true_profiles, axis=0)
+    y_pred_cat = np.concatenate(y_pred_profiles, axis=0)
+    err_cat = y_pred_cat - y_true_cat
+    abs_err_cat = np.abs(err_cat)
+
+    rmse_by_target = np.sqrt(np.mean(err_cat**2, axis=0))
+    mae_by_target = np.mean(abs_err_cat, axis=0)
+    bias_by_target = np.mean(err_cat, axis=0)
+    true_mean = np.mean(y_true_cat, axis=0)
+    sst = np.sum((y_true_cat - true_mean) ** 2, axis=0)
+    sse = np.sum(err_cat**2, axis=0)
+    r2_by_target = np.where(sst > 0.0, 1.0 - (sse / sst), np.nan)
+
+    denom = np.abs(y_true_cat) + np.abs(y_pred_cat)
+    smape = float(np.mean(200.0 * abs_err_cat / np.maximum(denom, 1e-12)))
+    target_range = np.max(y_true_cat, axis=0) - np.min(y_true_cat, axis=0)
+    nrmse_by_target = np.where(target_range > 0.0, rmse_by_target / target_range, np.nan)
+    nrmse = float(np.nanmean(nrmse_by_target))
+
+    max_horizon = max(profile.shape[0] for profile in y_true_profiles)
+    horizon_rmse_by_target = np.full((max_horizon, len(target_names)), np.nan, dtype=float)
+    horizon_mae_by_target = np.full((max_horizon, len(target_names)), np.nan, dtype=float)
+    for horizon_idx in range(max_horizon):
+        horizon_true: list[np.ndarray] = []
+        horizon_pred: list[np.ndarray] = []
+        for true_profile, pred_profile in zip(y_true_profiles, y_pred_profiles):
+            if horizon_idx < true_profile.shape[0]:
+                horizon_true.append(true_profile[horizon_idx : horizon_idx + 1, :])
+                horizon_pred.append(pred_profile[horizon_idx : horizon_idx + 1, :])
+        if not horizon_true:
+            continue
+        h_true = np.concatenate(horizon_true, axis=0)
+        h_pred = np.concatenate(horizon_pred, axis=0)
+        h_err = h_pred - h_true
+        horizon_rmse_by_target[horizon_idx, :] = np.sqrt(np.mean(h_err**2, axis=0))
+        horizon_mae_by_target[horizon_idx, :] = np.mean(np.abs(h_err), axis=0)
+
+    per_target: dict[str, dict[str, Any]] = {}
+    for idx, target_name in enumerate(target_names):
+        per_target[target_name] = {
+            "rmse": float(rmse_by_target[idx]),
+            "mae": float(mae_by_target[idx]),
+            "bias": float(bias_by_target[idx]),
+            "r2": float(r2_by_target[idx]),
+            "nrmse": float(nrmse_by_target[idx]),
+            "horizon_rmse": [float(v) for v in horizon_rmse_by_target[:, idx].tolist()],
+            "horizon_mae": [float(v) for v in horizon_mae_by_target[:, idx].tolist()],
+        }
+
+    horizon_metrics = {
+        "rmse": {target_name: per_target[target_name]["horizon_rmse"] for target_name in target_names},
+        "mae": {target_name: per_target[target_name]["horizon_mae"] for target_name in target_names},
+    }
     return {
-        "rmse": float(np.sqrt(np.mean(cat**2))),
-        "mae": float(np.mean(np.abs(cat))),
-        "max_abs": float(np.max(np.abs(cat))),
+        "per_target": per_target,
+        "aggregated": {
+            "smape": smape,
+            "nrmse": nrmse,
+        },
+        "horizon": horizon_metrics,
     }
 
 
@@ -632,21 +701,63 @@ def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
 def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     cycles = [int(m["cycle"]) for m in cycle_metrics]
-    rmse = [float(m["forecast_quality"]["rmse"]) for m in cycle_metrics]
-    mae = [float(m["forecast_quality"]["mae"]) for m in cycle_metrics]
+    smape = [float(m["forecast_quality"]["aggregated"]["smape"]) for m in cycle_metrics]
+    nrmse = [float(m["forecast_quality"]["aggregated"]["nrmse"]) for m in cycle_metrics]
     cal = [float(m["uncertainty_quality"]["calibration_error"]) for m in cycle_metrics]
     cov50 = [float(m["uncertainty_quality"]["coverage"]["50"]) for m in cycle_metrics]
     cov80 = [float(m["uncertainty_quality"]["coverage"]["80"]) for m in cycle_metrics]
     cov95 = [float(m["uncertainty_quality"]["coverage"]["95"]) for m in cycle_metrics]
+    target_names = list(cycle_metrics[0]["forecast_quality"]["per_target"].keys())
+    rmse_matrix = np.asarray(
+        [
+            [float(c["forecast_quality"]["per_target"][target]["rmse"]) for target in target_names]
+            for c in cycle_metrics
+        ],
+        dtype=float,
+    )
+    mae_matrix = np.asarray(
+        [
+            [float(c["forecast_quality"]["per_target"][target]["mae"]) for target in target_names]
+            for c in cycle_metrics
+        ],
+        dtype=float,
+    )
+    bias_matrix = np.asarray(
+        [
+            [float(c["forecast_quality"]["per_target"][target]["bias"]) for target in target_names]
+            for c in cycle_metrics
+        ],
+        dtype=float,
+    )
+    r2_matrix = np.asarray(
+        [
+            [float(c["forecast_quality"]["per_target"][target]["r2"]) for target in target_names]
+            for c in cycle_metrics
+        ],
+        dtype=float,
+    )
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    horizon_rmse_series: list[np.ndarray] = []
+    horizon_mae_series: list[np.ndarray] = []
+    for cycle_row in cycle_metrics:
+        horizon_rmse_targets = cycle_row["forecast_quality"]["horizon"]["rmse"]
+        horizon_mae_targets = cycle_row["forecast_quality"]["horizon"]["mae"]
+        rmse_rows = np.asarray([horizon_rmse_targets[target] for target in target_names], dtype=float).T
+        mae_rows = np.asarray([horizon_mae_targets[target] for target in target_names], dtype=float).T
+        horizon_rmse_series.append(np.nanmean(rmse_rows, axis=1))
+        horizon_mae_series.append(np.nanmean(mae_rows, axis=1))
+
+    fig, axes = plt.subplots(3, 3, figsize=(22, 14))
     ax = axes[0, 0]
-    ax.plot(cycles, rmse, marker="o", label="RMSE")
-    ax.plot(cycles, mae, marker="o", label="MAE")
-    ax.set_title("Forecast error vs cycle")
+    ax.plot(cycles, smape, marker="o", label="sMAPE (%)")
+    ax_twin = ax.twinx()
+    ax_twin.plot(cycles, nrmse, marker="s", color="C2", label="NRMSE")
+    ax.set_title("Aggregated performance vs cycle")
     ax.set_xlabel("Cycle")
     ax.grid(alpha=0.3)
-    ax.legend()
+    lines, labels = ax.get_legend_handles_labels()
+    lines2, labels2 = ax_twin.get_legend_handles_labels()
+    ax.legend(lines + lines2, labels + labels2, loc="best")
 
     ax = axes[0, 1]
     ax.plot(cycles, cov50, marker="o", label="50%")
@@ -658,21 +769,127 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     ax.grid(alpha=0.3)
     ax.legend()
 
-    ax = axes[1, 0]
+    ax = axes[0, 2]
     ax.plot(cycles, cal, marker="o", color="C3")
     ax.set_title("Calibration error vs cycle")
     ax.set_xlabel("Cycle")
     ax.grid(alpha=0.3)
 
-    ax = axes[1, 1]
+    ax = axes[1, 0]
     sharp95 = [float(m["uncertainty_quality"]["interval_width"]["95"]) for m in cycle_metrics]
     ax.plot(cycles, sharp95, marker="o", color="C2")
     ax.set_title("95% interval width (sharpness) vs cycle")
     ax.set_xlabel("Cycle")
     ax.grid(alpha=0.3)
 
+    eps = 1e-12
+
+    def _log_norm(arr: np.ndarray) -> LogNorm:
+        positive = arr[np.isfinite(arr) & (arr > 0)]
+        if positive.size == 0:
+            return LogNorm(vmin=eps, vmax=1.0)
+        vmin = max(float(np.min(positive)), eps)
+        vmax = max(float(np.max(positive)), vmin * 10.0)
+        return LogNorm(vmin=vmin, vmax=vmax)
+
+    ax = axes[1, 1]
+    im = ax.imshow(
+        np.maximum(rmse_matrix, eps),
+        aspect="auto",
+        interpolation="nearest",
+        norm=_log_norm(rmse_matrix),
+    )
+    ax.set_title("Per-target RMSE (log scale)")
+    ax.set_ylabel("Cycle")
+    ax.set_yticks(range(len(cycles)))
+    ax.set_yticklabels(cycles)
+    ax.set_xticks(range(len(target_names)))
+    ax.set_xticklabels(target_names, rotation=45, ha="right", fontsize=8)
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    ax = axes[1, 2]
+    im = ax.imshow(
+        np.maximum(mae_matrix, eps),
+        aspect="auto",
+        interpolation="nearest",
+        norm=_log_norm(mae_matrix),
+    )
+    ax.set_title("Per-target MAE (log scale)")
+    ax.set_ylabel("Cycle")
+    ax.set_yticks(range(len(cycles)))
+    ax.set_yticklabels(cycles)
+    ax.set_xticks(range(len(target_names)))
+    ax.set_xticklabels(target_names, rotation=45, ha="right", fontsize=8)
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    ax = axes[2, 0]
+    im = ax.imshow(
+        np.maximum(np.abs(bias_matrix), eps),
+        aspect="auto",
+        interpolation="nearest",
+        norm=_log_norm(np.abs(bias_matrix)),
+    )
+    ax.set_title("Per-target |Bias| (log scale)")
+    ax.set_ylabel("Cycle")
+    ax.set_yticks(range(len(cycles)))
+    ax.set_yticklabels(cycles)
+    ax.set_xticks(range(len(target_names)))
+    ax.set_xticklabels(target_names, rotation=45, ha="right", fontsize=8)
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    ax = axes[2, 1]
+    im = ax.imshow(r2_matrix, aspect="auto", interpolation="nearest", vmin=-1.0, vmax=1.0, cmap="coolwarm")
+    ax.set_title("Per-target R²")
+    ax.set_ylabel("Cycle")
+    ax.set_yticks(range(len(cycles)))
+    ax.set_yticklabels(cycles)
+    ax.set_xticks(range(len(target_names)))
+    ax.set_xticklabels(target_names, rotation=45, ha="right", fontsize=8)
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    ax = axes[2, 2]
+    for cycle_idx, cycle_num in enumerate(cycles):
+        ax.plot(horizon_rmse_series[cycle_idx], alpha=0.8, label=f"C{cycle_num} RMSE")
+        ax.plot(horizon_mae_series[cycle_idx], alpha=0.8, linestyle="--", label=f"C{cycle_num} MAE")
+    ax.set_title("Horizon-wise mean RMSE/MAE (across targets)")
+    ax.set_xlabel("Horizon step")
+    ax.set_yscale("log")
+    ax.grid(alpha=0.3)
+    if len(cycles) <= 5:
+        ax.legend(fontsize=8)
+
     fig.tight_layout()
     fig.savefig(out_dir / "metrics_vs_cycle.png", dpi=150)
+    plt.close(fig)
+
+
+def _plot_timing_metrics_over_cycles(cycle_rows: list[dict[str, Any]], output_path: Path) -> None:
+    timing_keys = [
+        "build_unscaled_dataset_sec",
+        "scale_split_dataset_sec",
+        "hyperparameter_tuning_sec",
+        "ensemble_training_sec",
+        "ensemble_metrics_compute_sec",
+        "forecast_pdf_render_sec",
+        "profile_generation_sec",
+        "dymola_simulation_sec",
+        "cycle_total_sec",
+    ]
+    cycle_indices = [int(cycle_row.get("cycle", i + 1)) for i, cycle_row in enumerate(cycle_rows)]
+    fig, axes = plt.subplots(3, 3, figsize=(16, 12), sharex=True)
+    axes_flat = axes.ravel()
+    for ax, key in zip(axes_flat, timing_keys):
+        values = [float(cycle_row["timing"].get(key, float("nan"))) for cycle_row in cycle_rows]
+        ax.plot(cycle_indices, values, marker="o")
+        ax.set_title(key)
+        ax.set_ylabel("seconds")
+        ax.grid(alpha=0.3)
+    for ax in axes_flat[-3:]:
+        ax.set_xlabel("cycle")
+    fig.suptitle("run_single_experiment timing metrics across cycles")
+    fig.tight_layout(rect=(0, 0, 1, 0.98))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150)
     plt.close(fig)
 
 
@@ -816,16 +1033,22 @@ def main() -> None:
         bagged_h5_path = Path(ensemble["bagged_h5_path"])
         forecast_h5 = Path(ensemble["forecast_output_path"])
         t0 = perf_counter()
-        point_metrics = _summarize_forecasts(forecast_h5)
+        point_metrics = _compute_forecast_metrics(forecast_h5)
         unc_metrics = _compute_uncertainty_metrics(forecast_h5)
         step_times["ensemble_metrics_compute_sec"] = perf_counter() - t0
         metrics = {
             "forecast_quality": point_metrics,
             "uncertainty_quality": unc_metrics,
         }
+        per_target = point_metrics.get("per_target", {})
+        target_rmse_values = [float(per_target[name]["rmse"]) for name in per_target]
+        target_mae_values = [float(per_target[name]["mae"]) for name in per_target]
+        mean_target_rmse = float(np.nanmean(target_rmse_values)) if target_rmse_values else float("nan")
+        mean_target_mae = float(np.nanmean(target_mae_values)) if target_mae_values else float("nan")
         print(
             f"[cycle {cycle + 1}] Ensemble test summary: "
-            f"RMSE={point_metrics['rmse']:.6f}, MAE={point_metrics['mae']:.6f}, MAX_ABS={point_metrics['max_abs']:.6f}, "
+            f"mean_target_RMSE={mean_target_rmse:.6f}, mean_target_MAE={mean_target_mae:.6f}, "
+            f"sMAPE={point_metrics['aggregated']['smape']:.4f}%, NRMSE={point_metrics['aggregated']['nrmse']:.6f}, "
             f"COV50={unc_metrics['coverage']['50']:.4f}, COV80={unc_metrics['coverage']['80']:.4f}, "
             f"COV95={unc_metrics['coverage']['95']:.4f}, CAL_ERR={unc_metrics['calibration_error']:.4f}"
         )
@@ -961,6 +1184,10 @@ def main() -> None:
             for row in metadata["cycles"]
         ],
         out_dir=run_dir / "metrics_plots",
+    )
+    _plot_timing_metrics_over_cycles(
+        cycle_rows=metadata["cycles"],
+        output_path=run_dir / "metrics_plots" / "timing_metrics_vs_cycle.png",
     )
     _plot_cycle_colored_batches(
         sim_root=sim_root,
