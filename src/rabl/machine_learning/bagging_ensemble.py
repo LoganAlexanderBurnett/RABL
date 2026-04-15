@@ -524,6 +524,7 @@ def run_bagging_ensemble(
     n_fc: int = 1,
     fc_hidden: tuple[int, ...] = (64,),
     prefer_gpu: bool = True,
+    preload_val_to_device: bool = True,
     verbose: int = 1,
 ) -> dict[str, Any]:
     config = BaggingEnsembleConfig(
@@ -591,6 +592,7 @@ def run_bagging_ensemble(
             verbose=config.verbose,
             prefer_gpu=config.prefer_gpu,
             preload_train_to_device=True,
+            preload_val_to_device=preload_val_to_device,
             deterministic_seed=config.seed,
             early_stopping_patience=config.early_stopping_patience,
             early_stopping_min_delta=config.early_stopping_min_delta,

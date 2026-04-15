@@ -727,6 +727,7 @@ def main() -> None:
             n_fc=1,
             fc_hidden=(best.hidden_fc,),
             prefer_gpu=cfg.prefer_gpu,
+            preload_val_to_device=True,
         )
         step_times["ensemble_training_sec"] = perf_counter() - t0
         model_paths = [str(Path(d) / "model.pt") for d in ensemble["model_dirs"]]
