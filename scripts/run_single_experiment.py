@@ -26,6 +26,7 @@ from typing import Any
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = REPO_ROOT / "src"
@@ -43,6 +44,27 @@ from rabl.machine_learning.recursive_branching import (
 )
 from rabl.interface.pymola import BatchConfig, DymolaBatchRunner
 from rabl.variography.DrumVariography import DrumProfileGenerator
+
+PLOT_VARS = [
+    "drumAngleDeg",
+    "drumVelDeg_s",
+    "TN2",
+    "Tm",
+    "Thp",
+    "Tf",
+    "c[1]",
+    "c[2]",
+    "c[3]",
+    "c[4]",
+    "c[5]",
+    "c[6]",
+    "P_MW",
+    "rho_dollars",
+    "rho_drums_dollars",
+    "rho_fuel_dollars",
+    "rho_moderator_dollars",
+    "Q_to_steam",
+]
 
 
 @dataclass(frozen=True)
@@ -304,26 +326,7 @@ def _plot_stitched_results(stitched_dir: Path) -> None:
         return
 
     series: list[tuple[str, np.ndarray, dict[str, np.ndarray]]] = []
-    vars_to_plot = [
-        "drumAngleDeg",
-        "drumVelDeg_s",
-        "TN2",
-        "Tm",
-        "Thp",
-        "Tf",
-        "c[1]",
-        "c[2]",
-        "c[3]",
-        "c[4]",
-        "c[5]",
-        "c[6]",
-        "P_MW",
-        "rho_dollars",
-        "rho_drums_dollars",
-        "rho_fuel_dollars",
-        "rho_moderator_dollars",
-        "Q_to_steam",
-    ]
+    vars_to_plot = list(PLOT_VARS)
     for idx, csv_path in enumerate(csv_paths):
         with csv_path.open(newline="") as fp:
             reader = csv.DictReader(fp)
@@ -371,6 +374,106 @@ def _plot_stitched_results(stitched_dir: Path) -> None:
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f"[step] Saved stitched plot: {out_path}")
+
+
+def _normalize_batch_name(batch: str) -> str:
+    batch = str(batch).strip()
+    if batch.startswith("batch_"):
+        return batch
+    return f"batch_{int(batch):04d}"
+
+
+def _plot_cycle_colored_batches(
+    *,
+    sim_root: Path,
+    initial_sim_batches: list[str],
+    cycle_rows: list[dict[str, Any]],
+    output_path: Path,
+) -> None:
+    batch_to_color: dict[str, tuple[float, float, float, float] | str] = {}
+    batch_to_label: dict[str, str] = {}
+
+    for raw_batch in initial_sim_batches:
+        batch_name = _normalize_batch_name(raw_batch)
+        batch_to_color[batch_name] = "black"
+        batch_to_label[batch_name] = "initial_sim_batches"
+
+    cmap = plt.get_cmap("tab10")
+    for cycle_row in cycle_rows:
+        new_batch = cycle_row.get("new_sim_batch")
+        if not new_batch:
+            continue
+        cycle_idx = int(cycle_row.get("cycle", 0))
+        batch_name = _normalize_batch_name(str(new_batch))
+        batch_to_color[batch_name] = cmap((cycle_idx - 1) % 10)
+        batch_to_label[batch_name] = f"cycle_{cycle_idx:02d}_added_profiles"
+
+    series: list[tuple[str, np.ndarray, dict[str, np.ndarray]]] = []
+    for batch_name, color in batch_to_color.items():
+        batch_dir = sim_root / batch_name
+        if not batch_dir.exists():
+            print(f"[warn] Missing batch directory for cycle-colored plot: {batch_dir}")
+            continue
+        csv_paths = sorted(batch_dir.glob("results_drum_profile_*.csv"))
+        for csv_path in csv_paths:
+            with csv_path.open(newline="") as fp:
+                reader = csv.DictReader(fp)
+                rows = list(reader)
+            if not rows:
+                continue
+            keys = list(rows[0].keys())
+            if "t" not in keys:
+                continue
+            t = np.asarray([float(r["t"]) for r in rows], dtype=float)
+            payload: dict[str, np.ndarray] = {}
+            for key in PLOT_VARS:
+                if key in keys:
+                    payload[key] = np.asarray([float(r[key]) for r in rows], dtype=float)
+            series.append((batch_name, t, payload))
+
+    if not series:
+        print("[warn] No CSV series found for cycle-colored batch plot; skipping.")
+        return
+
+    fig, axes = plt.subplots(3, 6, figsize=(30, 12), sharex=True)
+    axes_flat = np.atleast_1d(axes).ravel()
+    for ax, var in zip(axes_flat, PLOT_VARS):
+        for batch_name, t, payload in series:
+            if var in payload:
+                ax.plot(
+                    t,
+                    payload[var],
+                    alpha=0.10,
+                    linewidth=1.0,
+                    color=batch_to_color[batch_name],
+                )
+        ax.set_title(var)
+        ax.grid(alpha=0.3)
+    for ax in axes_flat[len(PLOT_VARS):]:
+        ax.set_axis_off()
+
+    legend_handles = [
+        Line2D([0], [0], color="black", lw=2, label="initial_sim_batches")
+    ]
+    seen_labels = {"initial_sim_batches"}
+    for cycle_row in cycle_rows:
+        new_batch = cycle_row.get("new_sim_batch")
+        if not new_batch:
+            continue
+        cycle_idx = int(cycle_row.get("cycle", 0))
+        label = f"cycle_{cycle_idx:02d}_added_profiles"
+        if label in seen_labels:
+            continue
+        seen_labels.add(label)
+        legend_handles.append(
+            Line2D([0], [0], color=cmap((cycle_idx - 1) % 10), lw=2, label=label)
+        )
+    fig.legend(handles=legend_handles, loc="upper center", ncol=min(4, len(legend_handles)))
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"[step] Saved cycle-colored profiles plot: {output_path}")
 
 
 def _extract_root_id_from_results_stem(stem: str) -> str:
@@ -771,6 +874,12 @@ def main() -> None:
             for row in metadata["cycles"]
         ],
         out_dir=run_dir / "metrics_plots",
+    )
+    _plot_cycle_colored_batches(
+        sim_root=sim_root,
+        initial_sim_batches=list(cfg.initial_sim_batches),
+        cycle_rows=metadata["cycles"],
+        output_path=run_dir / "metrics_plots" / "profiles_by_cycle_color.png",
     )
 
     metadata_path = run_dir / "run_metadata.json"
