@@ -558,9 +558,15 @@ def main() -> None:
         "config": cfg.__dict__,
         "cycles": [],
     }
+    seed_manifest: dict[str, Any] = {
+        "timestamp_utc": metadata["timestamp_utc"],
+        "base_seed": int(cfg.seed),
+        "cycles": [],
+    }
 
     all_start = perf_counter()
     for cycle in range(cfg.retrain_cycles):
+        cycle_seed = int(cfg.seed + cycle)
         cycle_start = perf_counter()
         step_times: dict[str, float] = {}
         cycle_input_batches = list(known_batches)
@@ -586,7 +592,7 @@ def main() -> None:
             split_mode=cfg.split_mode,
             test_manifest=test_manifest,
             test_count=cfg.test_count,
-            seed=cfg.seed + cycle,
+            seed=cycle_seed,
         )
         step_times["scale_split_dataset_sec"] = perf_counter() - t0
         print(f"[step] Built scaled dataset: {scaled_h5}")
@@ -596,7 +602,7 @@ def main() -> None:
         best = _tune(
             scaled_h5=scaled_h5,
             out_dir=cycle_dir / "tuning",
-            seed=cfg.seed + cycle,
+            seed=cycle_seed,
             grid=cfg.hp_grid,
         )
         step_times["hyperparameter_tuning_sec"] = perf_counter() - t0
@@ -609,7 +615,7 @@ def main() -> None:
             out_dir=cycle_dir / "ensemble",
             n_models=cfg.n_models,
             bag_fraction=cfg.bag_fraction,
-            seed=cfg.seed + cycle,
+            seed=cycle_seed,
             batch_size=best.batch_size,
             epochs=int(cfg.hp_grid.get("epochs", 20)),
             learning_rate=best.learning_rate,
@@ -662,7 +668,7 @@ def main() -> None:
                     lstm_hidden=int(best.hidden_lstm),
                     n_lstm=int(best.n_lstm),
                     fc_hidden=int(best.hidden_fc),
-                    seed=cfg.seed + cycle,
+                    seed=cycle_seed,
                     variography_root=var_root,
                 )
                 step_times["profile_generation_sec"] = perf_counter() - t0
@@ -678,7 +684,7 @@ def main() -> None:
                     n_profiles=n_new,
                     T=float(cfg.branching["T"]),
                     dt=float(cfg.branching["dt"]),
-                    seed=cfg.seed + cycle,
+                    seed=cycle_seed,
                     baseline=float(cfg.branching["baseline_angle_deg"]),
                     kernel=str(cfg.branching["kernel"]),
                 )
@@ -741,6 +747,23 @@ def main() -> None:
                 "timing": step_times,
             }
         )
+        cycle_seed_info: dict[str, Any] = {
+            "cycle": cycle + 1,
+            "cycle_seed": cycle_seed,
+            "scale_split_dataset_seed": cycle_seed,
+            "hyperparameter_tuning_seed": cycle_seed,
+            "ensemble_training_seed": cycle_seed,
+        }
+        if cycle < cfg.retrain_cycles - 1:
+            if cfg.strategy == "branching":
+                cycle_seed_info["profile_generation_seed"] = cycle_seed
+                cycle_seed_info["recursive_branching_root_seeds"] = [
+                    cycle_seed + root_idx for root_idx in range(int(cfg.branching["N_r"]))
+                ]
+            else:
+                cycle_seed_info["profile_generation_seed"] = cycle_seed
+                cycle_seed_info["random_profile_generation_seed"] = cycle_seed
+        seed_manifest["cycles"].append(cycle_seed_info)
 
     _plot_metrics_over_cycles(
         [
@@ -751,10 +774,13 @@ def main() -> None:
     )
 
     metadata_path = run_dir / "run_metadata.json"
+    seed_manifest_path = run_dir / "seed_manifest.json"
     metadata["total_runtime_sec"] = perf_counter() - all_start
     print(f"[timing] all cycles total: {metadata['total_runtime_sec']:.2f} s")
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    seed_manifest_path.write_text(json.dumps(seed_manifest, indent=2), encoding="utf-8")
     print(f"Done. Metadata: {metadata_path}")
+    print(f"Done. Seed manifest: {seed_manifest_path}")
 
 
 if __name__ == "__main__":

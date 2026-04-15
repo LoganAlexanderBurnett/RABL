@@ -732,6 +732,15 @@ def train_model(
     set_global_determinism(resolved_seed)
     if verbose:
         print(f"Deterministic seed set to: {resolved_seed}")
+        train_n = int(datasets.get("train_num_samples", 0))
+        val_n = int(datasets.get("val_num_samples", 0))
+        test_profile_count = len(datasets.get("test_profile_names", []))
+        print(
+            "Dataset summary: "
+            f"train_samples={train_n:,}, "
+            f"val_samples={val_n:,}, "
+            f"test_profiles={test_profile_count:,}"
+        )
 
     model = build_model(
         timesteps,
