@@ -1,41 +1,37 @@
 {
-  "experiment_id": "single_exp_smoke_002",
+  "experiment_id": "single_exp_smoke_003",
   "strategy": "branching",
   "seed": 123,
-  "retrain_cycles": 5,
+  "retrain_cycles": 2,
 
-  "initial_sim_batches": ["0003", "0004", "0005"],
+  "initial_sim_batches": ["0003"],
 
   "lookback": 12,
   "scaling_type": "minmax",
   "split_mode": "sample",
 
-  "test_count": 2000,
+  "test_count": 200,
 
   "n_models": 3,
-  "bag_fraction": 0.6,
+  "bag_fraction": 0.70,
   "prefer_gpu": true,
 
   "hp_grid": {
     "lookback": 12,
-    "learning_rates": [1e-3, 1e-4],
-    "batch_sizes": [128, 256],
+    "learning_rates": [1e-4],
+    "batch_sizes": [256],
     "n_lstm_values": [1],
-    "hidden_lstm_values": [32, 64],
-    "hidden_fc_values": [192, 384],
+    "hidden_lstm_values": [64],
+    "hidden_fc_values": [384],
     "n_fc": 1,
-    "epochs": 50,
+    "epochs": 2,
     "prefer_gpu": true
   },
 
   "branching": {
-    "N_r": 9,
+    "N_r": 3,
     "N_k": 3,
-    "N_b": 2,
-    "T": 200.0,
-    "dt": 0.4,
-    "baseline_angle_deg": 45.0,
-    "kernel": "matern52",
+    "N_b": 1,
     "device": "cpu"
   },
 
