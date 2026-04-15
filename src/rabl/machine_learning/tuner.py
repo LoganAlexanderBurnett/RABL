@@ -320,55 +320,46 @@ def _compute_forecast_quality_metrics(forecast_h5: Path) -> dict[str, Any]:
     }
 
 
-def _compute_uncertainty_quality_metrics(forecast_h5: Path) -> dict[str, Any]:
-    import h5py
-    import numpy as np
+def _print_tuning_overview(config: GridSearchConfig, best_result: TrialResult, test_metrics: dict[str, float]) -> None:
+    summary_path = config.out_dir / "grid_search_results.json"
+    timing_path = config.out_dir / "tuning_timing.json"
+    if not summary_path.exists():
+        print(f"WARNING: could not find tuning summary at {summary_path}; skipping overview.")
+        return
+    summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    results = summary_payload.get("results", [])
+    run_type = "hyperband" if "hyperband" in summary_payload else "grid"
+    timing_payload: dict[str, Any] = {}
+    if timing_path.exists():
+        timing_payload = json.loads(timing_path.read_text(encoding="utf-8"))
 
-    z_by_level = {"50": 0.67448975, "80": 1.28155157, "95": 1.95996398}
-    all_err: list[np.ndarray] = []
-    all_sigma95: list[np.ndarray] = []
-    with h5py.File(forecast_h5, "r") as h5f:
-        for profile_name in h5f.keys():
-            grp = h5f[profile_name]
-            table = np.asarray(grp["data"][()], dtype=float)
-            cols_raw = grp.attrs.get("columns", [])
-            cols = [c.decode("utf-8") if isinstance(c, bytes) else str(c) for c in cols_raw]
-            true_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_true(t)_")]
-            mean_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_mean(t)_")]
-            sigma_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_2sigma(t)_")]
-            if not true_cols or len(true_cols) != len(mean_cols) or len(sigma_cols) != len(true_cols):
-                continue
-            y_true = table[:, true_cols]
-            y_mean = table[:, mean_cols]
-            sigma95 = table[:, sigma_cols]
-            all_err.append(np.abs(y_mean - y_true))
-            all_sigma95.append(sigma95)
-
-    if not all_err:
-        return {
-            "coverage": {"50": float("nan"), "80": float("nan"), "95": float("nan")},
-            "interval_width": {"50": float("nan"), "80": float("nan"), "95": float("nan")},
-            "calibration_error": float("nan"),
-        }
-
-    err = np.concatenate(all_err, axis=0)
-    sigma95 = np.concatenate(all_sigma95, axis=0)
-    std = sigma95 / 2.0
-
-    coverage: dict[str, float] = {}
-    width: dict[str, float] = {}
-    cal_terms: list[float] = []
-    for level, z in z_by_level.items():
-        half_width = z * std
-        cov = float((err <= half_width).mean())
-        coverage[level] = cov
-        width[level] = float((2.0 * half_width).mean())
-        cal_terms.append(abs(cov - (float(level) / 100.0)))
-    return {
-        "coverage": coverage,
-        "interval_width": width,
-        "calibration_error": float(sum(cal_terms) / len(cal_terms)),
-    }
+    print("\n" + "=" * 100)
+    print("TUNING OVERVIEW (SEQUENTIAL SUMMARY)")
+    print("=" * 100)
+    print(f"1) Search mode: {run_type}")
+    print(f"2) Search space combinations available: {count_grid_combinations(config)}")
+    print(f"3) Successful trained trials recorded: {len(results)}")
+    if timing_payload:
+        print(
+            "4) Timing: "
+            f"total_duration_s={float(timing_payload.get('total_duration_s', float('nan'))):.2f}, "
+            f"timed_entries={int(timing_payload.get('num_timed_trials', 0))}"
+        )
+    else:
+        print("4) Timing: no timing summary file found.")
+    print(
+        "5) Best hyperparameters: "
+        f"lookback={best_result.lookback}, lr={best_result.learning_rate:g}, "
+        f"batch={best_result.batch_size}, n_lstm={best_result.n_lstm}, "
+        f"hidden_lstm={best_result.hidden_lstm}, hidden_fc={best_result.hidden_fc}"
+    )
+    print(f"6) Best validation loss observed: {best_result.best_val_loss:.6e}")
+    print(f"7) Best model directory: {best_result.trial_dir}")
+    print(
+        "8) Final test timing metrics: "
+        + ", ".join(f"{k}={float(v):.6f}" for k, v in sorted(test_metrics.items()))
+    )
+    print("=" * 100)
 
 
 def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialResult]:
@@ -830,7 +821,6 @@ def test_best_model(config: GridSearchConfig, best_result: TrialResult) -> dict[
     forecast_h5 = test_out_dir / "rolling_forecasts.h5"
     if forecast_h5.exists():
         forecast_quality = _compute_forecast_quality_metrics(forecast_h5)
-        uncertainty_quality = _compute_uncertainty_quality_metrics(forecast_h5)
         per_target = forecast_quality.get("per_target", {})
         target_rmse_values = [float(per_target[name]["rmse"]) for name in per_target]
         target_mae_values = [float(per_target[name]["mae"]) for name in per_target]
@@ -844,18 +834,13 @@ def test_best_model(config: GridSearchConfig, best_result: TrialResult) -> dict[
             "BEST MODEL TEST SUMMARY: "
             f"mean_target_RMSE={mean_target_rmse:.6f}, mean_target_MAE={mean_target_mae:.6f}, "
             f"sMAPE={forecast_quality['aggregated']['smape']:.4f}%, "
-            f"NRMSE={forecast_quality['aggregated']['nrmse']:.6f}, "
-            f"COV50={uncertainty_quality['coverage']['50']:.4f}, "
-            f"COV80={uncertainty_quality['coverage']['80']:.4f}, "
-            f"COV95={uncertainty_quality['coverage']['95']:.4f}, "
-            f"CAL_ERR={uncertainty_quality['calibration_error']:.4f}"
+            f"NRMSE={forecast_quality['aggregated']['nrmse']:.6f}"
         )
         metrics_payload = {
             "forecast_quality": forecast_quality,
-            "uncertainty_quality": uncertainty_quality,
             "timing": test_metrics,
         }
-        metrics_json = test_out_dir / "ensemble_metrics_like_summary.json"
+        metrics_json = test_out_dir / "best_model_metrics_summary.json"
         metrics_json.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
         print(f"Saved best-model metrics summary to: {metrics_json}")
     else:
@@ -1086,7 +1071,8 @@ def main() -> None:
     print("\n" + "=" * 100)
     print("STARTING FINAL BEST-MODEL TEST EVALUATION")
     print("=" * 100)
-    test_best_model(config, best_result)
+    test_metrics = test_best_model(config, best_result)
+    _print_tuning_overview(config, best_result, test_metrics)
 
 
 if __name__ == "__main__":
