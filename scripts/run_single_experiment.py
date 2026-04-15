@@ -893,6 +893,65 @@ def _plot_timing_metrics_over_cycles(cycle_rows: list[dict[str, Any]], output_pa
     plt.close(fig)
 
 
+def _print_timing_overview(cycle_rows: list[dict[str, Any]], total_runtime_sec: float) -> None:
+    timing_keys = [
+        "build_unscaled_dataset_sec",
+        "scale_split_dataset_sec",
+        "hyperparameter_tuning_sec",
+        "ensemble_training_sec",
+        "ensemble_metrics_compute_sec",
+        "forecast_pdf_render_sec",
+        "profile_generation_sec",
+        "dymola_simulation_sec",
+        "cycle_total_sec",
+    ]
+    if not cycle_rows:
+        print("\n[timing-overview] No cycle timing data available.")
+        return
+
+    col_metric = 34
+    col_val = 12
+    header_bar = "=" * (col_metric + (col_val * 4) + 6)
+    print(f"\n{header_bar}")
+    print("TIMING OVERVIEW".center(len(header_bar)))
+    print(header_bar)
+    print(
+        f"{'Metric':<{col_metric}} | {'Mean (s)':>{col_val}} | {'Min (s)':>{col_val}} | "
+        f"{'Max (s)':>{col_val}} | {'Sum (s)':>{col_val}}"
+    )
+    print("-" * len(header_bar))
+
+    key_to_values: dict[str, list[float]] = {}
+    for key in timing_keys:
+        values = [float(row.get('timing', {}).get(key, float('nan'))) for row in cycle_rows]
+        values = [v for v in values if np.isfinite(v)]
+        key_to_values[key] = values
+        if not values:
+            print(f"{key:<{col_metric}} | {'n/a':>{col_val}} | {'n/a':>{col_val}} | {'n/a':>{col_val}} | {'n/a':>{col_val}}")
+            continue
+        print(
+            f"{key:<{col_metric}} | {np.mean(values):>{col_val}.2f} | {np.min(values):>{col_val}.2f} | "
+            f"{np.max(values):>{col_val}.2f} | {np.sum(values):>{col_val}.2f}"
+        )
+
+    print("-" * len(header_bar))
+    print(f"{'total_runtime_sec':<{col_metric}} | {'':>{col_val}} | {'':>{col_val}} | {'':>{col_val}} | {total_runtime_sec:>{col_val}.2f}")
+    print(header_bar)
+
+    stack_keys = [k for k in timing_keys if k != "cycle_total_sec"]
+    total_stack = sum(np.sum(key_to_values[k]) for k in stack_keys if key_to_values[k])
+    if total_stack <= 0:
+        return
+    print("Cycle-time composition (share of summed step times):")
+    for key in stack_keys:
+        values = key_to_values[key]
+        if not values:
+            continue
+        portion = float(np.sum(values) / total_stack)
+        bar = "█" * int(round(portion * 40))
+        print(f"  - {key:<32} {portion:>6.1%}  {bar}")
+
+
 def _save_forecast_pdf_subset(
     *,
     forecast_h5_path: Path,
@@ -1200,6 +1259,7 @@ def main() -> None:
     seed_manifest_path = run_dir / "seed_manifest.json"
     metadata["total_runtime_sec"] = perf_counter() - all_start
     print(f"[timing] all cycles total: {metadata['total_runtime_sec']:.2f} s")
+    _print_timing_overview(metadata["cycles"], total_runtime_sec=float(metadata["total_runtime_sec"]))
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     seed_manifest_path.write_text(json.dumps(seed_manifest, indent=2), encoding="utf-8")
     print(f"Done. Metadata: {metadata_path}")
