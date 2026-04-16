@@ -123,7 +123,7 @@ def test_hyperband_promotes_and_resumes(monkeypatch: pytest.MonkeyPatch, tmp_pat
     cfg = tuner.GridSearchConfig(
         lookback_datasets={4: h5},
         learning_rates=[1e-3, 1e-4],
-        batch_sizes=[16],
+        batch_sizes=[16, 32],
         n_lstm_values=[1],
         hidden_lstm_values=[8],
         hidden_fc_values=[8],
@@ -165,6 +165,12 @@ def test_hyperband_promotes_and_resumes(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert "hyperband" in payload
     assert payload["hyperband"]["config"]["min_epochs"] == 1
     assert payload["hyperband"]["brackets"]
+    sampled = [
+        tuple(sorted(trial["sampled_hyperparameters"].items()))
+        for bracket in payload["hyperband"]["brackets"]
+        for trial in bracket["trials"]
+    ]
+    assert len(sampled) == len(set(sampled))
 
     all_decisions = [
         rung["decision"]
@@ -216,3 +222,12 @@ def test_forecast_metrics_support_single_and_ensemble_schema(tmp_path: Path) -> 
     ensemble_metrics = tuner._compute_forecast_quality_metrics(ensemble_h5)
     assert ensemble_metrics["per_target"]
     assert ensemble_metrics["aggregated"]["nrmse"] == ensemble_metrics["aggregated"]["nrmse"]
+
+
+def test_hyperband_helper_count() -> None:
+    assert tuner.hyperband_initial_trial_count(min_epochs=5, max_epochs=20, reduction_factor=2) == 10
+    args = tuner._helper_args_from_argv(["--helper", "--min", "5", "--max", "20", "--eta", "2"])
+    assert args.helper is True
+    assert args.helper_min == 5
+    assert args.helper_max == 20
+    assert args.helper_eta == 2

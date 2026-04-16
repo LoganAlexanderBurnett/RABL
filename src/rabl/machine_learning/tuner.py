@@ -10,6 +10,7 @@ import argparse
 import json
 import math
 import random
+import sys
 from dataclasses import asdict, dataclass
 from itertools import product
 from pathlib import Path
@@ -164,6 +165,25 @@ def construct_hyperband_brackets(config: GridSearchConfig) -> list[HyperbandBrac
             )
         )
     return brackets
+
+
+def hyperband_initial_trial_count(min_epochs: int, max_epochs: int, reduction_factor: int) -> int:
+    """Return total Hyperband initial trials (N_init) implied by (min,max,eta)."""
+    if min_epochs < 1:
+        raise ValueError("min_epochs must be >= 1.")
+    if max_epochs < min_epochs:
+        raise ValueError("max_epochs must be >= min_epochs.")
+    if reduction_factor <= 1:
+        raise ValueError("reduction_factor must be > 1.")
+    s_max = int(math.floor(math.log(max_epochs / min_epochs, reduction_factor)))
+    if s_max < 0:
+        return 0
+    total_budget = (s_max + 1) * max_epochs
+    total_initial = 0
+    for s in range(s_max, -1, -1):
+        n = int(math.ceil((total_budget / max_epochs) * (reduction_factor**s) / (s + 1)))
+        total_initial += max(1, n)
+    return total_initial
 
 
 def _all_trial_params(config: GridSearchConfig) -> list[dict[str, Any]]:
@@ -604,6 +624,25 @@ def run_hyperband_search(config: GridSearchConfig) -> tuple[list[TrialResult], T
     if not all_params:
         raise ValueError("Hyperparameter space is empty.")
     rng = random.Random(config.seed)
+    shuffled_params = list(all_params)
+    rng.shuffle(shuffled_params)
+    param_cursor = 0
+
+    required_initial_trials = sum(bracket.initial_trial_count for bracket in brackets)
+    if required_initial_trials > len(shuffled_params):
+        raise ValueError(
+            "Hyperband without-replacement sampling requires at least as many unique combinations as "
+            f"initial bracket samples. required={required_initial_trials}, available={len(shuffled_params)}."
+        )
+
+    def _next_param_sample() -> dict[str, Any]:
+        nonlocal param_cursor
+        if param_cursor >= len(shuffled_params):
+            raise RuntimeError("No remaining hyperparameter combinations for without-replacement sampling.")
+        sampled = dict(shuffled_params[param_cursor])
+        param_cursor += 1
+        return sampled
+
     run_t0 = perf_counter()
     trial_timings: list[dict[str, Any]] = []
     print("\n" + "=" * 100)
@@ -626,7 +665,7 @@ def run_hyperband_search(config: GridSearchConfig) -> tuple[list[TrialResult], T
         print("*" * 100)
         bracket_trials: list[dict[str, Any]] = []
         for _ in range(bracket.initial_trial_count):
-            sampled = dict(rng.choice(all_params))
+            sampled = _next_param_sample()
             trial_counter += 1
             trial_dir = config.out_dir / f"hb_b{bracket.bracket_index}_trial_{trial_counter:04d}"
             trial_dir.mkdir(parents=True, exist_ok=True)
@@ -1096,7 +1135,39 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _helper_args_from_argv(argv: list[str]) -> argparse.Namespace:
+    helper_parser = argparse.ArgumentParser(add_help=False)
+    helper_parser.add_argument("--helper", action="store_true", help="Print Hyperband N_init and exit.")
+    helper_parser.add_argument("--min", dest="helper_min", type=int, default=None)
+    helper_parser.add_argument("--max", dest="helper_max", type=int, default=None)
+    helper_parser.add_argument("--eta", dest="helper_eta", type=int, default=None)
+    helper_args, _ = helper_parser.parse_known_args(argv)
+    return helper_args
+
+
 def main() -> None:
+    helper_args = _helper_args_from_argv(sys.argv[1:])
+    if helper_args.helper:
+        if helper_args.helper_min is None or helper_args.helper_max is None or helper_args.helper_eta is None:
+            raise ValueError("--helper requires --min, --max, and --eta.")
+        n_init = hyperband_initial_trial_count(
+            min_epochs=helper_args.helper_min,
+            max_epochs=helper_args.helper_max,
+            reduction_factor=helper_args.helper_eta,
+        )
+        print(
+            json.dumps(
+                {
+                    "min_epochs": helper_args.helper_min,
+                    "max_epochs": helper_args.helper_max,
+                    "reduction_factor": helper_args.helper_eta,
+                    "n_init": n_init,
+                },
+                indent=2,
+            )
+        )
+        return
+
     args = parse_args()
     lookback_datasets = _parse_lookback_mapping(args.lookback_dataset)
 
