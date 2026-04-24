@@ -11,55 +11,46 @@ Dynamic: license-file
 
 ![RABL_LOGO](misc/rabl_logo.png)
 
-RABL is a Python and Modelica toolbox for microreactor dynamics studies. It brings together:
+# RABL
 
-- **Variography tooling** to generate stochastic drum motion profiles.
-- **Batch Dymola automation** to run large sweeps of Modelica experiments.
-- **Machine-learning utilities** to scale, inspect, and prepare simulation data for LSTM workflows.
+RABL is a Python + Modelica workflow for microreactor transient studies. It combines three pieces in one repository:
 
-The repository keeps the Modelica models, Python package, and scripts in one place so you can
-move from profile generation → simulation → dataset preparation without jumping between tools.
+1. **Variography-based profile generation** for stochastic control-drum trajectories.
+2. **Batch Dymola execution** for running those profiles through Modelica experiments.
+3. **Machine-learning dataset tooling** for scaling, splitting, and preparing LSTM-ready datasets.
 
-## Capabilities
 
-### Variography-driven drum profiles
-The `rabl.variography` package provides a Gaussian-process based generator for
-control drum angle trajectories. It builds velocity covariances with Matérn kernels, integrates
-them into angle profiles, and derives velocities/accelerations for simulation-ready inputs.
-Generated profiles can be saved as CSV or MAT files for downstream workflows.
+## Recursive Active Branch-Based Learning (RABL) flow
 
-### Dymola batch simulations
-The `rabl.interface` package wraps the Dymola API to run a batch of Modelica
-simulations against the generated drum profiles. It handles per-profile stop times, result
-extraction, and summary logging.
+![RABL workflow flowchart](misc/rabl_flow_vertical.png)
 
-### Machine-learning dataset utilities
-Modules under `src/rabl/machine_learning` and scripts under `scripts/` provide helpers to:
+The flowchart summarizes the closed-loop RABL process used in this repository: generate initial control trajectories, evaluate them with the physics model, train an LSTM ensemble, then actively branch new trajectories where ensemble uncertainty dynamics indicate the most informative branch points. The newly branched set is fed back through the physics model and reused for retraining, iteratively improving predictive accuracy over challenging transients.
 
-- scale raw simulation outputs,
-- visualize feature correlations,
-- plot variograms and batch results,
-- build scaled LSTM datasets.
+---
 
-## Repository layout
+## What is in this repo
 
-```
+```text
 .
-├── misc/                     # Branding assets
-├── outputs/                  # Generated profiles and simulation outputs
-├── scripts/                  # CLI entry points and plotting scripts
 ├── src/
-│   ├── rabl/                   # Core Python package
-│   │   ├── interface/          # Dymola batch runner
-│   │   ├── variography/  # Drum profile generation
-│   │   └── machine_learning/    # Dataset prep/analysis utilities
-│   └── modelica/              # Modelica package(s) for Dymola
-└── tests/                     # Automated tests (if added)
+│   ├── rabl/
+│   │   ├── variography/       # Drum profile generation + branching
+│   │   ├── interface/         # Dymola batch orchestration
+│   │   └── machine_learning/  # Dataset prep + LSTM pipeline utilities
+│   └── modelica/              # Modelica package(s)
+├── scripts/                   # End-to-end and plotting CLIs
+├── tests/                     # Test fixtures and generated reference artifacts
+├── misc/                      # Images/figures/logo
+└── README.md
 ```
+
+> `outputs/` is created at runtime by scripts (for generated profiles, simulation outputs, and dataset artifacts).
+
+---
 
 ## Installation
 
-Create a Python 3.10+ environment and install the package in editable mode:
+RABL is packaged via `pyproject.toml` and currently requires Python 3.10+.
 
 ```bash
 python -m venv .venv
@@ -67,76 +58,116 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-The Dymola batch runner depends on a licensed Dymola installation with the
-`dymola` Python package available in your environment.
+### Dependencies and environment notes
 
-## Quick start
+- The Python package currently declares `torch` as a dependency.
+- Variography and dataset tooling rely on common scientific packages (NumPy/SciPy/Matplotlib/H5 tools), which should be installed in your environment.
+- Dymola workflows require a licensed Dymola install plus the `dymola` Python interface available to the active interpreter.
 
-### Generate drum profiles
+---
+
+## Core workflows
+
+## 1) Generate stochastic drum profiles (Python API)
 
 ```python
+import numpy as np
 from rabl.variography import DrumProfileGenerator
 
-# Define a time grid (seconds)
-import numpy as np
+t_grid = np.linspace(0.0, 200.0, 2001)
 
-profile_gen = DrumProfileGenerator(kernel="matern52", ell=5.0)
-time_s = np.linspace(0.0, 100.0, 501)
+gen = DrumProfileGenerator(kernel="matern52", ell=10.0)
+profiles = gen.generate(
+    t_grid=t_grid,
+    n_realizations=3,
+    baseline_angle_deg=45.0,
+    seed=123,
+)
 
-# Draw a profile
-profile = profile_gen.generate(time_s, n_realizations=1, baseline_angle_deg=0.0)[0]
-
-# Save for downstream tools
-profile.save_csv("outputs/variography_profiles/drum_profile_00001.csv")
-profile.save_mat("outputs/variography_profiles/drum_profile_00001.mat")
+profiles[0].save_csv("outputs/variography_profiles/example/drum_profile_00001.csv")
+profiles[0].save_mat("outputs/variography_profiles/example/drum_profile_00001.mat")
 ```
 
-### Run a Dymola batch
+## 2) Batch Dymola from generated profiles (Python API)
 
 ```python
 from rabl.interface import BatchConfig, DymolaBatchRunner
 
-config = BatchConfig(
-    profiles_dir="../../../outputs/variography_profiles/test_batch",
-    out_dir="../../../outputs/sim_profiles/test_batch",
+cfg = BatchConfig(
+    profiles_dir="../../../outputs/variography_profiles/batch_0003",
+    out_dir="../../../outputs/sim_profiles/batch_0003",
+    output_interval=0.4,
 )
 
-runner = DymolaBatchRunner(config)
+runner = DymolaBatchRunner(cfg)
 runner.start()
-runner.run_batch()
-runner.close()
+try:
+    runner.run_all()
+finally:
+    runner.close()
 ```
 
-The batch runner writes per-profile CSV results and a `batch_summary.csv` file in the
-configured output directory.
+This writes profile-level result files and a batch summary CSV under the configured output folder.
 
-### Build scaled datasets
+## 3) End-to-end batch script (profiles + Dymola)
 
-Example command-line workflows live in `scripts/`. A common flow is:
+The main automation script is:
 
 ```bash
-python scripts/scale_lstm_dataset.py --help
-python scripts/build_lstm_dataset.py --help
+python scripts/run_dymola_batch.py
 ```
 
-Use the `--help` flag on each script to see required inputs/outputs and configuration options.
+It reads `scripts/config.py`, generates a new `outputs/variography_profiles/batch_XXXX` folder, then runs Dymola and writes to `outputs/sim_profiles/batch_XXXX`.
 
-## Configuration notes
+---
 
-- **Profile naming**: The batch runner expects profile filenames like
-  `drum_profile_00001.mat` so it can extract the profile index and generate deterministic
-  result names.
-- **Modelica package path**: Update `BatchConfig.package_mo` if the Modelica package is
-  moved or renamed.
-- **Outputs**: Simulation results are written as CSV files alongside a summary file in the
-  `out_dir` specified by the batch configuration.
+## Machine-learning dataset utilities
 
-## Development tips
+Common entry points:
 
-- The Python package lives under `src/` and can be imported after installing in editable mode.
-- Plotting utilities and dataset builders are in `scripts/` and can be executed directly.
-- Add new Modelica experiments under `src/modelica/` and update the batch config to point to
-  them.
+```bash
+python scripts/build_lstm_dataset.py --help
+python scripts/scale_lstm_dataset.py --help
+python scripts/run_lstm_pipeline_forecast.py --help
+```
+
+### Split mode support in scaling
+
+`scripts/scale_lstm_dataset.py` supports:
+
+- `--split-mode sample` (default): train/val split at sample level while holding out unseen profiles for test.
+- `--split-mode profile`: full-profile-disjoint train/val/test split.
+
+Example:
+
+```bash
+python scripts/scale_lstm_dataset.py data/my_dataset.h5 --scaling-type standard --split-mode sample
+```
+
+Scaled outputs include split metadata so downstream tooling can detect the split strategy.
+
+---
+
+## Additional scripts
+
+Other frequently used scripts in `scripts/` include:
+
+- `generate_branched_control_profiles.py` (profile branching + visualization)
+- `run_recursive_branching.py` (recursive branching experiments)
+- `plot_sim_batches.py` / `plot_variograms.py` / `plot_scaled_splits.py` (analysis plotting)
+- `print_best_hyperparameters.py` (hyperparameter summary helper)
+
+Use `--help` where available for exact CLI options.
+
+---
+
+## Development notes
+
+- Source code lives under `src/` with package imports rooted at `rabl.*`.
+- The interface layer (`rabl.interface`) intentionally treats Dymola as optional at import time; non-Dymola tooling can still be used without it.
+- Tests folder currently contains both fixtures and generated/reference artifacts used for workflow validation.
+
+---
 
 ## License
 

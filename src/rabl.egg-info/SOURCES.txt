@@ -11,11 +11,14 @@ src/rabl/interface/__init__.py
 src/rabl/interface/pymola.py
 src/rabl/machine_learning/__init__.py
 src/rabl/machine_learning/bagging_ensemble.py
+src/rabl/machine_learning/branchpoint_finder.py
 src/rabl/machine_learning/build_lstm_dataset.py
 src/rabl/machine_learning/dataset_scaling.py
 src/rabl/machine_learning/lstm_pipeline.py
 src/rabl/machine_learning/plot_feature_correlations.py
 src/rabl/machine_learning/plot_scaled_dataset.py
+src/rabl/machine_learning/recursive_branching.py
 src/rabl/machine_learning/tuner.py
 src/rabl/variography/DrumVariography.py
 src/rabl/variography/__init__.py
+tests/test_tuner_hyperband.py
