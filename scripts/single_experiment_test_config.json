@@ -1,14 +1,14 @@
 {
-  "experiment_id": "single_exp_smoke_003",
+  "experiment_id": "single_exp_smoke_004",
   "strategy": "branching",
   "seed": 123,
   "retrain_cycles": 2,
 
-  "initial_sim_batches": ["0003"],
+  "initial_sim_batches": ["0006"],
 
   "lookback": 12,
   "scaling_type": "minmax",
-  "split_mode": "sample",
+  "split_mode": "profile",
 
   "test_count": 200,
 
@@ -34,9 +34,9 @@
   },
 
   "branching": {
-    "N_r": 3,
+    "N_r": 1,
     "N_k": 3,
-    "N_b": 1,
+    "N_b": 2,
     "device": "cpu"
   },
 
