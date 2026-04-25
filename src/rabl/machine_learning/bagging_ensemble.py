@@ -92,12 +92,15 @@ def _copy_profile_group(src_profile_group: h5py.Group, dst_profile_group: h5py.G
 
 
 def _plot_and_save_bag_venn_diagram(
-    bag_profile_sets: list[set[str]],
+    bag_sets: list[set[str]],
     *,
     save_path: Path,
+    title: str,
+    set_labels: tuple[str, str, str] = ("bag_0", "bag_1", "bag_2"),
+    weights: dict[str, int] | None = None,
 ) -> Path | None:
-    """Plot and save a Venn diagram for 3 bag profile sets when supported."""
-    if len(bag_profile_sets) != 3:
+    """Plot and save a Venn diagram for 3 bag sets when supported."""
+    if len(bag_sets) != 3:
         return None
     if importlib.util.find_spec("matplotlib_venn") is None:
         return None
@@ -107,13 +110,50 @@ def _plot_and_save_bag_venn_diagram(
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
+    subsets = _venn_region_counts(bag_sets, weights=weights)
+
     fig, _ = plt.subplots(figsize=(7, 7))
-    venn3(subsets=bag_profile_sets, set_labels=("bag_0", "bag_1", "bag_2"))
-    fig.suptitle("Bag profile overlap (3 estimators)")
+    venn3(subsets=subsets, set_labels=set_labels)
+    fig.suptitle(title)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return save_path
+
+
+def _venn_region_counts(
+    bag_sets: list[set[str]],
+    *,
+    weights: dict[str, int] | None = None,
+) -> dict[str, int]:
+    """Return venn3 subset counts for three sets.
+
+    If ``weights`` is provided, each item contributes ``weights[item]`` to its region.
+    Otherwise each item contributes 1.
+    """
+    if len(bag_sets) != 3:
+        raise ValueError("venn_region_counts requires exactly three sets.")
+
+    a, b, c = bag_sets
+    weighted = weights is not None
+
+    def _sum_items(items: set[str]) -> int:
+        if not weighted:
+            return int(len(items))
+        missing = [item for item in items if item not in weights]
+        if missing:
+            raise KeyError(f"Missing weights for venn items: {missing[:5]}")
+        return int(sum(int(weights[item]) for item in items))
+
+    return {
+        "100": _sum_items(a - b - c),
+        "010": _sum_items(b - a - c),
+        "001": _sum_items(c - a - b),
+        "110": _sum_items((a & b) - c),
+        "101": _sum_items((a & c) - b),
+        "011": _sum_items((b & c) - a),
+        "111": _sum_items(a & b & c),
+    }
 
 
 def create_bagged_training_hdf5(
@@ -191,17 +231,26 @@ def create_bagged_training_hdf5(
         ]
         bag_profile_sets = [set(selected_profiles) for selected_profiles in bag_profile_lists]
 
-        venn_plot_path: Path | None = None
+        venn_profile_plot_path: Path | None = None
+        venn_sample_plot_path: Path | None = None
         if n_models == 3:
-            venn_plot_path = _plot_and_save_bag_venn_diagram(
+            venn_profile_plot_path = _plot_and_save_bag_venn_diagram(
                 bag_profile_sets,
-                save_path=output_h5_path.with_name(f"{output_h5_path.stem}_bag_overlap_venn.png"),
+                save_path=output_h5_path.with_name(f"{output_h5_path.stem}_bag_overlap_profile_venn.png"),
+                title="Bag profile overlap (3 estimators)",
+            )
+            venn_sample_plot_path = _plot_and_save_bag_venn_diagram(
+                bag_profile_sets,
+                save_path=output_h5_path.with_name(f"{output_h5_path.stem}_bag_overlap_sample_venn.png"),
+                title="Bag sample overlap (3 estimators)",
+                weights=profile_sample_counts,
             )
             if verbose >= 1:
-                if venn_plot_path is None:
+                if venn_profile_plot_path is None or venn_sample_plot_path is None:
                     print("[bagging] venn diagram not created (requires matplotlib_venn).")
                 else:
-                    print(f"[bagging] saved venn diagram: {venn_plot_path}")
+                    print(f"[bagging] saved profile-overlap venn diagram: {venn_profile_plot_path}")
+                    print(f"[bagging] saved sample-overlap venn diagram: {venn_sample_plot_path}")
 
         shared_profiles_all_bags = set.intersection(*bag_profile_sets) if bag_profile_sets else set()
         profile_frequency: dict[str, int] = {}
