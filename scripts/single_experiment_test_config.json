@@ -17,6 +17,7 @@
   "prefer_gpu": true,
 
   "hp_grid": {
+    "method": "grid",
     "lookback": 12,
     "learning_rates": [1e-4],
     "batch_sizes": [256],
@@ -25,6 +26,10 @@
     "hidden_fc_values": [384],
     "n_fc": 1,
     "epochs": 2,
+    "min_epochs": 1,
+    "max_epochs": 4,
+    "reduction_factor": 2,
+    "early_stopping_patience": 2,
     "prefer_gpu": true
   },
 

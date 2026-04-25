@@ -37,7 +37,7 @@ if str(SRC_PATH) not in sys.path:
 
 from rabl.machine_learning import build_lstm_dataset
 from rabl.machine_learning.dataset_scaling import LSTMDatasetScalerSplitter
-from rabl.machine_learning.tuner import GridSearchConfig, run_grid_search
+from rabl.machine_learning.tuner import GridSearchConfig, run_grid_search, run_hyperband_search
 from rabl.machine_learning.bagging_ensemble import run_bagging_ensemble
 from rabl.machine_learning.lstm_pipeline import save_forecast_profiles_pdf
 from rabl.machine_learning.recursive_branching import (
@@ -207,6 +207,24 @@ def _scale_with_fixed_test(
 
 
 def _tune(scaled_h5: Path, out_dir: Path, seed: int, grid: dict[str, Any]) -> Any:
+    method = str(grid.get("method", "grid")).strip().lower()
+    if method not in {"grid", "hyperband"}:
+        raise ValueError("hp_grid.method must be either 'grid' or 'hyperband'.")
+
+    min_epochs_raw = grid.get("min_epochs")
+    max_epochs_raw = grid.get("max_epochs")
+    reduction_factor_raw = grid.get("reduction_factor", 3)
+    if method == "hyperband":
+        if min_epochs_raw is None or max_epochs_raw is None:
+            raise ValueError("Hyperband tuning requires hp_grid.min_epochs and hp_grid.max_epochs.")
+        min_epochs = int(min_epochs_raw)
+        max_epochs = int(max_epochs_raw)
+        reduction_factor = int(reduction_factor_raw)
+    else:
+        min_epochs = None
+        max_epochs = None
+        reduction_factor = int(reduction_factor_raw)
+
     tune_cfg = GridSearchConfig(
         lookback_datasets={int(grid["lookback"]): scaled_h5},
         learning_rates=list(grid["learning_rates"]),
@@ -221,8 +239,19 @@ def _tune(scaled_h5: Path, out_dir: Path, seed: int, grid: dict[str, Any]) -> An
         prefer_gpu=bool(grid.get("prefer_gpu", True)),
         preload_train_to_device=True,
         preload_val_to_device=True,
+        early_stopping_patience=(
+            None
+            if grid.get("early_stopping_patience") is None
+            else int(grid["early_stopping_patience"])
+        ),
+        min_epochs=min_epochs,
+        max_epochs=max_epochs,
+        reduction_factor=reduction_factor,
     )
-    _results, best = run_grid_search(tune_cfg)
+    if method == "hyperband":
+        _results, best = run_hyperband_search(tune_cfg)
+    else:
+        _results, best = run_grid_search(tune_cfg)
     return best
 
 
