@@ -274,11 +274,11 @@ def _find_latest_global_result_index(sim_root: Path) -> int:
     return max_idx
 
 
-def _copy_stitched_results_to_batch_root_with_global_numbering(out_dir: Path, sim_root: Path) -> None:
-    stitched = out_dir / "stitched_results"
-    if not stitched.exists():
+def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, sim_root: Path) -> None:
+    branched_results = out_dir / "branched_results"
+    if not branched_results.exists():
         return
-    sources = sorted(stitched.glob("results_*.csv"))
+    sources = sorted(branched_results.glob("results_*.csv"))
     if not sources:
         return
     next_idx = _find_latest_global_result_index(sim_root) + 1
@@ -367,8 +367,8 @@ def _run_dymola_internal(
     finally:
         runner.close()
     if mode == "branched_mat":
-        _plot_stitched_results(out_dir / "stitched_results")
-        _copy_stitched_results_to_batch_root_with_global_numbering(out_dir, sim_root)
+        _plot_branched_results(out_dir / "branched_results")
+        _copy_branched_results_to_batch_root_with_global_numbering(out_dir, sim_root)
         _cleanup_production_artifacts(out_dir)
     return out_dir
 
@@ -378,20 +378,20 @@ def _cleanup_production_artifacts(out_dir: Path) -> None:
     if generated_profiles.exists():
         shutil.rmtree(generated_profiles, ignore_errors=True)
 
-    stitched_dir = out_dir / "stitched_results"
+    branched_results_dir = out_dir / "branched_results"
     for file_path in out_dir.rglob("*"):
         if not file_path.is_file():
             continue
-        if stitched_dir in file_path.parents:
+        if branched_results_dir in file_path.parents:
             continue
         if file_path.suffix.lower() in {".txt", ".c", ".exe", ".mat"}:
             file_path.unlink(missing_ok=True)
 
 
-def _plot_stitched_results(stitched_dir: Path) -> None:
-    if not stitched_dir.exists():
+def _plot_branched_results(branched_results_dir: Path) -> None:
+    if not branched_results_dir.exists():
         return
-    csv_paths = sorted(stitched_dir.glob("results_*.csv"))
+    csv_paths = sorted(branched_results_dir.glob("results_*.csv"))
     if not csv_paths:
         return
 
@@ -440,10 +440,10 @@ def _plot_stitched_results(stitched_dir: Path) -> None:
     for ax in axes_flat[n:]:
         ax.set_axis_off()
     fig.tight_layout()
-    out_path = stitched_dir / "timeseries_stitched_ALL_PROFILES.png"
+    out_path = branched_results_dir / "timeseries_branched_ALL_PROFILES.png"
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    print(f"[step] Saved stitched plot: {out_path}")
+    print(f"[step] Saved branched-results plot: {out_path}")
 
 
 def _normalize_batch_name(batch: str) -> str:

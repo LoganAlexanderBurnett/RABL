@@ -113,15 +113,15 @@ def _find_latest_global_result_index(sim_root: Path) -> int:
     return max_idx
 
 
-def _copy_stitched_results_to_batch_root_with_global_numbering(out_dir: Path, sim_root: Path) -> None:
-    stitched_dir = out_dir / "stitched_results"
-    if not stitched_dir.exists():
-        print("[run-mode=production] No stitched_results directory found; skipping copy.")
+def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, sim_root: Path) -> None:
+    branched_results_dir = out_dir / "branched_results"
+    if not branched_results_dir.exists():
+        print("[run-mode=production] No branched_results directory found; skipping copy.")
         return
 
-    sources = sorted(stitched_dir.glob("results_*.csv"))
+    sources = sorted(branched_results_dir.glob("results_*.csv"))
     if not sources:
-        print("[run-mode=production] No stitched CSV results found; skipping copy.")
+        print("[run-mode=production] No branched CSV results found; skipping copy.")
         return
 
     next_idx = _find_latest_global_result_index(sim_root) + 1
@@ -136,7 +136,7 @@ def _copy_stitched_results_to_batch_root_with_global_numbering(out_dir: Path, si
             shutil.copy2(mat_src, mat_dst)
         copied += 1
         next_idx += 1
-    print(f"[run-mode=production] Copied {copied} stitched result pairs to batch root with global profile numbering.")
+    print(f"[run-mode=production] Copied {copied} branched result pairs to batch root with global profile numbering.")
 
 
 def _load_branch_manifest_index(batch_dir: Path) -> dict[tuple[str, str], tuple[str | None, float | None]]:
@@ -160,12 +160,12 @@ def _cleanup_production_artifacts(out_dir: Path) -> None:
     if generated_profiles_dir.exists():
         shutil.rmtree(generated_profiles_dir, ignore_errors=True)
 
-    stitched_dir = out_dir / "stitched_results"
+    branched_results_dir = out_dir / "branched_results"
     removed = 0
     for file_path in out_dir.rglob("*"):
         if not file_path.is_file():
             continue
-        if stitched_dir in file_path.parents:
+        if branched_results_dir in file_path.parents:
             continue
         suffix = file_path.suffix.lower()
         if suffix in {".txt", ".c", ".exe", ".mat"}:
@@ -184,7 +184,7 @@ def _cleanup_production_artifacts(out_dir: Path) -> None:
         except Exception as exc:
             print(f"[run-mode=production] Warning: unable to evaluate batch_summary.csv for conditional cleanup: {exc}")
 
-    print("[run-mode=production] Cleanup complete. Removed generated_profiles/, *.txt, *.c, *.exe, and non-stitched *.mat files.")
+    print("[run-mode=production] Cleanup complete. Removed generated_profiles/, *.txt, *.c, *.exe, and non-branched-results *.mat files.")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Dymola batch workflow in flat or branched mode.")
@@ -202,9 +202,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-interval", type=float, default=0.1, help="Dymola output interval in seconds.")
     parser.add_argument("--no-skip-existing", action="store_true", help="Disable skip-existing behavior.")
-    parser.add_argument("--branch-check-atol", type=float, default=1e-6, help="Absolute tolerance for parent/child shared-prefix checks.")
-    parser.add_argument("--branch-check-rtol", type=float, default=1e-5, help="Relative tolerance for parent/child shared-prefix checks.")
-    parser.add_argument("--branch-check-strict", action="store_true", help="Fail run if any shared-prefix check fails.")
+    parser.add_argument("--branch-check-atol", type=float, default=1e-6, help="Absolute tolerance for branch-start-time checks.")
+    parser.add_argument("--branch-check-rtol", type=float, default=1e-5, help="Relative tolerance for branch-start-time checks.")
+    parser.add_argument("--branch-check-strict", action="store_true", help="Fail run if any branch-start-time check fails.")
     return parser.parse_args()
 
 
@@ -275,47 +275,31 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
     plt.close(fig)
 
 
-def _run_shared_prefix_checks(stitched_dir: Path, branch_index: dict[tuple[str, str], tuple[str | None, float | None]], *, atol: float, rtol: float) -> list[str]:
+def _run_branch_start_time_checks(branched_results_dir: Path, branch_index: dict[tuple[str, str], tuple[str | None, float | None]], *, atol: float, rtol: float) -> list[str]:
     failures: list[str] = []
     for (root_id, profile_id), (parent_id, branch_time) in sorted(branch_index.items()):
+        result_csv = branched_results_dir / f"results_{root_id}__{profile_id}.csv"
+        if not result_csv.exists():
+            failures.append(f"{root_id}/{profile_id}: missing result csv")
+            continue
+        df = _read_results_csv(result_csv)
+        if df.empty:
+            failures.append(f"{root_id}/{profile_id}: empty result csv")
+            continue
+        first_t = float(df["t"].iloc[0])
+
         if not parent_id:
+            if not np.isclose(first_t, 0.0, atol=atol, rtol=rtol):
+                failures.append(f"{root_id}/{profile_id}: root should start at t=0, got t={first_t:.6f}")
             continue
         if branch_time is None or np.isnan(branch_time):
             failures.append(f"{root_id}/{profile_id}: missing branch_time")
             continue
-
-        parent_csv = stitched_dir / f"results_{root_id}__{parent_id}.csv"
-        child_csv = stitched_dir / f"results_{root_id}__{profile_id}.csv"
-        if not parent_csv.exists() or not child_csv.exists():
-            failures.append(f"{root_id}/{profile_id}: missing stitched csv parent={parent_csv.exists()} child={child_csv.exists()}")
-            continue
-
-        p_df = _read_results_csv(parent_csv)
-        c_df = _read_results_csv(child_csv)
-        p_pref = p_df[p_df["t"] <= branch_time].copy()
-        c_pref = c_df[c_df["t"] <= branch_time].copy()
-
-        if p_pref.empty or c_pref.empty:
-            failures.append(f"{root_id}/{profile_id}: empty shared prefix")
-            continue
-
-        t_common = np.intersect1d(p_pref["t"].to_numpy(), c_pref["t"].to_numpy())
-        if t_common.size == 0:
-            failures.append(f"{root_id}/{profile_id}: no common time grid in shared prefix")
-            continue
-
-        p_idx = p_pref.set_index("t")
-        c_idx = c_pref.set_index("t")
-        vars_to_check = [v for v in PLOT_VARS if v in p_idx.columns and v in c_idx.columns]
-        for v in vars_to_check:
-            p_vals = p_idx.loc[t_common, v].to_numpy(dtype=float)
-            c_vals = c_idx.loc[t_common, v].to_numpy(dtype=float)
-            if not np.allclose(p_vals, c_vals, atol=atol, rtol=rtol, equal_nan=True):
-                max_abs = float(np.nanmax(np.abs(p_vals - c_vals)))
-                failures.append(
-                    f"{root_id}/{profile_id}: shared-prefix mismatch in '{v}' at t<={branch_time:.6f}, max_abs={max_abs:.3e}"
-                )
-                break
+        if first_t + max(atol, abs(branch_time) * rtol) < branch_time:
+            failures.append(
+                f"{root_id}/{profile_id}: branch result starts before branch_time "
+                f"(first_t={first_t:.6f}, branch_time={branch_time:.6f})"
+            )
     return failures
 
 
@@ -346,28 +330,28 @@ def main() -> None:
     try:
         if args.mode == "branched_mat":
             runner.run_branched_mat()
-            stitched_dir = Path(out_dir) / cfg.stitched_results_dir
-            failures = _run_shared_prefix_checks(
-                stitched_dir=stitched_dir,
+            branched_results_dir = Path(out_dir) / cfg.branched_results_dir
+            failures = _run_branch_start_time_checks(
+                branched_results_dir=branched_results_dir,
                 branch_index=branch_index,
                 atol=args.branch_check_atol,
                 rtol=args.branch_check_rtol,
             )
             if failures:
-                print("\nShared-prefix check failures:")
+                print("\nBranch-start-time check failures:")
                 for msg in failures:
                     print(f"  - {msg}")
                 if args.branch_check_strict:
-                    raise SystemExit("Shared-prefix checks failed (strict mode).")
+                    raise SystemExit("Branch-start-time checks failed (strict mode).")
             else:
-                print("Shared-prefix checks passed for all parent/child pairs.")
+                print("Branch-start-time checks passed for all profiles.")
 
-            results_csvs = sorted(stitched_dir.glob("results_*.csv"))
+            results_csvs = sorted(branched_results_dir.glob("results_*.csv"))
             if not results_csvs:
-                raise SystemExit(f"No stitched CSVs found in: {stitched_dir}")
-            plot_path = stitched_dir / "timeseries_stitched_ALL_PROFILES.png"
+                raise SystemExit(f"No branched CSVs found in: {branched_results_dir}")
+            plot_path = branched_results_dir / "timeseries_branched_ALL_PROFILES.png"
             _plot_all_profiles(results_csvs, plot_path)
-            print(f"Saved stitched plot to {plot_path}")
+            print(f"Saved branched-results plot to {plot_path}")
         else:
             runner.run_all()
     finally:
@@ -378,7 +362,7 @@ def main() -> None:
         _cleanup_production_artifacts(out_dir_path)
         if args.mode == "branched_mat":
             sim_root = (REPO_ROOT / "outputs" / "sim_profiles").resolve()
-            _copy_stitched_results_to_batch_root_with_global_numbering(out_dir_path, sim_root)
+            _copy_branched_results_to_batch_root_with_global_numbering(out_dir_path, sim_root)
 
 
 if __name__ == "__main__":

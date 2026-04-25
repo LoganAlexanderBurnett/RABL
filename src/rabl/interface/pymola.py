@@ -27,7 +27,7 @@ class BatchConfig:
     # Branched artifact directories (relative to out_dir)
     generated_profile_dir: str = "generated_profiles"
     restart_results_dir: str = "restart_results"
-    stitched_results_dir: str = "stitched_results"
+    branched_results_dir: str = "branched_results"
     logs_dir: str = "logs"
 
     # Branched behaviors
@@ -84,7 +84,7 @@ class DymolaBatchRunner:
 
         self.generated_profiles_abs = self.out_dir_abs / self.cfg.generated_profile_dir
         self.restart_results_abs = self.out_dir_abs / self.cfg.restart_results_dir
-        self.stitched_results_abs = self.out_dir_abs / self.cfg.stitched_results_dir
+        self.branched_results_abs = self.out_dir_abs / self.cfg.branched_results_dir
         self.logs_abs = self.out_dir_abs / self.cfg.logs_dir
 
         self.dymola = None
@@ -97,13 +97,11 @@ class DymolaBatchRunner:
         self._sim_times = []
         self._extract_times = []
         self._write_times = []
-        self._stitch_times = []
+        self._merge_times = []
         self._matread_times = []
         self._total_run_times = []
 
         self.summary_csv = None
-        self._stitched_cache: dict[tuple[str, str], list[np.ndarray]] = {}
-
     @staticmethod
     def _profile_index_from_name(profile_path: Path) -> int | None:
         m = re.search(r"drum_profile_(\d{5})", profile_path.stem)
@@ -173,7 +171,7 @@ class DymolaBatchRunner:
         self.out_dir_abs.mkdir(parents=True, exist_ok=True)
         self.generated_profiles_abs.mkdir(parents=True, exist_ok=True)
         self.restart_results_abs.mkdir(parents=True, exist_ok=True)
-        self.stitched_results_abs.mkdir(parents=True, exist_ok=True)
+        self.branched_results_abs.mkdir(parents=True, exist_ok=True)
         self.logs_abs.mkdir(parents=True, exist_ok=True)
 
         if self.summary_csv is None:
@@ -212,8 +210,8 @@ class DymolaBatchRunner:
                 csv.writer(fp).writerow([
                     "root_id", "profile_id", "parent_profile_id", "branch_time_s", "depth", "run_type",
                     "profile_mat", "generated_profile_mat", "restart_source_result", "dymola_result_file",
-                    "stitched_csv_out", "stitched_mat_out", "status", "stop_time_s", "matread_s", "simulate_s",
-                    "extract_s", "stitch_s", "write_s", "total_run_s", "result_base",
+                    "result_csv_out", "result_mat_out", "status", "stop_time_s", "matread_s", "simulate_s",
+                    "extract_s", "merge_s", "write_s", "total_run_s", "result_base",
                 ])
 
     def close(self):
@@ -232,11 +230,11 @@ class DymolaBatchRunner:
                 "" if row.get("branch_time_s") is None else f"{float(row['branch_time_s']):.6f}",
                 row.get("depth", ""), row.get("run_type", ""), row.get("profile_mat", ""),
                 row.get("generated_profile_mat", ""), row.get("restart_source_result", ""),
-                row.get("dymola_result_file", ""), row.get("stitched_csv_out", ""),
-                row.get("stitched_mat_out", ""), row.get("status", ""),
+                row.get("dymola_result_file", ""), row.get("result_csv_out", ""),
+                row.get("result_mat_out", ""), row.get("status", ""),
                 "" if row.get("stop_time_s") is None else f"{float(row['stop_time_s']):.6f}",
                 f"{float(row.get('matread_s', 0.0)):.6f}", f"{float(row.get('simulate_s', 0.0)):.6f}",
-                f"{float(row.get('extract_s', 0.0)):.6f}", f"{float(row.get('stitch_s', 0.0)):.6f}",
+                f"{float(row.get('extract_s', 0.0)):.6f}", f"{float(row.get('merge_s', 0.0)):.6f}",
                 f"{float(row.get('write_s', 0.0)):.6f}", f"{float(row.get('total_run_s', 0.0)):.6f}",
                 row.get("result_base", ""),
             ])
@@ -317,7 +315,7 @@ class DymolaBatchRunner:
             csv_name = self.results_csv_name(profile_path)
             csv_out = self.out_dir_abs / csv_name
             if self.cfg.skip_existing and csv_out.exists():
-                self._append_summary(profile_mat=profile_path.name, stitched_csv_out=csv_out.name, status="SKIP", total_run_s=time()-run_t0)
+                self._append_summary(profile_mat=profile_path.name, result_csv_out=csv_out.name, status="SKIP", total_run_s=time()-run_t0)
                 return True, f"SKIP (exists): {csv_out.name}"
 
             idx = self._profile_index_from_name(profile_path) or 0
@@ -336,7 +334,7 @@ class DymolaBatchRunner:
             if not ok:
                 (self.logs_abs / f"{result_base}_dymola_error.log").write_text(str(self.dymola.getLastErrorLog()), encoding="utf-8")
                 total = time() - run_t0
-                self._append_summary(profile_mat=profile_path.name, stitched_csv_out=csv_out.name, status="FAIL", stop_time_s=stop_time,
+                self._append_summary(profile_mat=profile_path.name, result_csv_out=csv_out.name, status="FAIL", stop_time_s=stop_time,
                                      matread_s=t_matread, simulate_s=t_sim, total_run_s=total, result_base=result_base)
                 return False, "FAILED"
 
@@ -353,7 +351,7 @@ class DymolaBatchRunner:
             self._write_times.append(t_write)
 
             total = time() - run_t0
-            self._append_summary(profile_mat=profile_path.name, stitched_csv_out=csv_out.name, stitched_mat_out=csv_out.with_suffix('.mat').name,
+            self._append_summary(profile_mat=profile_path.name, result_csv_out=csv_out.name, result_mat_out=csv_out.with_suffix('.mat').name,
                                  status="OK", stop_time_s=stop_time, matread_s=t_matread, simulate_s=t_sim, extract_s=t_extract,
                                  write_s=t_write, total_run_s=total, result_base=result_base)
             return True, str(csv_out)
@@ -622,37 +620,15 @@ class DymolaBatchRunner:
             "dymola_result_file": result_file,
         }
 
-    def _stitch_full_trajectory(self, parent_full_cols: list[np.ndarray], child_suffix_cols: list[np.ndarray], branch_time: float, full_time_grid: np.ndarray) -> list[np.ndarray]:
-        t_parent = parent_full_cols[0]
-        t_child = child_suffix_cols[0]
-        parent_mask = t_parent <= branch_time
-        child_mask = t_child > branch_time
-
-        stitched = [np.concatenate([parent_full_cols[0][parent_mask], child_suffix_cols[0][child_mask]])]
-        for i in range(1, len(parent_full_cols)):
-            stitched.append(np.concatenate([parent_full_cols[i][parent_mask], child_suffix_cols[i][child_mask]]))
-
-        stitched_uniform = self._resample_to_uniform_grid(
-            stitched,
-            self.cfg.canonical_output_interval or self.cfg.output_interval,
-            float(full_time_grid[-1]),
-        )
-        t_raw = stitched_uniform[0]
-        t_full = np.asarray(full_time_grid, dtype=float)
-        out = [t_full]
-        for i in range(1, len(stitched_uniform)):
-            out.append(np.interp(t_full, t_raw, stitched_uniform[i]))
-        return out
-
-    def _save_stitched_outputs(self, job: BranchNode, stitched_cols: list[np.ndarray]) -> tuple[Path, Path, float]:
+    def _save_branch_outputs(self, job: BranchNode, result_cols: list[np.ndarray]) -> tuple[Path, Path, float]:
         t0 = time()
-        csv_out = self.stitched_results_abs / f"results_{job.root_id}__{job.profile_id}.csv"
+        csv_out = self.branched_results_abs / f"results_{job.root_id}__{job.profile_id}.csv"
         with open(csv_out, "w", newline="") as fp:
             w = csv.writer(fp)
             w.writerow(self.cfg.vars_to_pull)
-            w.writerows(zip(*stitched_cols))
+            w.writerows(zip(*result_cols))
         mat_out = csv_out.with_suffix(".mat")
-        savemat(str(mat_out), {"table": np.column_stack(stitched_cols), "columns": np.array(self.cfg.vars_to_pull, dtype=object)})
+        savemat(str(mat_out), {"table": np.column_stack(result_cols), "columns": np.array(self.cfg.vars_to_pull, dtype=object)})
         return csv_out, mat_out, (time() - t0)
 
     def _log_branch_failure(self, job: BranchNode, status: str, *, detail: str = "") -> None:
@@ -687,14 +663,11 @@ class DymolaBatchRunner:
 
             result_by_key: dict[tuple[str, str], str] = {}
             generated_profile_by_key: dict[tuple[str, str], str] = {}
-            full_grid_by_root: dict[str, np.ndarray] = {}
-
             for job in jobs_by_root[root_id]:
                 run_t0 = time()
                 key = (job.root_id, job.profile_id)
 
                 if job.parent_profile_id is None:
-                    full_grid_by_root.setdefault(job.root_id, np.asarray(job.t, dtype=float))
                     ok, rec = self._simulate_root_job(job)
                     if not ok:
                         print(f"[ROOT-FAIL] {job.root_id}/{job.profile_id} status={rec.get('status', 'FAIL')}")
@@ -702,14 +675,13 @@ class DymolaBatchRunner:
                                              run_type="root_full", stop_time_s=job.stop_time, total_run_s=time()-run_t0, **rec)
                         continue
                     cols, t_extract = self._read_result_columns(rec["dymola_result_file"], job.stop_time)
-                    self._stitched_cache[key] = cols
-                    csv_out, mat_out, t_write = self._save_stitched_outputs(job, cols)
+                    csv_out, mat_out, t_write = self._save_branch_outputs(job, cols)
                     result_by_key[key] = rec["dymola_result_file"]
                     generated_profile_by_key[key] = rec.get("generated_profile_mat", "")
                     self._append_summary(root_id=job.root_id, profile_id=job.profile_id, parent_profile_id="", depth=job.depth,
                                          run_type="root_full", branch_time_s=None, stop_time_s=job.stop_time, extract_s=t_extract,
-                                         write_s=t_write, total_run_s=time()-run_t0, stitched_csv_out=csv_out.name,
-                                         stitched_mat_out=mat_out.name, **rec)
+                                         write_s=t_write, total_run_s=time()-run_t0, result_csv_out=csv_out.name,
+                                         result_mat_out=mat_out.name, **rec)
                     continue
 
                 parent_key = (job.root_id, job.parent_profile_id)
@@ -753,47 +725,14 @@ class DymolaBatchRunner:
                         result_base=rec.get("result_base", ""),
                     )
                     continue
-                t_stitch0 = time()
-                try:
-                    stitched_cols = self._stitch_full_trajectory(
-                        parent_full_cols=self._stitched_cache[parent_key],
-                        child_suffix_cols=cols_child,
-                        branch_time=float(job.branch_time),
-                        full_time_grid=full_grid_by_root[job.root_id],
-                    )
-                except Exception as exc:
-                    status = "FAIL_STITCH"
-                    self._log_branch_failure(job, status, detail=str(exc))
-                    self._append_summary(
-                        root_id=job.root_id,
-                        profile_id=job.profile_id,
-                        parent_profile_id=job.parent_profile_id,
-                        branch_time_s=job.branch_time,
-                        depth=job.depth,
-                        run_type="branch_restart",
-                        stop_time_s=job.stop_time,
-                        extract_s=t_extract,
-                        total_run_s=time() - run_t0,
-                        status=status,
-                        generated_profile_mat=rec.get("generated_profile_mat", ""),
-                        restart_source_result=rec.get("restart_source_result", ""),
-                        dymola_result_file=rec.get("dymola_result_file", ""),
-                        result_base=rec.get("result_base", ""),
-                    )
-                    continue
-                t_stitch = time() - t_stitch0
-                self._stitch_times.append(t_stitch)
-
-                if self.cfg.keep_full_parent_cache:
-                    self._stitched_cache[key] = stitched_cols
-                csv_out, mat_out, t_write = self._save_stitched_outputs(job, stitched_cols)
+                csv_out, mat_out, t_write = self._save_branch_outputs(job, cols_child)
                 result_by_key[key] = rec["dymola_result_file"]
                 generated_profile_by_key[key] = rec.get("generated_profile_mat", "")
 
                 self._append_summary(root_id=job.root_id, profile_id=job.profile_id, parent_profile_id=job.parent_profile_id,
                                      branch_time_s=job.branch_time, depth=job.depth, run_type="branch_restart", stop_time_s=job.stop_time,
-                                     extract_s=t_extract, stitch_s=t_stitch, write_s=t_write, total_run_s=time()-run_t0,
-                                     stitched_csv_out=csv_out.name, stitched_mat_out=mat_out.name, **rec)
+                                     extract_s=t_extract, merge_s=0.0, write_s=t_write, total_run_s=time()-run_t0,
+                                     result_csv_out=csv_out.name, result_mat_out=mat_out.name, **rec)
 
         self._t_total_wall = time() - batch_t0
         self._cleanup_out_dir_branched()
@@ -809,14 +748,14 @@ class DymolaBatchRunner:
         sim_avg, sim_min, sim_max = stats(self._sim_times)
         ext_avg, ext_min, ext_max = stats(self._extract_times)
         wr_avg, wr_min, wr_max = stats(self._write_times)
-        st_avg, st_min, st_max = stats(self._stitch_times)
+        merge_avg, merge_min, merge_max = stats(self._merge_times)
         print("--- Timing summary ---")
         print(f"startup={self._t_startup:.2f}s openModel={self._t_openmodel:.2f}s wall={self._t_total_wall:.2f}s")
         if ran_count > 0 and self._t_total_wall > 0:
             print(f"throughput={60.0 * ran_count / self._t_total_wall:.2f} runs/min")
         print(f"simulate avg/min/max: {sim_avg:.4f}/{sim_min:.4f}/{sim_max:.4f}")
         print(f"extract  avg/min/max: {ext_avg:.4f}/{ext_min:.4f}/{ext_max:.4f}")
-        print(f"stitch   avg/min/max: {st_avg:.4f}/{st_min:.4f}/{st_max:.4f}")
+        print(f"merge    avg/min/max: {merge_avg:.4f}/{merge_min:.4f}/{merge_max:.4f}")
         print(f"write    avg/min/max: {wr_avg:.4f}/{wr_min:.4f}/{wr_max:.4f}")
 
 

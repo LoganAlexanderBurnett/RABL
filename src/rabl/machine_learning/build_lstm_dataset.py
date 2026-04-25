@@ -50,8 +50,24 @@ def _validate_config(config: dict) -> dict:
 
 def _collect_csv_files(batch_dirs: list[Path]) -> list[Path]:
     csv_files: list[Path] = []
+    seen_paths: set[Path] = set()
+    stems_seen: dict[str, Path] = {}
+    duplicate_stems: set[str] = set()
     for batch_dir in batch_dirs:
-        csv_files.extend(batch_dir.rglob(CSV_PATTERN))
+        for csv_path in sorted(batch_dir.glob(CSV_PATTERN)):
+            resolved = csv_path.resolve()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            stem = csv_path.stem
+            if stem in stems_seen and stems_seen[stem] != resolved:
+                duplicate_stems.add(stem)
+            else:
+                stems_seen[stem] = resolved
+            csv_files.append(csv_path)
+    if duplicate_stems:
+        duplicates = ", ".join(sorted(duplicate_stems))
+        print(f"Warning: duplicate result stems detected across batches: {duplicates}")
     return sorted(csv_files)
 
 
