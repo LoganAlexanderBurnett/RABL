@@ -1,12 +1,12 @@
 # VARIOGRAPHY AND SIMULATION PARAMETERS
 
 # Change for each batch as necessary
-NUM_PROFILES       = 1000
+NUM_PROFILES       = 2000
 ELL                = 10.0
 SIGMA_THETA_TARGET = 2.5     # CHANGE BACK TO 2.5!
-BATCH_NUMBER       = 6
-SEED               = 789    # avoid duplicate drum profiles across batches, but ensure reproducibility
-PLOT_BATCH_NUMBERS = [6]
+BATCH_NUMBER       = 8
+SEED               = 654    # avoid duplicate drum profiles across batches, but ensure reproducibility
+PLOT_BATCH_NUMBERS = [8]
 
 # Should never need to change
 NUGGET_V_DEG2_S2   = 0.0

@@ -200,7 +200,7 @@ def parse_args() -> argparse.Namespace:
             "drum_profile_*.mat files and branched_profiles_manifest.json."
         ),
     )
-    parser.add_argument("--output-interval", type=float, default=0.1, help="Dymola output interval in seconds.")
+    parser.add_argument("--output-interval", type=float, default=0.4, help="Dymola output interval in seconds.")
     parser.add_argument("--no-skip-existing", action="store_true", help="Disable skip-existing behavior.")
     parser.add_argument("--branch-check-atol", type=float, default=1e-6, help="Absolute tolerance for branch-start-time checks.")
     parser.add_argument("--branch-check-rtol", type=float, default=1e-5, help="Relative tolerance for branch-start-time checks.")
