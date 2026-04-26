@@ -5,6 +5,7 @@ import csv
 import importlib.util
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -52,18 +53,61 @@ def _read_test_profile_names(h5_path: Path) -> list[str]:
         return sorted(h5f["test"]["files"].keys())
 
 
-def _infer_checkpoint_io_shapes(model_path: Path) -> tuple[int, int]:
+def _infer_checkpoint_arch(model_path: Path) -> dict[str, Any]:
     import torch
 
     state_dict = torch.load(Path(model_path), map_location="cpu")
-    return int(state_dict["lstm.weight_ih_l0"].shape[1]), int(state_dict["output_layer.bias"].shape[0])
+    num_features = int(state_dict["lstm.weight_ih_l0"].shape[1])
+    num_targets = int(state_dict["output_layer.bias"].shape[0])
+    lstm_hidden = int(state_dict["lstm.weight_hh_l0"].shape[1])
+
+    lstm_layer_pattern = re.compile(r"^lstm\.weight_ih_l(\d+)$")
+    lstm_layer_ids = sorted(
+        int(match.group(1))
+        for key in state_dict.keys()
+        if (match := lstm_layer_pattern.match(key)) is not None
+    )
+    n_lstm = (max(lstm_layer_ids) + 1) if lstm_layer_ids else 1
+
+    fc_layer_pattern = re.compile(r"^fc_layers\.(\d+)\.weight$")
+    fc_indices = sorted(
+        int(match.group(1))
+        for key in state_dict.keys()
+        if (match := fc_layer_pattern.match(key)) is not None
+    )
+    if not fc_indices:
+        raise RuntimeError(
+            f"Checkpoint {model_path} does not contain expected FC layer weights (fc_layers.<idx>.weight)."
+        )
+    fc_hidden = tuple(
+        int(state_dict[f"fc_layers.{idx}.weight"].shape[0])
+        for idx in fc_indices
+    )
+    n_fc = len(fc_hidden)
+
+    return {
+        "num_features": num_features,
+        "num_targets": num_targets,
+        "n_lstm": n_lstm,
+        "lstm_hidden": lstm_hidden,
+        "n_fc": n_fc,
+        "fc_hidden": fc_hidden,
+    }
 
 
 def _load_single_model(model_path: Path, *, timesteps: int):
     import torch
 
-    num_features, num_targets = _infer_checkpoint_io_shapes(model_path)
-    model = build_model(timesteps=timesteps, num_features=num_features, num_targets=num_targets)
+    arch = _infer_checkpoint_arch(model_path)
+    model = build_model(
+        timesteps=timesteps,
+        num_features=int(arch["num_features"]),
+        num_targets=int(arch["num_targets"]),
+        n_lstm=int(arch["n_lstm"]),
+        lstm_hidden=int(arch["lstm_hidden"]),
+        n_fc=int(arch["n_fc"]),
+        fc_hidden=tuple(int(v) for v in arch["fc_hidden"]),
+    )
     state_dict = torch.load(model_path, map_location="cpu")
     model.load_state_dict(state_dict)
     model.eval()
