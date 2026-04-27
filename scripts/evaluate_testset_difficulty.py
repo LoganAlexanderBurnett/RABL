@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import importlib.util
 import json
 from pathlib import Path
 import re
@@ -17,7 +16,7 @@ import sys
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from rabl.machine_learning.build_lstm_dataset import CONTROL_COLUMN, STATE_COLUMNS
+from rabl.machine_learning.build_lstm_dataset import STATE_COLUMNS
 from rabl.machine_learning.lstm_pipeline import (
     TARGET_NAMES,
     ProfileDataset,
@@ -30,7 +29,6 @@ from rabl.machine_learning.lstm_pipeline import (
 from rabl.machine_learning.posthoc_difficulty_eval import (
     aggregate_metric_by_bin,
     bin_series,
-    compute_equilibrium_excursions,
 )
 
 def _short_bin_label(left: float, right: float, *, is_last: bool) -> str:
@@ -38,16 +36,12 @@ def _short_bin_label(left: float, right: float, *, is_last: bool) -> str:
     return f"[{left:.3g}, {right:.3g}{right_bracket}"
 
 
-def _load_steady_state(config_path: Path) -> dict[str, float]:
-    spec = importlib.util.spec_from_file_location("rabl_config", config_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load config from {config_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    steady = getattr(module, "STEADY_STATE", None)
-    if not isinstance(steady, dict):
-        raise ValueError("STEADY_STATE dictionary not found in config.")
-    return steady
+def _equal_width_edges(values: np.ndarray, n_bins: int = 10) -> np.ndarray:
+    vmin = float(np.min(values))
+    vmax = float(np.max(values))
+    if np.isclose(vmin, vmax):
+        vmax = np.nextafter(vmin, np.inf)
+    return np.linspace(vmin, vmax, n_bins + 1)
 
 
 def _read_test_profile_names(h5_path: Path) -> list[str]:
@@ -205,7 +199,7 @@ def _plot_3x3_summary(
     descriptor_metrics: dict[str, dict[str, list[dict[str, Any]]]],
     output_path: Path,
 ) -> None:
-    descriptors = ["E_theta_max", "E_rho_max", "V_theta_max"]
+    descriptors = ["theta_max", "rho_max", "V_theta_max"]
     columns = ["MAE_hist", "MSE_hist", "MAE_box"]
 
     fig, axes = plt.subplots(3, 3, figsize=(18, 14))
@@ -264,13 +258,10 @@ def main() -> None:
     parser.add_argument("--model-path", type=Path, default=None, help="Single model checkpoint (.pt).")
     parser.add_argument("--ensemble-dir", type=Path, default=None, help="Directory containing ensemble checkpoints (.pt).")
     parser.add_argument("--out-dir", type=Path, required=True, help="Output directory for CSV/plots/manifest.")
-    parser.add_argument("--n-bins", type=int, default=5, help="Number of bins.")
-    parser.add_argument("--binning", type=str, default="quantile", choices=("quantile", "fixed"), help="Binning mode.")
     parser.add_argument("--fixed-edges-theta", type=float, nargs="+", default=None)
     parser.add_argument("--fixed-edges-rho", type=float, nargs="+", default=None)
     parser.add_argument("--fixed-edges-vtheta", type=float, nargs="+", default=None)
     parser.add_argument("--dt", type=float, default=1.0, help="Timestep size for velocity estimate.")
-    parser.add_argument("--config-path", type=Path, default=REPO_ROOT / "scripts" / "config.py")
     parser.add_argument("--include-per-target", action="store_true", help="Include per-target MAE/MSE columns.")
     args = parser.parse_args()
 
@@ -292,7 +283,6 @@ def main() -> None:
 
     models = [_load_single_model(path, timesteps=timesteps) for path in model_paths]
     scaling_stats = _load_scaling_stats(args.scaled_h5)
-    steady_state = _load_steady_state(args.config_path)
 
     state_dim = len(STATE_COLUMNS)
     rho_idx = TARGET_NAMES.index("rho_dollars")
@@ -315,13 +305,12 @@ def main() -> None:
         drum = _descale_feature_from_stats(scaling_stats, drum_scaled, control_idx)
         rho = y_true[:, rho_idx]
 
-        descriptors = compute_equilibrium_excursions(
-            drum_angle_deg=drum,
-            rho_dollars=rho,
-            drum_equilibrium_deg=float(steady_state[CONTROL_COLUMN]),
-            rho_equilibrium_dollars=float(steady_state["rho_dollars"]),
-            dt=float(args.dt),
-        )
+        v_theta = np.gradient(drum, float(args.dt))
+        descriptors = {
+            "theta_max": float(np.max(drum)),
+            "rho_max": float(np.max(rho)),
+            "V_theta_max": float(np.max(np.abs(v_theta))),
+        }
 
         abs_err = np.abs(y_true - y_pred)
         sq_err = (y_true - y_pred) ** 2
@@ -344,8 +333,8 @@ def main() -> None:
     _write_csv(per_profile_csv, fieldnames, per_profile_rows)
 
     descriptor_specs = [
-        ("E_theta_max", args.fixed_edges_theta),
-        ("E_rho_max", args.fixed_edges_rho),
+        ("theta_max", args.fixed_edges_theta),
+        ("rho_max", args.fixed_edges_rho),
         ("V_theta_max", args.fixed_edges_vtheta),
     ]
 
@@ -354,8 +343,12 @@ def main() -> None:
     descriptor_metric_rows: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for descriptor, fixed_edges in descriptor_specs:
         values = np.asarray([float(row[descriptor]) for row in per_profile_rows], dtype=float)
-        resolved_edges = None if fixed_edges is None else np.asarray(fixed_edges, dtype=float)
-        binned = bin_series(values, mode=args.binning, n_bins=args.n_bins, edges=resolved_edges)
+        resolved_edges = (
+            _equal_width_edges(values, n_bins=10)
+            if fixed_edges is None
+            else np.asarray(fixed_edges, dtype=float)
+        )
+        binned = bin_series(values, mode="fixed", n_bins=10, edges=resolved_edges)
         label_to_idx = {label: idx for idx, label in enumerate(binned.label_names)}
 
         bin_col = f"{descriptor}_bin"
@@ -391,8 +384,8 @@ def main() -> None:
         edges_json = out_dir / f"bins_{descriptor}_edges.json"
         edges_payload = {
             "descriptor": descriptor,
-            "binning_mode": args.binning,
-            "n_bins": int(args.n_bins),
+            "binning_mode": "fixed_equal_width",
+            "n_bins": 10,
             "edges": binned.edges.tolist(),
             "labels": binned.label_names,
         }
@@ -414,16 +407,12 @@ def main() -> None:
         "dataset_path": str(args.scaled_h5),
         "model_id": "ensemble" if args.ensemble_dir is not None else Path(model_paths[0]).stem,
         "checkpoint_paths": [str(path) for path in model_paths],
-        "steady_state": {
-            CONTROL_COLUMN: float(steady_state[CONTROL_COLUMN]),
-            "rho_dollars": float(steady_state["rho_dollars"]),
-        },
         "binning": {
-            "mode": args.binning,
-            "n_bins": int(args.n_bins),
+            "mode": "fixed_equal_width",
+            "n_bins": 10,
             "fixed_edges": {
-                "E_theta_max": None if args.fixed_edges_theta is None else list(map(float, args.fixed_edges_theta)),
-                "E_rho_max": None if args.fixed_edges_rho is None else list(map(float, args.fixed_edges_rho)),
+                "theta_max": None if args.fixed_edges_theta is None else list(map(float, args.fixed_edges_theta)),
+                "rho_max": None if args.fixed_edges_rho is None else list(map(float, args.fixed_edges_rho)),
                 "V_theta_max": None if args.fixed_edges_vtheta is None else list(map(float, args.fixed_edges_vtheta)),
             },
         },
