@@ -212,16 +212,16 @@ def _plot_boxplot(
     plt.close(fig)
 
 
-def _plot_3x3_summary(
+def _plot_summary_grid(
     *,
     per_profile_rows: list[dict[str, Any]],
     descriptor_metrics: dict[str, dict[str, list[dict[str, Any]]]],
     output_path: Path,
 ) -> None:
-    descriptors = ["theta_peak", "rho_peak", "V_theta_peak"]
+    descriptors = ["theta_peak", "rho_peak", "V_theta_peak", "drho_dt_peak"]
     columns = ["MAE_hist", "MSE_hist", "MAE_box"]
 
-    fig, axes = plt.subplots(3, 3, figsize=(18, 14))
+    fig, axes = plt.subplots(len(descriptors), len(columns), figsize=(18, 18))
 
     for row_idx, descriptor in enumerate(descriptors):
         bin_col = f"{descriptor}_bin"
@@ -280,6 +280,7 @@ def main() -> None:
     parser.add_argument("--fixed-edges-theta", type=float, nargs="+", default=None)
     parser.add_argument("--fixed-edges-rho", type=float, nargs="+", default=None)
     parser.add_argument("--fixed-edges-vtheta", type=float, nargs="+", default=None)
+    parser.add_argument("--fixed-edges-drhodt", type=float, nargs="+", default=None)
     parser.add_argument("--dt", type=float, default=1.0, help="Timestep size for velocity estimate.")
     parser.add_argument("--config-path", type=Path, default=REPO_ROOT / "scripts" / "config.py")
     parser.add_argument("--include-per-target", action="store_true", help="Include per-target MAE/MSE columns.")
@@ -327,17 +328,20 @@ def main() -> None:
         rho = y_true[:, rho_idx]
 
         v_theta = np.gradient(drum, float(args.dt))
+        drho_dt = np.gradient(rho, float(args.dt))
         descriptors = {
             "theta_peak": _signed_peak(drum, float(steady_state[CONTROL_COLUMN])),
             "rho_peak": _signed_peak(rho, float(steady_state["rho_dollars"])),
             "V_theta_peak": _signed_peak(v_theta, 0.0),
+            "drho_dt_peak": _signed_peak(drho_dt, 0.0),
         }
 
         abs_err = np.abs(y_true - y_pred)
+        abs_err_scaled = np.abs(y_scaled - y_pred_scaled)
         sq_err = (y_true - y_pred) ** 2
         row: dict[str, Any] = {
             "profile_id": str(profile_name),
-            "MAE": float(np.mean(abs_err)),
+            "MAE": float(np.mean(abs_err_scaled)),
             "MSE": float(np.mean(sq_err)),
             **descriptors,
         }
@@ -357,6 +361,7 @@ def main() -> None:
         ("theta_peak", args.fixed_edges_theta),
         ("rho_peak", args.fixed_edges_rho),
         ("V_theta_peak", args.fixed_edges_vtheta),
+        ("drho_dt_peak", args.fixed_edges_drhodt),
     ]
 
     generated_paths: list[str] = [str(per_profile_csv)]
@@ -413,8 +418,8 @@ def main() -> None:
         edges_json.write_text(json.dumps(edges_payload, indent=2), encoding="utf-8")
         generated_paths.append(str(edges_json))
 
-    combined_plot = out_dir / "difficulty_3x3_summary.png"
-    _plot_3x3_summary(
+    combined_plot = out_dir / "difficulty_4x3_summary.png"
+    _plot_summary_grid(
         per_profile_rows=per_profile_rows,
         descriptor_metrics=descriptor_metric_rows,
         output_path=combined_plot,
@@ -435,6 +440,7 @@ def main() -> None:
                 "theta_peak": None if args.fixed_edges_theta is None else list(map(float, args.fixed_edges_theta)),
                 "rho_peak": None if args.fixed_edges_rho is None else list(map(float, args.fixed_edges_rho)),
                 "V_theta_peak": None if args.fixed_edges_vtheta is None else list(map(float, args.fixed_edges_vtheta)),
+                "drho_dt_peak": None if args.fixed_edges_drhodt is None else list(map(float, args.fixed_edges_drhodt)),
             },
         },
         "artifacts": generated_paths,
