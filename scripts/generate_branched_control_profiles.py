@@ -24,6 +24,7 @@ from typing import List, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+from matplotlib.lines import Line2D
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = REPO_ROOT / "src"
@@ -55,7 +56,7 @@ def _interval_bounds(T: float, N_k: int) -> np.ndarray:
 
 def _interval_colors(N_k: int) -> List[str]:
     # Fixed vibrant palette requested by user; cycle through as needed.
-    palette = ["darkcyan", "aquamarine", "mediumturquoise"]
+    palette = ["darkcyan", "aquamarine", "dodgerblue"]
     return [palette[i % len(palette)] for i in range(N_k)]
 
 
@@ -269,10 +270,18 @@ def plot_control_profiles(
     for edge in interval_edges[1:-1]:
         ax.axvline(edge, color="gray", linestyle="--", linewidth=0.8, alpha=0.4, zorder=1)
 
-    ax.set_title("Branched control profiles u(t)")
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Control profile u(t) [deg]")
-    ax.grid(True, alpha=0.25)
+    interval_count = len(interval_edges) - 1
+    interval_colors = _interval_colors(interval_count)
+    legend_handles = [
+        Line2D([0], [0], color="black", linewidth=2.0, label="Original profile"),
+        *[
+            Line2D([0], [0], color=interval_colors[k], linewidth=1.8, label=f"Interval {k + 1}")
+            for k in range(interval_count)
+        ],
+    ]
+    ax.legend(handles=legend_handles, loc="upper left")
 
     plt.tight_layout()
 
