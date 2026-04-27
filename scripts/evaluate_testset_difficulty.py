@@ -333,12 +333,11 @@ def main() -> None:
             "drho_dt_peak": _signed_peak(drho_dt, 0.0),
         }
 
-        abs_err = np.abs(y_true - y_pred)
-        abs_err_scaled = np.abs(y_scaled - y_pred_scaled)
-        sq_err = (y_true - y_pred) ** 2
+        abs_err = np.abs(y_scaled - y_pred_scaled)
+        sq_err = (y_scaled - y_pred_scaled) ** 2
         row: dict[str, Any] = {
             "profile_id": str(profile_name),
-            "MAE": float(np.mean(abs_err_scaled)),
+            "MAE": float(np.mean(abs_err)),
             "MSE": float(np.mean(sq_err)),
             **descriptors,
         }
