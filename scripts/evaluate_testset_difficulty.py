@@ -170,17 +170,17 @@ def _plot_histogram(
 
     fig, ax1 = plt.subplots(figsize=(11, 5))
     x = np.arange(len(labels))
-    ax1.bar(x, means, color="#4C78A8", alpha=0.85)
+    bars = ax1.bar(x, means, color="#4C78A8", alpha=0.85, edgecolor="black", linewidth=0.4)
     ax1.set_xticks(x)
     ax1.set_xticklabels(labels, rotation=25, ha="right")
     ax1.set_ylabel(f"Mean {metric}")
     ax1.set_xlabel(f"{descriptor} bins")
     ax1.set_title(f"{metric} by {descriptor} bin")
-    ax1.grid(alpha=0.2)
-
-    ax2 = ax1.twinx()
-    ax2.plot(x, counts, color="#F58518", marker="o", linewidth=1.5)
-    ax2.set_ylabel("Bin count")
+    ax1.grid(alpha=0.2, axis="y")
+    ax1.set_axisbelow(True)
+    for bar, count in zip(bars, counts, strict=True):
+        x_pos = bar.get_x() + bar.get_width() / 2.0
+        ax1.text(x_pos, 0.0, f"{count} transients", rotation=90, va="bottom", ha="center", fontsize=7)
 
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -218,8 +218,20 @@ def _plot_summary_grid(
     descriptor_metrics: dict[str, dict[str, list[dict[str, Any]]]],
     output_path: Path,
 ) -> None:
-    descriptors = ["theta_peak", "rho_peak", "V_theta_peak", "drho_dt_peak"]
+    descriptors = ["theta_peak", "dtheta_dt_peak", "rho_peak", "drho_dt_peak"]
     columns = ["MAE_hist", "MSE_hist", "MAE_box"]
+    descriptor_latex = {
+        "theta_peak": r"$\theta_{\mathrm{peak}}$",
+        "dtheta_dt_peak": r"$\left(\frac{d\theta}{dt}\right)_{\mathrm{peak}}$",
+        "rho_peak": r"$\rho_{\mathrm{peak}}$",
+        "drho_dt_peak": r"$\left(\frac{d\rho}{dt}\right)_{\mathrm{peak}}$",
+    }
+    descriptor_colors = {
+        "theta_peak": "#4C78A8",
+        "dtheta_dt_peak": "#59A14F",
+        "rho_peak": "#F28E2B",
+        "drho_dt_peak": "#B07AA1",
+    }
 
     fig, axes = plt.subplots(len(descriptors), len(columns), figsize=(18, 18))
 
@@ -240,17 +252,27 @@ def _plot_summary_grid(
                 counts = [int(r["count"]) for r in metric_rows]
                 x = np.arange(len(labels))
 
-                ax.bar(x, means, color="#4C78A8", alpha=0.85)
+                bars = ax.bar(x, means, color=descriptor_colors[descriptor], alpha=0.9, edgecolor="black", linewidth=0.4)
                 ax.set_xticks(x)
                 ax.set_xticklabels(display_labels, rotation=25, ha="right", fontsize=8)
                 ax.set_ylabel(f"Mean {metric_name}")
-                ax.set_xlabel(f"{descriptor} bins")
-                ax.set_title(f"{metric_name} by {descriptor} bin")
-                ax.grid(alpha=0.2)
+                ax.set_xlabel(f"{descriptor_latex[descriptor]} bins")
+                ax.set_title(f"{metric_name} by {descriptor_latex[descriptor]} bin")
+                ax.grid(alpha=0.25, axis="y")
+                ax.set_axisbelow(True)
 
-                ax2 = ax.twinx()
-                ax2.plot(x, counts, color="#F58518", marker="o", linewidth=1.2)
-                ax2.set_ylabel("Count")
+                for bar, count in zip(bars, counts, strict=True):
+                    x_pos = bar.get_x() + bar.get_width() / 2.0
+                    ax.text(
+                        x_pos,
+                        0.0,
+                        f"{count} transients",
+                        rotation=90,
+                        va="bottom",
+                        ha="center",
+                        fontsize=7,
+                        color="#1F1F1F",
+                    )
             else:
                 labels = [str(r["bin"]) for r in mae_rows]
                 display_map = {str(r["bin"]): str(r.get("bin_display", r["bin"])) for r in mae_rows}
@@ -258,12 +280,16 @@ def _plot_summary_grid(
                     [float(r["MAE"]) for r in per_profile_rows if str(r[bin_col]) == label]
                     for label in labels
                 ]
-                ax.boxplot(values, labels=[display_map[l] for l in labels], showfliers=False)
-                ax.set_xlabel(f"{descriptor} bins")
+                bp = ax.boxplot(values, labels=[display_map[l] for l in labels], showfliers=False, patch_artist=True)
+                for patch in bp["boxes"]:
+                    patch.set_facecolor(descriptor_colors[descriptor])
+                    patch.set_alpha(0.45)
+                ax.set_xlabel(f"{descriptor_latex[descriptor]} bins")
                 ax.set_ylabel("MAE")
-                ax.set_title(f"MAE distribution by {descriptor} bin")
+                ax.set_title(f"MAE distribution by {descriptor_latex[descriptor]} bin")
                 ax.tick_params(axis="x", rotation=25, labelsize=8)
-                ax.grid(alpha=0.2)
+                ax.grid(alpha=0.25, axis="y")
+                ax.set_axisbelow(True)
 
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -329,7 +355,7 @@ def main() -> None:
         descriptors = {
             "theta_peak": _signed_peak(drum, float(steady_state[CONTROL_COLUMN])),
             "rho_peak": _signed_peak(rho, float(steady_state["rho_dollars"])),
-            "V_theta_peak": _signed_peak(v_theta, 0.0),
+            "dtheta_dt_peak": _signed_peak(v_theta, 0.0),
             "drho_dt_peak": _signed_peak(drho_dt, 0.0),
         }
 
@@ -353,7 +379,7 @@ def main() -> None:
     fieldnames = list(per_profile_rows[0].keys())
     _write_csv(per_profile_csv, fieldnames, per_profile_rows)
 
-    descriptor_specs = ["theta_peak", "rho_peak", "V_theta_peak", "drho_dt_peak"]
+    descriptor_specs = ["theta_peak", "dtheta_dt_peak", "rho_peak", "drho_dt_peak"]
 
     generated_paths: list[str] = [str(per_profile_csv)]
 
