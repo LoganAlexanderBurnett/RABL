@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -16,7 +17,7 @@ import sys
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from rabl.machine_learning.build_lstm_dataset import STATE_COLUMNS
+from rabl.machine_learning.build_lstm_dataset import CONTROL_COLUMN, STATE_COLUMNS
 from rabl.machine_learning.lstm_pipeline import (
     TARGET_NAMES,
     ProfileDataset,
@@ -42,6 +43,24 @@ def _equal_width_edges(values: np.ndarray, n_bins: int = 10) -> np.ndarray:
     if np.isclose(vmin, vmax):
         vmax = np.nextafter(vmin, np.inf)
     return np.linspace(vmin, vmax, n_bins + 1)
+
+
+def _load_steady_state(config_path: Path) -> dict[str, float]:
+    spec = importlib.util.spec_from_file_location("rabl_config", config_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load config from {config_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    steady = getattr(module, "STEADY_STATE", None)
+    if not isinstance(steady, dict):
+        raise ValueError("STEADY_STATE dictionary not found in config.")
+    return steady
+
+
+def _signed_peak(values: np.ndarray, equilibrium: float) -> float:
+    delta = np.asarray(values, dtype=float) - float(equilibrium)
+    idx = int(np.argmax(np.abs(delta)))
+    return float(np.asarray(values, dtype=float)[idx])
 
 
 def _read_test_profile_names(h5_path: Path) -> list[str]:
@@ -199,7 +218,7 @@ def _plot_3x3_summary(
     descriptor_metrics: dict[str, dict[str, list[dict[str, Any]]]],
     output_path: Path,
 ) -> None:
-    descriptors = ["theta_max", "rho_max", "V_theta_max"]
+    descriptors = ["theta_peak", "rho_peak", "V_theta_peak"]
     columns = ["MAE_hist", "MSE_hist", "MAE_box"]
 
     fig, axes = plt.subplots(3, 3, figsize=(18, 14))
@@ -262,6 +281,7 @@ def main() -> None:
     parser.add_argument("--fixed-edges-rho", type=float, nargs="+", default=None)
     parser.add_argument("--fixed-edges-vtheta", type=float, nargs="+", default=None)
     parser.add_argument("--dt", type=float, default=1.0, help="Timestep size for velocity estimate.")
+    parser.add_argument("--config-path", type=Path, default=REPO_ROOT / "scripts" / "config.py")
     parser.add_argument("--include-per-target", action="store_true", help="Include per-target MAE/MSE columns.")
     args = parser.parse_args()
 
@@ -283,6 +303,7 @@ def main() -> None:
 
     models = [_load_single_model(path, timesteps=timesteps) for path in model_paths]
     scaling_stats = _load_scaling_stats(args.scaled_h5)
+    steady_state = _load_steady_state(args.config_path)
 
     state_dim = len(STATE_COLUMNS)
     rho_idx = TARGET_NAMES.index("rho_dollars")
@@ -307,9 +328,9 @@ def main() -> None:
 
         v_theta = np.gradient(drum, float(args.dt))
         descriptors = {
-            "theta_max": float(np.max(drum)),
-            "rho_max": float(np.max(rho)),
-            "V_theta_max": float(np.max(np.abs(v_theta))),
+            "theta_peak": _signed_peak(drum, float(steady_state[CONTROL_COLUMN])),
+            "rho_peak": _signed_peak(rho, float(steady_state["rho_dollars"])),
+            "V_theta_peak": _signed_peak(v_theta, 0.0),
         }
 
         abs_err = np.abs(y_true - y_pred)
@@ -333,9 +354,9 @@ def main() -> None:
     _write_csv(per_profile_csv, fieldnames, per_profile_rows)
 
     descriptor_specs = [
-        ("theta_max", args.fixed_edges_theta),
-        ("rho_max", args.fixed_edges_rho),
-        ("V_theta_max", args.fixed_edges_vtheta),
+        ("theta_peak", args.fixed_edges_theta),
+        ("rho_peak", args.fixed_edges_rho),
+        ("V_theta_peak", args.fixed_edges_vtheta),
     ]
 
     generated_paths: list[str] = [str(per_profile_csv)]
@@ -411,9 +432,9 @@ def main() -> None:
             "mode": "fixed_equal_width",
             "n_bins": 10,
             "fixed_edges": {
-                "theta_max": None if args.fixed_edges_theta is None else list(map(float, args.fixed_edges_theta)),
-                "rho_max": None if args.fixed_edges_rho is None else list(map(float, args.fixed_edges_rho)),
-                "V_theta_max": None if args.fixed_edges_vtheta is None else list(map(float, args.fixed_edges_vtheta)),
+                "theta_peak": None if args.fixed_edges_theta is None else list(map(float, args.fixed_edges_theta)),
+                "rho_peak": None if args.fixed_edges_rho is None else list(map(float, args.fixed_edges_rho)),
+                "V_theta_peak": None if args.fixed_edges_vtheta is None else list(map(float, args.fixed_edges_vtheta)),
             },
         },
         "artifacts": generated_paths,
