@@ -195,6 +195,63 @@ def _plot_boxplot(
     plt.close(fig)
 
 
+def _plot_3x3_summary(
+    *,
+    per_profile_rows: list[dict[str, Any]],
+    descriptor_metrics: dict[str, dict[str, list[dict[str, Any]]]],
+    output_path: Path,
+) -> None:
+    descriptors = ["E_theta_max", "E_rho_max", "V_theta_max"]
+    columns = ["MAE_hist", "MSE_hist", "MAE_box"]
+
+    fig, axes = plt.subplots(3, 3, figsize=(18, 14))
+
+    for row_idx, descriptor in enumerate(descriptors):
+        bin_col = f"{descriptor}_bin"
+        mae_rows = descriptor_metrics[descriptor]["MAE"]
+        mse_rows = descriptor_metrics[descriptor]["MSE"]
+
+        for col_idx, panel in enumerate(columns):
+            ax = axes[row_idx, col_idx]
+
+            if panel in {"MAE_hist", "MSE_hist"}:
+                metric_rows = mae_rows if panel == "MAE_hist" else mse_rows
+                metric_name = "MAE" if panel == "MAE_hist" else "MSE"
+                labels = [str(r["bin"]) for r in metric_rows]
+                means = [float(r["mean"]) for r in metric_rows]
+                counts = [int(r["count"]) for r in metric_rows]
+                x = np.arange(len(labels))
+
+                ax.bar(x, means, color="#4C78A8", alpha=0.85)
+                ax.set_xticks(x)
+                ax.set_xticklabels(labels, rotation=25, ha="right")
+                ax.set_ylabel(f"Mean {metric_name}")
+                ax.set_xlabel(f"{descriptor} bins")
+                ax.set_title(f"{metric_name} by {descriptor} bin")
+                ax.grid(alpha=0.2)
+
+                ax2 = ax.twinx()
+                ax2.plot(x, counts, color="#F58518", marker="o", linewidth=1.2)
+                ax2.set_ylabel("Count")
+            else:
+                labels = sorted({str(r[bin_col]) for r in per_profile_rows})
+                values = [
+                    [float(r["MAE"]) for r in per_profile_rows if str(r[bin_col]) == label]
+                    for label in labels
+                ]
+                ax.boxplot(values, labels=labels, showfliers=False)
+                ax.set_xlabel(f"{descriptor} bins")
+                ax.set_ylabel("MAE")
+                ax.set_title(f"MAE distribution by {descriptor} bin")
+                ax.tick_params(axis="x", rotation=25)
+                ax.grid(alpha=0.2)
+
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate test-set forecast errors by transient difficulty bins.")
     parser.add_argument("--scaled-h5", type=Path, required=True, help="Scaled/split dataset path containing test split.")
@@ -288,6 +345,7 @@ def main() -> None:
 
     generated_paths: list[str] = [str(per_profile_csv)]
 
+    descriptor_metric_rows: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for descriptor, fixed_edges in descriptor_specs:
         values = np.asarray([float(row[descriptor]) for row in per_profile_rows], dtype=float)
         resolved_edges = None if fixed_edges is None else np.asarray(fixed_edges, dtype=float)
@@ -298,31 +356,13 @@ def main() -> None:
             row[bin_col] = str(label)
 
         agg_rows: list[dict[str, Any]] = []
+        descriptor_metric_rows[descriptor] = {}
         for metric in ("MAE", "MSE"):
             stats_rows = aggregate_metric_by_bin(per_profile_rows, metric_col=metric, bin_col=bin_col)
             for r in stats_rows:
                 r["metric"] = metric
             agg_rows.extend(stats_rows)
-
-            hist_name = f"{metric.lower()}_hist_by_{descriptor}.png"
-            _plot_histogram(
-                [r for r in stats_rows],
-                descriptor=descriptor,
-                metric=metric,
-                output_path=out_dir / hist_name,
-            )
-            generated_paths.append(str(out_dir / hist_name))
-
-            if metric == "MAE":
-                box_name = f"mae_box_by_{descriptor}.png"
-                _plot_boxplot(
-                    per_profile_rows,
-                    descriptor=descriptor,
-                    metric="MAE",
-                    bin_col=bin_col,
-                    output_path=out_dir / box_name,
-                )
-                generated_paths.append(str(out_dir / box_name))
+            descriptor_metric_rows[descriptor][metric] = [r for r in stats_rows]
 
         bins_csv = out_dir / f"bins_{descriptor}_metrics.csv"
         _write_csv(
@@ -342,6 +382,14 @@ def main() -> None:
         }
         edges_json.write_text(json.dumps(edges_payload, indent=2), encoding="utf-8")
         generated_paths.append(str(edges_json))
+
+    combined_plot = out_dir / "difficulty_3x3_summary.png"
+    _plot_3x3_summary(
+        per_profile_rows=per_profile_rows,
+        descriptor_metrics=descriptor_metric_rows,
+        output_path=combined_plot,
+    )
+    generated_paths.append(str(combined_plot))
 
     # Persist per-profile table with bin labels included.
     _write_csv(per_profile_csv, list(per_profile_rows[0].keys()), per_profile_rows)
