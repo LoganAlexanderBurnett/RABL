@@ -216,6 +216,8 @@ def _plot_summary_grid(
     *,
     per_profile_rows: list[dict[str, Any]],
     descriptor_metrics: dict[str, dict[str, list[dict[str, Any]]]],
+    target_overlay: dict[str, dict[str, dict[str, list[float]]]],
+    include_per_target: bool,
     output_path: Path,
 ) -> None:
     descriptors = ["theta_peak", "dtheta_dt_peak", "rho_peak", "drho_dt_peak"]
@@ -273,6 +275,21 @@ def _plot_summary_grid(
                         fontsize=7,
                         color="#1F1F1F",
                     )
+                if include_per_target:
+                    metric_overlay = target_overlay.get(descriptor, {}).get(metric_name, {})
+                    for target_name, target_vals in metric_overlay.items():
+                        if len(target_vals) == len(x):
+                            ax.plot(
+                                x,
+                                target_vals,
+                                linewidth=0.9,
+                                alpha=0.85,
+                                marker="o",
+                                markersize=2.5,
+                                label=target_name,
+                            )
+                    if row_idx == 0 and col_idx == 0 and metric_overlay:
+                        ax.legend(loc="upper left", fontsize=6, ncol=2, frameon=True)
             else:
                 labels = [str(r["bin"]) for r in mae_rows]
                 display_map = {str(r["bin"]): str(r.get("bin_display", r["bin"])) for r in mae_rows}
@@ -384,6 +401,7 @@ def main() -> None:
     generated_paths: list[str] = [str(per_profile_csv)]
 
     descriptor_metric_rows: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    target_overlay: dict[str, dict[str, dict[str, list[float]]]] = {}
     for descriptor in descriptor_specs:
         values = np.asarray([float(row[descriptor]) for row in per_profile_rows], dtype=float)
         resolved_edges = _equal_width_edges(values, n_bins=int(args.n_bins))
@@ -396,6 +414,7 @@ def main() -> None:
 
         agg_rows: list[dict[str, Any]] = []
         descriptor_metric_rows[descriptor] = {}
+        target_overlay[descriptor] = {}
         for metric in ("MAE", "MSE"):
             stats_rows = aggregate_metric_by_bin(per_profile_rows, metric_col=metric, bin_col=bin_col)
             for r in stats_rows:
@@ -411,6 +430,20 @@ def main() -> None:
             stats_rows = sorted(stats_rows, key=lambda row: int(row["bin_idx"]))
             agg_rows.extend(stats_rows)
             descriptor_metric_rows[descriptor][metric] = [r for r in stats_rows]
+            if args.include_per_target:
+                target_overlay[descriptor][metric] = {}
+                for tgt in TARGET_NAMES:
+                    per_tgt_metric_col = f"{metric}_{tgt}"
+                    target_stats_rows = aggregate_metric_by_bin(
+                        per_profile_rows,
+                        metric_col=per_tgt_metric_col,
+                        bin_col=bin_col,
+                    )
+                    for tr in target_stats_rows:
+                        target_bin = str(tr["bin"])
+                        tr["bin_idx"] = int(label_to_idx[target_bin])
+                    target_stats_rows = sorted(target_stats_rows, key=lambda row: int(row["bin_idx"]))
+                    target_overlay[descriptor][metric][tgt] = [float(tr["mean"]) for tr in target_stats_rows]
 
         bins_csv = out_dir / f"bins_{descriptor}_metrics.csv"
         _write_csv(
@@ -435,6 +468,8 @@ def main() -> None:
     _plot_summary_grid(
         per_profile_rows=per_profile_rows,
         descriptor_metrics=descriptor_metric_rows,
+        target_overlay=target_overlay,
+        include_per_target=bool(args.include_per_target),
         output_path=combined_plot,
     )
     generated_paths.append(str(combined_plot))
