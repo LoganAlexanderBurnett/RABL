@@ -277,10 +277,7 @@ def main() -> None:
     parser.add_argument("--model-path", type=Path, default=None, help="Single model checkpoint (.pt).")
     parser.add_argument("--ensemble-dir", type=Path, default=None, help="Directory containing ensemble checkpoints (.pt).")
     parser.add_argument("--out-dir", type=Path, required=True, help="Output directory for CSV/plots/manifest.")
-    parser.add_argument("--fixed-edges-theta", type=float, nargs="+", default=None)
-    parser.add_argument("--fixed-edges-rho", type=float, nargs="+", default=None)
-    parser.add_argument("--fixed-edges-vtheta", type=float, nargs="+", default=None)
-    parser.add_argument("--fixed-edges-drhodt", type=float, nargs="+", default=None)
+    parser.add_argument("--n-bins", type=int, default=10, help="Number of equal-width bins per descriptor.")
     parser.add_argument("--dt", type=float, default=1.0, help="Timestep size for velocity estimate.")
     parser.add_argument("--config-path", type=Path, default=REPO_ROOT / "scripts" / "config.py")
     parser.add_argument("--include-per-target", action="store_true", help="Include per-target MAE/MSE columns.")
@@ -357,24 +354,15 @@ def main() -> None:
     fieldnames = list(per_profile_rows[0].keys())
     _write_csv(per_profile_csv, fieldnames, per_profile_rows)
 
-    descriptor_specs = [
-        ("theta_peak", args.fixed_edges_theta),
-        ("rho_peak", args.fixed_edges_rho),
-        ("V_theta_peak", args.fixed_edges_vtheta),
-        ("drho_dt_peak", args.fixed_edges_drhodt),
-    ]
+    descriptor_specs = ["theta_peak", "rho_peak", "V_theta_peak", "drho_dt_peak"]
 
     generated_paths: list[str] = [str(per_profile_csv)]
 
     descriptor_metric_rows: dict[str, dict[str, list[dict[str, Any]]]] = {}
-    for descriptor, fixed_edges in descriptor_specs:
+    for descriptor in descriptor_specs:
         values = np.asarray([float(row[descriptor]) for row in per_profile_rows], dtype=float)
-        resolved_edges = (
-            _equal_width_edges(values, n_bins=10)
-            if fixed_edges is None
-            else np.asarray(fixed_edges, dtype=float)
-        )
-        binned = bin_series(values, mode="fixed", n_bins=10, edges=resolved_edges)
+        resolved_edges = _equal_width_edges(values, n_bins=int(args.n_bins))
+        binned = bin_series(values, mode="fixed", n_bins=int(args.n_bins), edges=resolved_edges)
         label_to_idx = {label: idx for idx, label in enumerate(binned.label_names)}
 
         bin_col = f"{descriptor}_bin"
@@ -411,7 +399,7 @@ def main() -> None:
         edges_payload = {
             "descriptor": descriptor,
             "binning_mode": "fixed_equal_width",
-            "n_bins": 10,
+            "n_bins": int(args.n_bins),
             "edges": binned.edges.tolist(),
             "labels": binned.label_names,
         }
@@ -435,13 +423,7 @@ def main() -> None:
         "checkpoint_paths": [str(path) for path in model_paths],
         "binning": {
             "mode": "fixed_equal_width",
-            "n_bins": 10,
-            "fixed_edges": {
-                "theta_peak": None if args.fixed_edges_theta is None else list(map(float, args.fixed_edges_theta)),
-                "rho_peak": None if args.fixed_edges_rho is None else list(map(float, args.fixed_edges_rho)),
-                "V_theta_peak": None if args.fixed_edges_vtheta is None else list(map(float, args.fixed_edges_vtheta)),
-                "drho_dt_peak": None if args.fixed_edges_drhodt is None else list(map(float, args.fixed_edges_drhodt)),
-            },
+            "n_bins": int(args.n_bins),
         },
         "artifacts": generated_paths,
     }
