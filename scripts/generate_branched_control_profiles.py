@@ -56,7 +56,7 @@ def _interval_bounds(T: float, N_k: int) -> np.ndarray:
 
 def _interval_colors(N_k: int) -> List[str]:
     # Fixed vibrant palette requested by user; cycle through as needed.
-    palette = ["darkcyan", "aquamarine", "dodgerblue"]
+    palette = ["darkblue", "deepskyblue", "lightblue"]
     return [palette[i % len(palette)] for i in range(N_k)]
 
 
@@ -419,10 +419,8 @@ def save_branching_video(
 
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min - y_pad, y_max + y_pad)
-        ax.set_title("Branched control profiles u(t)")
         ax.set_xlabel("Time [s]")
         ax.set_ylabel("Control profile u(t) [deg]")
-        ax.grid(True, alpha=0.25)
 
     save_path = save_as
     if N_k is not None and N_b is not None:

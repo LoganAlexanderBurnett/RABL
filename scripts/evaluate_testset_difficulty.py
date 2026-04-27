@@ -9,6 +9,7 @@ import re
 from typing import Any
 
 import matplotlib.pyplot as plt
+import matplotlib.transforms as transforms
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -178,9 +179,21 @@ def _plot_histogram(
     ax1.set_title(f"{metric} by {descriptor} bin")
     ax1.grid(alpha=0.2, axis="y")
     ax1.set_axisbelow(True)
+    trans = transforms.blended_transform_factory(ax1.transData, ax1.transAxes)
+
     for bar, count in zip(bars, counts, strict=True):
         x_pos = bar.get_x() + bar.get_width() / 2.0
-        ax1.text(x_pos, 0.0, f"{count} transients", rotation=90, va="bottom", ha="center", fontsize=7)
+        ax1.text(
+            x_pos,
+            0.05,  # 2% above the bottom of the axis
+            f"{count} transients",
+            rotation=90,
+            va="bottom",
+            ha="center",
+            fontsize=7,
+            color="#1F1F1F",
+            transform=trans,
+        )
 
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -263,17 +276,20 @@ def _plot_summary_grid(
                 ax.grid(alpha=0.25, axis="y")
                 ax.set_axisbelow(True)
 
+                trans = transforms.blended_transform_factory(ax.transData, ax.transAxes)
+
                 for bar, count in zip(bars, counts, strict=True):
                     x_pos = bar.get_x() + bar.get_width() / 2.0
                     ax.text(
                         x_pos,
-                        0.0,
+                        0.05,
                         f"{count} transients",
                         rotation=90,
                         va="bottom",
                         ha="center",
                         fontsize=7,
                         color="#1F1F1F",
+                        transform=trans,
                     )
                 if include_per_target:
                     metric_overlay = target_overlay.get(descriptor, {}).get(metric_name, {})

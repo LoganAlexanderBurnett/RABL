@@ -319,12 +319,10 @@ def _plot_branched_profiles(result: RecursiveBranchingResult, save_path: Path) -
             )
             for interval in result.intervals
         ]
-        ax.legend(handles=legend_handles, loc="best", frameon=True)
+        ax.legend(handles=legend_handles, loc="upper left", frameon=True)
 
-    ax.set_title("Branched Drum Profiles Across Intervals")
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Drum Angle (deg)")
-    ax.grid(True, alpha=0.3)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -332,7 +330,7 @@ def _plot_branched_profiles(result: RecursiveBranchingResult, save_path: Path) -
 
 def _interval_colors(n_intervals: int) -> list[str]:
     """Match the interval color scheme used in generate_branched_control_profiles.py."""
-    palette = ["darkcyan", "aquamarine", "mediumturquoise"]
+    palette = ["darkblue", "deepskyblue", "lightblue"]
     return [palette[i % len(palette)] for i in range(max(0, n_intervals))]
 
 
