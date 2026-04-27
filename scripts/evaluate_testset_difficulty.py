@@ -33,6 +33,10 @@ from rabl.machine_learning.posthoc_difficulty_eval import (
     compute_equilibrium_excursions,
 )
 
+def _short_bin_label(left: float, right: float, *, is_last: bool) -> str:
+    right_bracket = "]" if is_last else ")"
+    return f"[{left:.3g}, {right:.3g}{right_bracket}"
+
 
 def _load_steady_state(config_path: Path) -> dict[str, float]:
     spec = importlib.util.spec_from_file_location("rabl_config", config_path)
@@ -218,13 +222,14 @@ def _plot_3x3_summary(
                 metric_rows = mae_rows if panel == "MAE_hist" else mse_rows
                 metric_name = "MAE" if panel == "MAE_hist" else "MSE"
                 labels = [str(r["bin"]) for r in metric_rows]
+                display_labels = [str(r.get("bin_display", r["bin"])) for r in metric_rows]
                 means = [float(r["mean"]) for r in metric_rows]
                 counts = [int(r["count"]) for r in metric_rows]
                 x = np.arange(len(labels))
 
                 ax.bar(x, means, color="#4C78A8", alpha=0.85)
                 ax.set_xticks(x)
-                ax.set_xticklabels(labels, rotation=25, ha="right")
+                ax.set_xticklabels(display_labels, rotation=25, ha="right", fontsize=8)
                 ax.set_ylabel(f"Mean {metric_name}")
                 ax.set_xlabel(f"{descriptor} bins")
                 ax.set_title(f"{metric_name} by {descriptor} bin")
@@ -234,16 +239,17 @@ def _plot_3x3_summary(
                 ax2.plot(x, counts, color="#F58518", marker="o", linewidth=1.2)
                 ax2.set_ylabel("Count")
             else:
-                labels = sorted({str(r[bin_col]) for r in per_profile_rows})
+                labels = [str(r["bin"]) for r in mae_rows]
+                display_map = {str(r["bin"]): str(r.get("bin_display", r["bin"])) for r in mae_rows}
                 values = [
                     [float(r["MAE"]) for r in per_profile_rows if str(r[bin_col]) == label]
                     for label in labels
                 ]
-                ax.boxplot(values, labels=labels, showfliers=False)
+                ax.boxplot(values, labels=[display_map[l] for l in labels], showfliers=False)
                 ax.set_xlabel(f"{descriptor} bins")
                 ax.set_ylabel("MAE")
                 ax.set_title(f"MAE distribution by {descriptor} bin")
-                ax.tick_params(axis="x", rotation=25)
+                ax.tick_params(axis="x", rotation=25, labelsize=8)
                 ax.grid(alpha=0.2)
 
     fig.tight_layout()
@@ -350,6 +356,7 @@ def main() -> None:
         values = np.asarray([float(row[descriptor]) for row in per_profile_rows], dtype=float)
         resolved_edges = None if fixed_edges is None else np.asarray(fixed_edges, dtype=float)
         binned = bin_series(values, mode=args.binning, n_bins=args.n_bins, edges=resolved_edges)
+        label_to_idx = {label: idx for idx, label in enumerate(binned.label_names)}
 
         bin_col = f"{descriptor}_bin"
         for row, label in zip(per_profile_rows, binned.labels, strict=True):
@@ -361,14 +368,23 @@ def main() -> None:
             stats_rows = aggregate_metric_by_bin(per_profile_rows, metric_col=metric, bin_col=bin_col)
             for r in stats_rows:
                 r["metric"] = metric
+                bin_name = str(r["bin"])
+                bin_idx = int(label_to_idx[bin_name])
+                r["bin_idx"] = bin_idx
+                r["bin_display"] = _short_bin_label(
+                    float(binned.edges[bin_idx]),
+                    float(binned.edges[bin_idx + 1]),
+                    is_last=(bin_idx == len(binned.label_names) - 1),
+                )
+            stats_rows = sorted(stats_rows, key=lambda row: int(row["bin_idx"]))
             agg_rows.extend(stats_rows)
             descriptor_metric_rows[descriptor][metric] = [r for r in stats_rows]
 
         bins_csv = out_dir / f"bins_{descriptor}_metrics.csv"
         _write_csv(
             bins_csv,
-            ["metric", "bin", "count", "mean", "median", "std"],
-            sorted(agg_rows, key=lambda r: (r["metric"], r["bin"])),
+            ["metric", "bin", "bin_idx", "bin_display", "count", "mean", "median", "std"],
+            sorted(agg_rows, key=lambda r: (str(r["metric"]), int(r["bin_idx"]))),
         )
         generated_paths.append(str(bins_csv))
 
