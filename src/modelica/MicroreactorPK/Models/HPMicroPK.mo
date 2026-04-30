@@ -1,6 +1,7 @@
 within MicroreactorPK.Models;
 model HPMicroPK
-  // Point-kinetics + 4-node thermal network + 12 drums (same angle)
+  // Point-kinetics + 4-node reactor thermal network + active-metal steam-generator node
+  // + 12 drums (same angle)
   //
   // State summary:
   //   n(t)      : normalized reactor power (n=1 -> P = P_r)
@@ -9,15 +10,18 @@ model HPMicroPK
   //   Tm(t)     : moderator / graphite / structure temperature
   //   Thp(t)    : heat pipe effective temperature node
   //   TN2(t)    : nitrogen loop average temperature node
+  //   Tsg(t)    : active steam-generator heat-transfer metal temperature node
   //
   // Inputs:
   //   drumAngleDeg(t) applied to all drums equally
   //
   // Outputs:
-  //   rho(t)        : reactivity in Δk/k
-  //   rho_dollars(t): reactivity in $
-  //   P(t)          : thermal power in W
-  //   P_MW(t)       : thermal power in MW
+  //   rho(t)             : reactivity in Δk/k
+  //   rho_dollars(t)     : reactivity in $
+  //   P(t)               : thermal power in W
+  //   P_MW(t)            : thermal power in MW
+  //   T_steam_out(t)     : calculated outlet temperature at fixed outlet pressure
+  //   x_steam_out(t)     : calculated outlet steam quality / dryness fraction
   import SI = Modelica.Units.SI;
 
   // ---------- KINETIC PARAMETERS ----------
@@ -65,28 +69,80 @@ model HPMicroPK
   parameter SI.Power P_r = 6.0e6 "Rated thermal power [W]";
 
   // Fraction of thermal power deposited directly in the fuel node.
-  // (The remainder (1-heat_f) goes into the moderator/structure node in this lumped model.)
+  // The remainder (1-heat_f) goes into the moderator/structure node in this lumped model.
   parameter Real heat_f = 0.90 "Fraction of power deposited in fuel";
 
 
   // ---------- THERMAL DESIGN TEMPERATURES ----------
   // These define the steady-state point around which:
   // - reactivity feedback is computed (Tf - Tf0, Tm - Tm0)
-  // - UA values (G_*) are computed using ΔT design splits
+  // - UA values (G_*) are computed using design temperature differences
 
-  parameter SI.Temperature Tf0   = 1173.15; // fuel nominal [K]
-  parameter SI.Temperature Tm0   = 1150.15; // moderator/graphite nominal [K]
-  parameter SI.Temperature Thp0  = 1073.15; // heat pipe nominal [K]
+  parameter SI.Temperature Tf0   = 1173.15 "Fuel nominal temperature [K]";
+  parameter SI.Temperature Tm0   = 1150.15 "Moderator/graphite nominal temperature [K]";
+  parameter SI.Temperature Thp0  = 1073.15 "Heat pipe nominal temperature [K]";
 
-  // N2 inlet/outlet design temps; TN0 is the average used as the N2 node reference
-  parameter SI.Temperature TN_in = 683.15;   // N2 inlet [K]
-  parameter SI.Temperature TN_out= 1073.15;  // N2 outlet [K]
-  parameter SI.Temperature TN0   = 0.5*(TN_in + TN_out); // N2 average [K]
+  // N2 inlet/outlet design temperatures. TN0 is the average used as the N2 node reference.
+  parameter SI.Temperature TN_in = 683.15   "N2 inlet design temperature [K]";
+  parameter SI.Temperature TN_out= 1073.15  "N2 outlet design temperature [K]";
+  parameter SI.Temperature TN0   = 0.5*(TN_in + TN_out) "N2 average design temperature [K]";
 
-  // Steam generator outlet reference temperature and feedwater inlet temperature
-  parameter SI.Temperature Tsg0  = 232.0 + 273.15;   // SG node nominal [K]
-  parameter SI.Temperature T_fw_in = 198.3 + 273.15; // feedwater inlet [K]
-  parameter SI.Temperature T_steam_out = 232.0 + 273.15; // Steam outlet [K]
+
+  // ---------- STEAM GENERATOR / SECONDARY SIDE PARAMETERS ----------
+  // The new steam-generator node represents active heat-transfer tube metal only.
+  // It does not include drum metal, headers, casing, supports, or contained fluid inventory.
+
+  // Fixed secondary-side feedwater mass flow rate.
+  parameter SI.MassFlowRate m_dot_fw = 2.95
+    "Fixed feedwater mass flow rate [kg/s]";
+
+  // Fixed steam outlet/header pressure.
+  // This model uses the pressure only to define the saturation temperature and property constants.
+  parameter SI.Pressure p_steam_out = 1.5e6
+    "Fixed steam outlet/header pressure [Pa]";
+
+  // Feedwater inlet temperature.
+  // For this simplified model, feedwater is treated as approximately saturated liquid
+  // at the fixed steam pressure.
+  parameter SI.Temperature T_fw_in = 198.3 + 273.15
+    "Feedwater inlet temperature [K]";
+
+  // Saturation temperature at p_steam_out.
+  // At 1.5 MPa, Tsat is approximately 198.3 C.
+  parameter SI.Temperature T_sat_steam = 198.3 + 273.15
+    "Saturation temperature at fixed steam pressure [K]";
+
+  // Nominal/design outlet steam temperature.
+  parameter SI.Temperature T_steam_out_nom = 232.0 + 273.15
+    "Nominal outlet steam temperature [K]";
+
+  // Initial active SG metal temperature.
+  // This is an effective active-metal temperature used to initialize the lumped node.
+  parameter SI.Temperature Tsg0 = T_steam_out_nom
+    "Nominal active steam-generator metal temperature [K]";
+
+  // Latent heat required to fully evaporate saturated liquid to saturated vapor near 1.5 MPa.
+  parameter SI.SpecificEnthalpy h_fg = 1946.45e3
+    "Latent heat from saturated liquid to saturated vapor near 1.5 MPa [J/kg]";
+
+  // Superheat enthalpy rise from approximately 198 C saturated steam to 232 C steam.
+  parameter SI.SpecificEnthalpy h_sh_nom = 89.42e3
+    "Nominal superheat enthalpy rise from saturation to 232 C [J/kg]";
+
+  // Total nominal enthalpy rise from feedwater to nominal outlet steam.
+  parameter SI.SpecificEnthalpy delta_h_nom = h_fg + h_sh_nom
+    "Nominal feedwater-to-steam enthalpy rise [J/kg]";
+
+  // Effective superheated-steam heat capacity over the nominal superheat interval.
+  // h_sh_nom = cp_sh_eff * (T_steam_out_nom - T_sat_steam)
+  parameter SI.SpecificHeatCapacity cp_sh_eff =
+    h_sh_nom / (T_steam_out_nom - T_sat_steam)
+    "Effective superheated-steam cp [J/(kg K)]";
+
+  // Active heat-transfer metal thermal capacitance.
+  // Baseline from Sulzer/KVK active-tube metal area scaling.
+  parameter SI.HeatCapacity C_sg = 2.55e5
+    "Active steam-generator heat-transfer metal capacitance [J/K]";
 
 
   // ---------- LUMPED MASSES AND HEAT CAPACITIES ----------
@@ -105,50 +161,50 @@ model HPMicroPK
   parameter SI.SpecificHeatCapacity cp_hp = 771.3;
 
   // Nitrogen loop lump:
-  // We treat N2 as a well-mixed "average" node with mass set by:
+  // We treat N2 as a well-mixed average node with mass set by:
   //   M_N2 = m_dot_N * tau_N
   // where tau_N is an assumed residence time / transport lag.
   parameter SI.SpecificHeatCapacity cp_N2 = 1182.0;
   parameter SI.Time tau_N = 5.0;
 
-  // Compute the N2 mass flow required to remove P_r given N2 ΔT design
+  // Compute the N2 mass flow required to remove P_r given N2 ΔT design:
   //   P_r ≈ m_dot * cp * (TN_out - TN_in)
   parameter SI.MassFlowRate m_dot_N = P_r / (cp_N2*(TN_out - TN_in));
 
-  // Effective N2 mass in the “average” control volume
+  // Effective N2 mass in the average control volume.
   parameter SI.Mass M_N2 = m_dot_N * tau_N;
 
-  // Steam-side “effective cp”:
-  // Instead of explicitly modeling two-phase and enthalpy, approximate the
-  // steam-side heat removal as:
-  //   Q = m_dot_s * cp_eff * (Tsg - T_fw_in)
-  // where cp_eff is chosen so that at design point the enthalpy rise is delta_h.
-  parameter Real delta_h = 2035.87e3 "J/kg"; // effective enthalpy gain for 198C FW -> 232C steam [J/kg]
 
-
-  // ---------- CONDUCTION / HEAT-TRANSFER UA's (G = UA) FROM DESIGN TEMPS ----------
+  // ---------- CONDUCTION / HEAT-TRANSFER UA's (G = UA) FROM DESIGN TEMPERATURES ----------
   // Reverse-engineering effective thermal conductances between lumps
   // from the design temperature drops at rated power:
-  //
   //   Q = G * ΔT  =>  G = Q / ΔT
-  //
   // abs() is used so G is positive regardless of temperature ordering.
 
   parameter SI.ThermalConductance G_f_g  = heat_f * P_r / abs(Tf0  - Tm0);
   parameter SI.ThermalConductance G_g_hp = P_r / abs(Tm0  - Thp0);
   parameter SI.ThermalConductance G_hp_N2= P_r / abs(Thp0 - TN0);
-  parameter SI.ThermalConductance G_N2_sg= P_r / abs(TN0  - Tsg0);
+
+  // Nitrogen-to-active-SG-metal conductance.
+  parameter SI.ThermalConductance G_N2_sg = P_r / abs(TN0 - Tsg0)
+    "Conductance from N2 node to active SG metal [W/K]";
+
+  // Active-SG-metal-to-water/steam conductance.
+  // Calibrated so that at nominal conditions:
+  //   Q = P_r = G_sg_fw*(Tsg0 - T_sat_steam)
+  parameter SI.ThermalConductance G_sg_fw = P_r / abs(Tsg0 - T_sat_steam)
+    "Conductance from active SG metal to secondary water/steam stream [W/K]";
 
 
   // ---------- THERMAL TIME CONSTANTS ----------
-  // These convert a conductance G between two lumps into a “time constant”
+  // These convert a conductance G between two lumps into a time constant
   // for the form (T_other - T_this)/tau. In general:
   //   dT_this/dt includes (T_other - T_this) * (G / (M_this*cp_this))
-  // so tau_this_other = (M_this*cp_this)/G
+  // so tau_this_other = (M_this*cp_this)/G.
 
   // Fuel <-> moderator link uses G_f_g
-  parameter SI.Time tau_f_g   = M_f  * cp_f  / G_f_g; // fuel responding to moderator
-  parameter SI.Time tau_g_f   = M_g  * cp_g  / G_f_g; // moderator responding to fuel
+  parameter SI.Time tau_f_g   = M_f  * cp_f  / G_f_g "Fuel response to moderator through G_f_g [s]";
+  parameter SI.Time tau_g_f   = M_g  * cp_g  / G_f_g "Moderator response to fuel through G_f_g [s]";
 
   // Moderator <-> heat pipe link uses G_g_hp
   parameter SI.Time tau_g_hp  = M_g  * cp_g  / G_g_hp;
@@ -158,17 +214,23 @@ model HPMicroPK
   parameter SI.Time tau_hp_N2 = M_hp * cp_hp / G_hp_N2;
   parameter SI.Time tau_N2_hp = M_N2 * cp_N2 / G_hp_N2;
 
-  // N2 link to steam boundary uses G_N2_sg
-  parameter SI.Time tau_N2_sg = M_N2 * cp_N2 / G_N2_sg;
+  // Diagnostics for the new active SG node.
+  parameter SI.Time tau_N2_sg = M_N2 * cp_N2 / G_N2_sg
+    "N2 response time through N2-to-SG conductance [s]";
+  parameter SI.Time tau_sg_N2 = C_sg / G_N2_sg
+    "Active SG metal response time through N2-side conductance only [s]";
+  parameter SI.Time tau_sg_fw = C_sg / G_sg_fw
+    "Active SG metal response time through secondary-side conductance only [s]";
+  parameter SI.Time tau_sg_total = C_sg / (G_N2_sg + G_sg_fw)
+    "Approximate active SG metal small-signal time constant [s]";
 
-  // Precompute 1/(M_f*cp_f) because it’s used repeatedly in dTf/dt
+  // Precompute 1/(M_f*cp_f) because it is used repeatedly in dTf/dt.
   parameter Real inv_Mf_cp_f = 1.0 / (M_f * cp_f);
 
 
   // ---------- REACTIVITY FEEDBACK COEFFICIENTS ----------
   // These are temperature feedback coefficients in Δk/k per K.
-  // unit conversion: 1 pcm = 1e-5 Δk/k
-  // So -4.59 pcm/K -> -4.59e-5 Δk/k per K
+  // Unit conversion: 1 pcm = 1e-5 Δk/k.
   parameter Real alpha_f = -4.59e-5 "Fuel feedback [Δk/k per K]";
   parameter Real alpha_m = -2.21e-5 "Moderator feedback [Δk/k per K]";
 
@@ -176,26 +238,23 @@ model HPMicroPK
   // ---------- CONTROL DRUM WORTH ----------
   parameter Integer n_drums = 12;
 
-  // Total worth at full insertion/rotation
+  // Total worth at full insertion/rotation.
   // Given in pcm, converted to Δk/k with *1e-5 below.
   parameter Real rho_max_total_pcm = -13174;
 
-  // Distribute total worth evenly among drums (still in Δk/k after conversion).
-  // Note: this assumes all drums have identical worth.
+  // Distribute total worth evenly among drums.
   parameter Real rho_max_per_drum = (rho_max_total_pcm*1e-5)/n_drums;
 
-  // “Steady-state” angle used as the zero-reactivity reference point.
+  // Steady-state angle used as the zero-reactivity reference point.
   parameter Real u0 = 45.0 "Steady-state drum angle [deg]";
 
   // Drum worth curve (cosine) for a single drum:
   //   rho_drum(angle) = rho_max_per_drum * (1 - cos(angle))/2
-  //
-  // Evaluate it at u0 to get the steady-state reactivity contribution of one drum.
   parameter Real rho_ss_single =
     rho_max_per_drum * (1.0 - Modelica.Math.cos(Modelica.Constants.pi/180*u0)) / 2.0;
 
-  // Total steady-state drum reactivity (all drums), used to shift rho so that
-  // at (Tf0, Tm0, u0) the net reactivity is ~0.
+  // Total steady-state drum reactivity, used to shift rho so that
+  // at (Tf0, Tm0, u0) the net reactivity is approximately zero.
   parameter Real rho_ss_total = n_drums * rho_ss_single;
 
 
@@ -213,11 +272,15 @@ model HPMicroPK
   // Delayed neutron precursors (6 groups), initialized to steady state for n=1 and ρ=0.
   Real c[nGroups](start=C_ss, each fixed=true) "Delayed precursors";
 
-  // Thermal node temperatures [K], initialized at design temps.
-  SI.Temperature Tf(start=Tf0, fixed=true);
-  SI.Temperature Tm(start=Tm0, fixed=true);
-  SI.Temperature Thp(start=Thp0, fixed=true);
-  SI.Temperature TN2(start=TN0, fixed=true);
+  // Thermal node temperatures [K], initialized at design temperatures.
+  SI.Temperature Tf(start=Tf0, fixed=true) "Fuel temperature [K]";
+  SI.Temperature Tm(start=Tm0, fixed=true) "Moderator/graphite temperature [K]";
+  SI.Temperature Thp(start=Thp0, fixed=true) "Heat pipe effective temperature [K]";
+  SI.Temperature TN2(start=TN0, fixed=true) "Nitrogen loop average temperature [K]";
+
+  // Active steam-generator heat-transfer metal node.
+  SI.Temperature Tsg(start=Tsg0, fixed=true)
+    "Active SG heat-transfer metal temperature [K]";
 
 
   // ---------- OUTPUTS ----------
@@ -225,15 +288,33 @@ model HPMicroPK
   Real rho_drums "Drum reactivity contribution [Δk/k]";
   Real rho_fuel "Fuel temperature reactivity contribution [Δk/k]";
   Real rho_moderator "Moderator temperature reactivity contribution [Δk/k]";
-  Real rho_dollars "Reactivity [$]"; // rho/beta
+  Real rho_dollars "Reactivity [$]";
   Real rho_drums_dollars "Drum reactivity contribution [$]";
   Real rho_fuel_dollars "Fuel reactivity contribution [$]";
   Real rho_moderator_dollars "Moderator reactivity contribution [$]";
   SI.Power P "Thermal power [W]";
   Real P_MW "Thermal power [MW]";
 
-  SI.Power Q_to_steam "Heat available to generate 232C steam [W]";
-  SI.MassFlowRate m_dot_steam "Steam production rate [kg/s]";
+  // Steam-generator outlet quantities retained as public model variables.
+  // These are the only new SG quantities intended for extraction by RunOneProfile.
+  SI.Temperature T_steam_out
+    "Calculated outlet temperature at fixed pressure [K]";
+
+  Real x_steam_out(min=0.0, max=1.0)
+    "Outlet steam quality/dryness fraction [-]";
+
+protected
+  // Internal SG heat-transfer variables used to compute Tsg and outlet state.
+  // These are intentionally not exposed by RunOneProfile as LSTM targets.
+  SI.Power Q_N2_to_sg
+    "Internal heat transferred from nitrogen node to active SG metal [W]";
+
+  SI.Power Q_sg_to_fw
+    "Internal heat transferred from active SG metal to feedwater/steam stream [W]";
+
+  SI.SpecificEnthalpy q_sg_per_kg
+    "Internal specific heat addition to fixed feedwater stream [J/kg]";
+
 
 equation
   // -------------------------
@@ -246,20 +327,14 @@ equation
   // -------------------------
   // Reactivity model
   // -------------------------
-  // rho = (drum contribution relative to steady-state) + (fuel temp feedback) + (moderator temp feedback)
-  //
-  // Drum cosine worth:
-  //   rho_drums(angle) = n_drums * rho_max_per_drum * (1 - cos(angle))/2
-  //
-  // Subtract rho_ss_total so that at u0 and nominal temps, drum contribution is zeroed.
-  //
-  // Temperature feedback:
-  //   alpha_f*(Tf - Tf0) + alpha_m*(Tm - Tm0)
-  // Negative alphas mean hotter temps reduce reactivity (stabilizing feedback).
+  // rho = drum contribution relative to steady-state
+  //     + fuel temperature feedback
+  //     + moderator temperature feedback.
   rho_drums =
     n_drums * rho_max_per_drum *
     (1.0 - Modelica.Math.cos(Modelica.Constants.pi/180*drumAngleDeg)) / 2.0
     - rho_ss_total;
+
   rho_fuel = alpha_f*(Tf - Tf0);
   rho_moderator = alpha_m*(Tm - Tm0);
   rho = rho_drums + rho_fuel + rho_moderator;
@@ -288,11 +363,7 @@ equation
   // Thermal network ODEs
   // -------------------------
   // Each lump gets:
-  //   (source from reactor power deposition) + (heat exchange with neighbors)
-  //
-  // Signs:
-  // - (T_other - T_this)/tau is positive when other is hotter (heats this node)
-  // - negative when this node is hotter (cools this node)
+  //   reactor power deposition + heat exchange with neighboring nodes.
 
   // Fuel:
   //   - Receives heat_f * P
@@ -315,15 +386,61 @@ equation
     (Tm - Thp)/tau_hp_g
     + (TN2 - Thp)/tau_hp_N2;
 
-  // Heat transferred to steam boundary at T_steam_out
-  Q_to_steam = G_N2_sg*(TN2 - T_steam_out);
+  // -------------------------
+  // Steam-generator thermal node
+  // -------------------------
 
-  // Steam rate, heat available / enthalpy needed per kg
-  m_dot_steam = Q_to_steam / delta_h;
+  // Heat transferred from nitrogen loop to active SG metal.
+  Q_N2_to_sg = G_N2_sg*(TN2 - Tsg);
+
+  // Heat transferred from active SG metal to the secondary water/steam stream.
+  // The nonnegative clamp prevents reverse "steam production" if Tsg falls below
+  // saturation temperature. This is a simplified operational assumption intended
+  // for transients near nominal power.
+  Q_sg_to_fw =
+    noEvent(if G_sg_fw*(Tsg - T_sat_steam) > 0.0 then
+      G_sg_fw*(Tsg - T_sat_steam)
+    else
+      0.0);
+
+  // Active SG metal energy balance:
+  //   C_sg*dTsg/dt = heat from N2 - heat to water/steam.
+  der(Tsg) =
+    (Q_N2_to_sg - Q_sg_to_fw)/C_sg;
 
   // Nitrogen loop average node:
-  //   - Exchanges with heat pipe and steam boundary
+  //   - Exchanges with heat pipe
+  //   - Loses heat to active SG metal
   der(TN2) =
     (Thp - TN2)/tau_N2_hp
-    - Q_to_steam/(M_N2*cp_N2);
+    - Q_N2_to_sg/(M_N2*cp_N2);
+
+  // -------------------------
+  // Variable outlet steam condition at fixed pressure
+  // -------------------------
+
+  // Specific heat addition to the fixed feedwater stream.
+  q_sg_per_kg = Q_sg_to_fw / m_dot_fw;
+
+  // Outlet quality.
+  // If q_sg_per_kg < h_fg, the outlet is a wet saturated mixture.
+  // If q_sg_per_kg >= h_fg, the outlet is dry saturated or superheated.
+  x_steam_out =
+    noEvent(if q_sg_per_kg <= 0.0 then
+      0.0
+    elseif q_sg_per_kg < h_fg then
+      q_sg_per_kg/h_fg
+    else
+      1.0);
+
+  // Outlet temperature.
+  // Below dryout, temperature remains at saturation temperature.
+  // Above dryout, added heat becomes superheat.
+  T_steam_out =
+    noEvent(if q_sg_per_kg < h_fg then
+      T_sat_steam
+    else
+      T_sat_steam + (q_sg_per_kg - h_fg)/cp_sh_eff);
+
+
 end HPMicroPK;
