@@ -333,8 +333,8 @@ class LSTMDatasetScalerSplitter:
         }
 
     def _compute_stats(self, files_group: h5py.Group, split_payload: dict[str, np.ndarray | None]) -> dict:
-        x_stats = _init_stats(self.scaling_type, features=14)
-        y_stats = _init_stats(self.scaling_type, features=13)
+        x_stats: dict | None = None
+        y_stats: dict | None = None
 
         for key, selected_indices in split_payload.items():
             file_group = files_group[key]
@@ -345,9 +345,15 @@ class LSTMDatasetScalerSplitter:
                 y_data = y_data[selected_indices]
             x_flat = x_data.reshape(-1, x_data.shape[-1])
             y_flat = y_data.reshape(-1, y_data.shape[-1])
+            if x_stats is None:
+                x_stats = _init_stats(self.scaling_type, features=x_flat.shape[-1])
+            if y_stats is None:
+                y_stats = _init_stats(self.scaling_type, features=y_flat.shape[-1])
             x_stats = _update_stats(self.scaling_type, x_stats, x_flat)
             y_stats = _update_stats(self.scaling_type, y_stats, y_flat)
 
+        if x_stats is None or y_stats is None:
+            raise ValueError("No samples available to compute scaling statistics.")
         return {"x": _finalize_stats(self.scaling_type, x_stats), "y": _finalize_stats(self.scaling_type, y_stats)}
 
     def _write_metadata(

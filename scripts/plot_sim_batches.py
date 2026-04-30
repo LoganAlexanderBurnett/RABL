@@ -7,11 +7,13 @@ import pandas as pd
 
 PLOT_VARS = [
     "drumAngleDeg",
-    "drumVelDeg_s",
     "TN2",
     "Tm",
     "Thp",
     "Tf",
+    "Tsg",
+    "T_steam_out",
+    "x_steam_out",
     "c[1]",
     "c[2]",
     "c[3]",
@@ -20,12 +22,6 @@ PLOT_VARS = [
     "c[6]",
     "P_MW",
     "rho_dollars",
-    "rho_drums_dollars",
-    "rho_fuel_dollars",
-    "rho_moderator_dollars",
-    "Tsg",
-    "T_steam_out",
-    "x_steam_out",
 ]
 
 
@@ -34,7 +30,6 @@ PLOT_VARS = [
 # -------------------------------------------------------------------------
 COLOR_MAP = {
     "drumAngleDeg": "black",
-    "drumVelDeg_s": "black",
 
     # Temperatures (red)
     "TN2": "#d62728",
@@ -60,7 +55,7 @@ COLOR_MAP = {
     "rho_moderator_dollars": "#ff7f0e",
 
     # SG outputs
-    "Tsg": "#9467bd",
+    "Tsg": "#d62728",
     "T_steam_out": "#8c564b",
     "x_steam_out": "#7f7f7f",
 }
@@ -120,9 +115,9 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
     for p in results_csvs:
         dfs.append((p.stem, _read_results_csv(p)))
 
-    rows = 3
-    cols = 6
-    fig, axes = plt.subplots(rows, cols, figsize=(30, 12), sharex=True)
+    rows = 4
+    cols = 4
+    fig, axes = plt.subplots(rows, cols, figsize=(24, 16), sharex=True)
     axes = axes.flatten()
 
     for ax, var in zip(axes, PLOT_VARS, strict=False):
