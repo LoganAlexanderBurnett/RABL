@@ -26,7 +26,7 @@ def _load_bagging_module():
     sys.modules["rabl.machine_learning.branchpoint_finder"] = fake_branch
 
     fake_lstm = types.ModuleType("rabl.machine_learning.lstm_pipeline")
-    fake_lstm.STATE_DIM = 13
+    fake_lstm.STATE_DIM = 15
     fake_lstm.TARGET_NAMES = []
     fake_lstm.ProfileDataset = object
     fake_lstm.SampleDataset = object

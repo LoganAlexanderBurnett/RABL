@@ -12,6 +12,7 @@ STATE_COLUMNS = (
     "Tm",
     "Thp",
     "Tf",
+    "Tsg",
     "c[1]",
     "c[2]",
     "c[3]",
@@ -20,7 +21,8 @@ STATE_COLUMNS = (
     "c[6]",
     "n",
     "rho_dollars",
-    "Q_to_steam",
+    "T_steam_out",
+    "x_steam_out",
 )
 CONTROL_COLUMN = "drumAngleDeg"
 CSV_PATTERN = "results_drum_profile_*.csv"

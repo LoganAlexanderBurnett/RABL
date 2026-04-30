@@ -1,4 +1,4 @@
-"""Create an animation that visualizes autoregressive rolling forecasts on a 2x7 grid."""
+"""Create an animation that visualizes autoregressive rolling forecasts on a 3x5 grid."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.lines import Line2D
 import numpy as np
 
-FIGSIZE_2X7 = (26, 8)
+BASE_COLS = 5
 
 
 def _decode_columns(columns_attr: np.ndarray | list[object]) -> list[str]:
@@ -87,8 +87,11 @@ def save_autoregressive_forecast_video(
     video_dpi: int,
     frame_stride: int,
 ) -> None:
-    fig, axes = plt.subplots(2, 7, figsize=FIGSIZE_2X7, sharex=True)
-    axes_flat = axes.flatten()
+    nplots = len(target_names) + 1
+    cols = BASE_COLS
+    rows = int(np.ceil(nplots / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(24, 4 * rows), sharex=True)
+    axes_flat = np.atleast_1d(axes).flatten()
 
     input_color = "crimson"
     output_color = "royalblue"
@@ -187,7 +190,7 @@ def save_autoregressive_forecast_video(
             ax.set_ylim(*state_lims[target_idx])
             ax.grid(True, alpha=0.3)
 
-        for idx in range(7, 14):
+        for idx in range(max(0, nplots - cols), nplots):
             axes_flat[idx].set_xlabel("Time step")
 
         fig.suptitle(
@@ -228,7 +231,7 @@ def save_autoregressive_forecast_video(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Load rolling_forecasts.h5 and create a 2x7 GIF showing autoregressive "
+            "Load rolling_forecasts.h5 and create a 3x5 GIF showing autoregressive "
             "forecasting with per-frame input window and output prediction coloring."
         )
     )

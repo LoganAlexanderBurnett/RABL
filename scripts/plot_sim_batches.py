@@ -23,7 +23,9 @@ PLOT_VARS = [
     "rho_drums_dollars",
     "rho_fuel_dollars",
     "rho_moderator_dollars",
-    "Q_to_steam",
+    "Tsg",
+    "T_steam_out",
+    "x_steam_out",
 ]
 
 
@@ -57,8 +59,10 @@ COLOR_MAP = {
     "rho_fuel_dollars": "#2ca02c",
     "rho_moderator_dollars": "#ff7f0e",
 
-    # Q_to_steam in gray
-    "Q_to_steam": "#7f7f7f",
+    # SG outputs
+    "Tsg": "#9467bd",
+    "T_steam_out": "#8c564b",
+    "x_steam_out": "#7f7f7f",
 }
 
 

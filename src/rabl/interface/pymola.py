@@ -53,7 +53,7 @@ class BatchConfig:
         "c[1]", "c[2]", "c[3]", "c[4]", "c[5]", "c[6]",
         "P_MW", "n", "dn", "rho_dollars",
         "rho_drums_dollars", "rho_fuel_dollars", "rho_moderator_dollars",
-        "m_dot_steam", "Q_to_steam",
+        "Tsg", "T_steam_out", "x_steam_out",
     )
 
 

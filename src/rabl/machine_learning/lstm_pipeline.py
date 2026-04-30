@@ -86,16 +86,17 @@ def _init_io_stats() -> dict[str, float]:
 # Defaults / naming
 # --------------------------------------------------------------------------------------
 
-STATE_DIM = 13
+STATE_DIM = 15
 DEFAULT_BATCH_SIZE = 64
 DEFAULT_EPOCHS = 100
 
-# The 13 targets you are predicting (y has shape (num_steps, 13))
+# The 15 targets you are predicting (y has shape (num_steps, 15))
 TARGET_NAMES: list[str] = [
     "TN2",
     "Tm",
     "Thp",
     "Tf",
+    "Tsg",
     "c[1]",
     "c[2]",
     "c[3]",
@@ -104,7 +105,8 @@ TARGET_NAMES: list[str] = [
     "c[6]",
     "n",
     "rho_dollars",
-    "Q_to_steam",
+    "T_steam_out",
+    "x_steam_out",
 ]
 
 
@@ -1438,7 +1440,7 @@ def plot_forecast_vs_truth_grid(
     close_figure: bool = True,
 ) -> plt.Figure:
     """
-    2x7 grid (14 plots total):
+    Grid includes control + all targets.
       - [0] control profile across all forecast steps
       - remaining 13 plots: each target (truth + pred)
 
@@ -1474,8 +1476,11 @@ def plot_forecast_vs_truth_grid(
     control_idx = state_dim + control_channel
     control_series = x_profile[:, -1, control_idx]  # (num_steps,)
 
-    fig, axes = plt.subplots(2, 7, figsize=(26, 7))
-    axes = axes.ravel()
+    nplots = num_targets + 1
+    cols = 5
+    rows = ceil(nplots / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(24, 4 * rows))
+    axes = np.atleast_1d(axes).ravel()
 
     # Control plot (top-left)
     ax0 = axes[0]
@@ -1486,7 +1491,7 @@ def plot_forecast_vs_truth_grid(
     ax0.grid(True)
     ax0.legend(loc="best")
 
-    # 13 target plots
+    # Target plots
     for i in range(num_targets):
         ax = axes[i + 1]
         name = target_names[i]
@@ -1625,8 +1630,11 @@ def _plot_ensemble_forecast_vs_truth_grid(
         control_channel=control_channel,
     )
 
-    fig, axes = plt.subplots(2, 7, figsize=(26, 8), sharex=True)
-    axes_flat = axes.flatten()
+    nplots = num_targets + 1
+    cols = 5
+    rows = ceil(nplots / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(24, 4 * rows), sharex=True)
+    axes_flat = np.atleast_1d(axes).flatten()
 
     axes_flat[0].plot(t_series, control_series, linewidth=1.5, color="black")
     axes_flat[0].set_title(control_name)
@@ -1660,7 +1668,7 @@ def _plot_ensemble_forecast_vs_truth_grid(
         ax.set_title(target_name)
         ax.grid(True, alpha=0.3)
 
-    for idx in range(7, 14):
+    for idx in range(max(0, nplots - cols), nplots):
         axes_flat[idx].set_xlabel("Time (s)")
     axes_flat[0].set_ylabel(control_name)
     for idx, target_name in enumerate(target_names, start=1):
@@ -1794,7 +1802,7 @@ def save_forecast_profiles_pdf(
     derivative_dt: float = 1.0,
 ) -> None:
     """
-    Render one 2x7 forecast-vs-truth page per profile from a forecast HDF5 file.
+    Render one 3x5 forecast-vs-truth page per profile from a forecast HDF5 file.
 
     Supported per-profile HDF5 schemas are:
       * Single-model schema from :func:`test_and_save_forecasts`:

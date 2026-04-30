@@ -157,7 +157,7 @@ def plot_scaled_features(
                 for x_data, y_data in split_profiles
             ]
 
-    fig, axes = plt.subplots(7, 2, figsize=(12, 18), sharex=False)
+    fig, axes = plt.subplots(3, 5, figsize=(14, 12), sharex=False)
     axes = axes.flatten()
 
     for idx, ax in enumerate(axes):
@@ -183,7 +183,7 @@ def plot_scaled_features(
     fig.savefig(output_path, dpi=200)
     plt.close(fig)
 
-    profile_fig, profile_axes = plt.subplots(7, 2, figsize=(12, 18), sharex=False)
+    profile_fig, profile_axes = plt.subplots(3, 5, figsize=(14, 12), sharex=False)
     profile_axes = profile_axes.flatten()
     for idx, ax in enumerate(profile_axes):
         for split, color in zip(splits, ("red", "yellow", "green"), strict=False):
@@ -205,7 +205,7 @@ def plot_scaled_features(
     profile_fig.savefig(profile_output, dpi=200)
     plt.close(profile_fig)
 
-    descaled_fig, descaled_axes = plt.subplots(7, 2, figsize=(12, 18), sharex=False)
+    descaled_fig, descaled_axes = plt.subplots(3, 5, figsize=(14, 12), sharex=False)
     descaled_axes = descaled_axes.flatten()
     for idx, ax in enumerate(descaled_axes):
         for split, color in zip(splits, ("red", "yellow", "green"), strict=False):

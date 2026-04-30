@@ -12,7 +12,7 @@ import numpy as np
 from rabl.machine_learning.bagging_ensemble import TARGET_NAMES
 from rabl.machine_learning.branchpoint_finder import finite_difference
 
-FIGSIZE_2X7 = (26, 8)
+BASE_COLS = 5
 
 
 def _decode_columns(columns_attr: np.ndarray | list[object]) -> list[str]:
@@ -40,8 +40,11 @@ def _plot_overlay_grid(
     y_upper = y_mean + y_2sigma
     y_lower = y_mean - y_2sigma
 
-    fig, axes = plt.subplots(2, 7, figsize=FIGSIZE_2X7, sharex=True)
-    axes_flat = axes.flatten()
+    nplots = len(target_names) + 1
+    cols = BASE_COLS
+    rows = int(np.ceil(nplots / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(24, 4 * rows), sharex=True)
+    axes_flat = np.atleast_1d(axes).flatten()
 
     axes_flat[0].plot(t_series, u_series, linewidth=1.5, color="black")
     axes_flat[0].set_title("drumAngleDeg")
@@ -89,7 +92,7 @@ def _plot_overlay_grid(
     for ax in axes_flat:
         ax.set_xlim(x_min, x_max)
 
-    for idx in range(7, 14):
+    for idx in range(max(0, nplots - cols), nplots):
         axes_flat[idx].set_xlabel("Time step")
 
     handles_left, labels_left = axes_flat[1].get_legend_handles_labels()

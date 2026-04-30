@@ -21,6 +21,7 @@ TOY_SCALE_FACTORS = (
     1.25,
     -2.0,
     0.25,
+    1.1,
 )
 K = 3
 
@@ -165,7 +166,7 @@ def main() -> None:
     output_dir = repo_root / "outputs" / "datasets"
 
     if len(TOY_SCALE_FACTORS) != len(build_lstm_dataset.STATE_COLUMNS):
-        raise SystemExit("TOY_SCALE_FACTORS must have 13 entries to match STATE_COLUMNS.")
+        raise SystemExit("TOY_SCALE_FACTORS length must match STATE_COLUMNS.")
 
     generated = _generate_toy_results(variography_dir, toy_batch_dir)
     print(f"Generated {len(generated)} toy results CSVs in {toy_batch_dir}")

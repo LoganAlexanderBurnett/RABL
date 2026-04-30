@@ -445,11 +445,11 @@ def plot_ensemble_forecast_profile_grid(
     close_figure: bool = True,
 ) -> plt.Figure:
     """
-    Plot one ensemble forecast profile in a 2x7 grid.
+    Plot one ensemble forecast profile in a control+target grid.
 
     Grid layout mirrors the existing pipeline visualization style:
       - subplot [0,0]: control variable u(t)
-      - remaining 13 subplots: state targets with ground truth, mean prediction,
+      - remaining target subplots: state targets with ground truth, mean prediction,
         and mean ± 2sigma uncertainty bounds.
     """
     if target_names is None:
@@ -489,8 +489,11 @@ def plot_ensemble_forecast_profile_grid(
     y_upper = y_mean + y_2sigma
     y_lower = y_mean - y_2sigma
 
-    fig, axes = plt.subplots(2, 7, figsize=(26, 8), sharex=True)
-    axes_flat = axes.flatten()
+    nplots = len(target_names) + 1
+    cols = 5
+    rows = ceil(nplots / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(24, 4 * rows), sharex=True)
+    axes_flat = np.atleast_1d(axes).flatten()
 
     axes_flat[0].plot(t_series, u_series, linewidth=1.5, color="black")
     axes_flat[0].set_title(control_name)
@@ -527,7 +530,7 @@ def plot_ensemble_forecast_profile_grid(
         ax.set_title(target_name)
         ax.grid(True, alpha=0.3)
 
-    for idx in range(7, 14):
+    for idx in range(max(0, nplots - cols), nplots):
         axes_flat[idx].set_xlabel("Time (s)")
     axes_flat[0].set_ylabel(control_name)
     for idx, target_name in enumerate(target_names, start=1):

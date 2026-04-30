@@ -64,7 +64,9 @@ PLOT_VARS = [
     "rho_drums_dollars",
     "rho_fuel_dollars",
     "rho_moderator_dollars",
-    "Q_to_steam",
+    "Tsg",
+    "T_steam_out",
+    "x_steam_out",
 ]
 
 
