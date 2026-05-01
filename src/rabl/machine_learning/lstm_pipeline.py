@@ -1975,7 +1975,6 @@ def save_forecast_profiles_pdf(
 
 
 def compute_and_save_rolling_forecast_metrics(
-    *,
     forecast_h5_path: Path,
     output_json_path: Path,
 ) -> dict[str, Any]:
