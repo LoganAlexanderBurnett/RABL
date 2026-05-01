@@ -35,6 +35,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional JSON manifest with fixed test profile keys.",
     )
     parser.add_argument(
+        "--val-manifest",
+        dest="val_manifest",
+        type=Path,
+        default=None,
+        help="Optional JSON manifest with fixed validation profile keys.",
+    )
+    parser.add_argument(
         "--test-count",
         dest="test_count",
         type=int,
@@ -62,8 +69,12 @@ def main() -> None:
         raise SystemExit(f"Expected an .h5 file, got: {input_path}")
     if args.test_manifest is not None and args.test_count is not None:
         raise SystemExit("--test-manifest is mutually exclusive with --test-count.")
+    if args.val_manifest is not None and args.test_count is not None:
+        raise SystemExit("--val-manifest is mutually exclusive with --test-count.")
     if args.save_test_manifest is not None and args.test_manifest is not None:
         raise SystemExit("--save-test-manifest cannot be used with --test-manifest.")
+    if args.save_test_manifest is not None and args.val_manifest is not None:
+        raise SystemExit("--save-test-manifest cannot be used with --val-manifest.")
     if args.save_test_manifest is not None and args.test_count is None:
         raise SystemExit("--save-test-manifest requires --test-count.")
 
@@ -72,6 +83,7 @@ def main() -> None:
         scaling_type=args.scaling_type,
         split_mode=args.split_mode,
         test_manifest_path=args.test_manifest,
+        val_manifest_path=args.val_manifest,
         test_count=args.test_count,
         save_test_manifest_path=args.save_test_manifest,
     )

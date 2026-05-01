@@ -41,6 +41,7 @@ class LSTMDatasetScalerSplitter:
         seed: int = 123,
         split_mode: SplitMode = "sample",
         test_manifest_path: Path | None = None,
+        val_manifest_path: Path | None = None,
         test_count: int | None = None,
         save_test_manifest_path: Path | None = None,
     ) -> None:
@@ -52,6 +53,7 @@ class LSTMDatasetScalerSplitter:
         self.seed = seed
         self.split_mode = split_mode
         self.test_manifest_path = Path(test_manifest_path) if test_manifest_path else None
+        self.val_manifest_path = Path(val_manifest_path) if val_manifest_path else None
         self.test_count = test_count
         self.save_test_manifest_path = (
             Path(save_test_manifest_path) if save_test_manifest_path else None
@@ -64,7 +66,7 @@ class LSTMDatasetScalerSplitter:
             raise ValueError("scaling_type must be 'standard', 'minmax', or 'none'.")
         if self.split_mode not in ("profile", "sample"):
             raise ValueError("split_mode must be 'profile' or 'sample'.")
-        if self.test_manifest_path is None and self.test_count is None:
+        if self.test_manifest_path is None and self.val_manifest_path is None and self.test_count is None:
             self.splits.validate()
         else:
             if self.splits.train <= 0 or self.splits.val <= 0:
@@ -122,7 +124,10 @@ class LSTMDatasetScalerSplitter:
         rng: np.random.Generator,
     ) -> tuple[dict[str, dict[str, np.ndarray | None]], dict[str, list[str] | str | int]]:
         if self.test_manifest_path is not None:
-            return self._build_split_payload_from_manifest(files_group, file_keys, rng)
+            return self._build_split_payload_from_manifests(files_group, file_keys, rng)
+
+        if self.val_manifest_path is not None:
+            return self._build_split_payload_from_manifests(files_group, file_keys, rng)
 
         if self.test_count is not None:
             return self._build_split_payload_from_count(files_group, file_keys, rng)
@@ -184,34 +189,54 @@ class LSTMDatasetScalerSplitter:
             split_definition,
         )
 
-    def _build_split_payload_from_manifest(
+    def _build_split_payload_from_manifests(
         self,
         files_group: h5py.Group,
         file_keys: list[str],
         rng: np.random.Generator,
     ) -> tuple[dict[str, dict[str, np.ndarray | None]], dict[str, list[str] | str | int]]:
-        if self.test_manifest_path is None:
-            raise ValueError("test_manifest_path must be provided for manifest split strategy.")
-        if not self.test_manifest_path.exists():
-            raise FileNotFoundError(f"Test manifest not found: {self.test_manifest_path}")
+        test_keys: list[str] = []
+        val_keys: list[str] = []
+        meta: dict[str, list[str] | str | int] = {}
 
-        data = json.loads(self.test_manifest_path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("Test manifest must be a JSON object.")
-        test_profiles = data.get("test_profiles")
-        if not isinstance(test_profiles, list):
-            raise ValueError("Test manifest must contain list field: test_profiles.")
+        if self.test_manifest_path is not None:
+            if not self.test_manifest_path.exists():
+                raise FileNotFoundError(f"Test manifest not found: {self.test_manifest_path}")
+            data = json.loads(self.test_manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("Test manifest must be a JSON object.")
+            test_profiles = data.get("test_profiles")
+            if not isinstance(test_profiles, list):
+                raise ValueError("Test manifest must contain list field: test_profiles.")
+            test_keys = [str(key) for key in test_profiles]
+            self._validate_fixed_test_split(file_keys, test_keys)
+            meta["test_manifest_path"] = str(self.test_manifest_path)
 
-        test_keys = [str(key) for key in test_profiles]
-        self._validate_fixed_test_split(file_keys, test_keys)
+        if self.val_manifest_path is not None:
+            if not self.val_manifest_path.exists():
+                raise FileNotFoundError(f"Val manifest not found: {self.val_manifest_path}")
+            data = json.loads(self.val_manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("Val manifest must be a JSON object.")
+            val_profiles = data.get("val_profiles")
+            if not isinstance(val_profiles, list):
+                raise ValueError("Val manifest must contain list field: val_profiles.")
+            val_keys = [str(key) for key in val_profiles]
+            self._validate_fixed_test_split(file_keys, val_keys)
+            meta["val_manifest_path"] = str(self.val_manifest_path)
 
-        return self._build_split_with_fixed_test(
+        overlap = sorted(set(test_keys).intersection(val_keys))
+        if overlap:
+            raise ValueError(f"Test and val manifests overlap: {overlap[:10]}")
+
+        return self._build_split_with_fixed_splits(
             files_group=files_group,
             file_keys=file_keys,
             test_keys=test_keys,
+            val_keys=val_keys,
             rng=rng,
             split_strategy="fixed_manifest",
-            extra_meta={"test_manifest_path": str(self.test_manifest_path)},
+            extra_meta=meta,
         )
 
     def _build_split_payload_from_count(
@@ -248,10 +273,11 @@ class LSTMDatasetScalerSplitter:
                 encoding="utf-8",
             )
             extra_meta["test_manifest_path"] = str(self.save_test_manifest_path)
-        return self._build_split_with_fixed_test(
+        return self._build_split_with_fixed_splits(
             files_group=files_group,
             file_keys=file_keys,
             test_keys=test_keys,
+            val_keys=[],
             rng=rng,
             split_strategy="fixed_count",
             extra_meta=extra_meta,
@@ -266,23 +292,34 @@ class LSTMDatasetScalerSplitter:
         if not test_keys:
             raise ValueError("Manifest test_profiles is empty.")
 
-    def _build_split_with_fixed_test(
+    def _build_split_with_fixed_splits(
         self,
         files_group: h5py.Group,
         file_keys: list[str],
         test_keys: list[str],
+        val_keys: list[str],
         rng: np.random.Generator,
         *,
         split_strategy: str,
         extra_meta: dict[str, list[str] | str | int] | None = None,
     ) -> tuple[dict[str, dict[str, np.ndarray | None]], dict[str, list[str] | str | int]]:
         test_set = set(test_keys)
-        train_val_keys = [key for key in file_keys if key not in test_set]
-        if not train_val_keys:
+        val_set = set(val_keys)
+        train_pool_keys = [key for key in file_keys if key not in test_set and key not in val_set]
+        if not train_pool_keys:
             raise ValueError("Fixed test selection leaves no profiles for train/val.")
 
-        if self.split_mode == "profile":
-            shuffled = list(rng.permutation(train_val_keys))
+        if val_keys:
+            train_keys = list(train_pool_keys)
+            if not train_keys:
+                raise ValueError("Fixed test split produced empty train or val split.")
+            payload = {
+                "train": {key: None for key in train_keys},
+                "val": {key: None for key in val_keys},
+                "test": {key: None for key in test_keys},
+            }
+        elif self.split_mode == "profile":
+            shuffled = list(rng.permutation(train_pool_keys))
             train_end = int(len(shuffled) * (self.splits.train / (self.splits.train + self.splits.val)))
             train_keys = shuffled[:train_end]
             val_keys = shuffled[train_end:]
@@ -295,7 +332,7 @@ class LSTMDatasetScalerSplitter:
             }
         else:
             sample_entries: list[tuple[str, int]] = []
-            for key in train_val_keys:
+            for key in train_pool_keys:
                 num_samples = int(files_group[key]["X"].shape[0])
                 sample_entries.extend((key, idx) for idx in range(num_samples))
             if not sample_entries:
@@ -375,6 +412,9 @@ class LSTMDatasetScalerSplitter:
         if split_strategy == "fixed_manifest":
             dst_h5f.attrs["test_manifest_path"] = str(
                 split_definition.get("test_manifest_path", "")
+            )
+            dst_h5f.attrs["val_manifest_path"] = str(
+                split_definition.get("val_manifest_path", "")
             )
         if split_strategy == "fixed_count":
             dst_h5f.attrs["split_seed"] = int(split_definition.get("split_seed", self.seed))
