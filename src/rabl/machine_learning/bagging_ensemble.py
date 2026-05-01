@@ -15,6 +15,7 @@ from .branchpoint_finder import finite_difference
 from torch.utils.data import DataLoader
 
 from .lstm_pipeline import (
+    FORECAST_PLOT_TARGET_ORDER,
     STATE_DIM,
     TARGET_NAMES,
     ProfileDataset,
@@ -434,6 +435,22 @@ def _decode_columns(columns_attr: np.ndarray | list[Any]) -> list[str]:
     return decoded
 
 
+def _reorder_targets_for_plot(
+    target_names: list[str],
+    *arrays: np.ndarray | None,
+) -> tuple[list[str], list[np.ndarray | None]]:
+    index_by_name = {name: idx for idx, name in enumerate(target_names)}
+    ordered_names = [name for name in FORECAST_PLOT_TARGET_ORDER if name in index_by_name]
+    ordered_indices = [index_by_name[name] for name in ordered_names]
+    reordered: list[np.ndarray | None] = []
+    for arr in arrays:
+        if arr is None:
+            reordered.append(None)
+        else:
+            reordered.append(arr[:, ordered_indices])
+    return ordered_names, reordered
+
+
 def plot_ensemble_forecast_profile_grid(
     forecast_h5_path: Path,
     *,
@@ -485,14 +502,17 @@ def plot_ensemble_forecast_profile_grid(
         if (plot_uncertainty_derivative and has_derivative)
         else None
     )
+    target_names, reordered = _reorder_targets_for_plot(target_names, y_true, y_mean, y_2sigma, y_dsigma_dt)
+    y_true, y_mean, y_2sigma, y_dsigma_dt = reordered
 
     y_upper = y_mean + y_2sigma
     y_lower = y_mean - y_2sigma
 
     nplots = len(target_names) + 1
-    cols = 5
-    rows = ceil(nplots / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(24, 4 * rows), sharex=True)
+    rows, cols = 4, 4
+    if nplots > rows * cols:
+        raise ValueError(f"Plot requires {nplots} panels but 4x4 supports only 16.")
+    fig, axes = plt.subplots(rows, cols, figsize=(24, 16), sharex=True)
     axes_flat = np.atleast_1d(axes).flatten()
 
     axes_flat[0].plot(t_series, u_series, linewidth=1.5, color="black")
@@ -530,7 +550,7 @@ def plot_ensemble_forecast_profile_grid(
         ax.set_title(target_name)
         ax.grid(True, alpha=0.3)
 
-    for idx in range(max(0, nplots - cols), nplots):
+    for idx in range(nplots - cols, nplots):
         axes_flat[idx].set_xlabel("Time (s)")
     axes_flat[0].set_ylabel(control_name)
     for idx, target_name in enumerate(target_names, start=1):

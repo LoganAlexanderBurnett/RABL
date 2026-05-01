@@ -109,6 +109,41 @@ TARGET_NAMES: list[str] = [
     "x_steam_out",
 ]
 
+FORECAST_PLOT_TARGET_ORDER: list[str] = [
+    "Tf",
+    "Tm",
+    "Thp",
+    "TN2",
+    "Tsg",
+    "T_steam_out",
+    "x_steam_out",
+    "c[1]",
+    "c[2]",
+    "c[3]",
+    "c[4]",
+    "c[5]",
+    "c[6]",
+    "n",
+    "rho_dollars",
+]
+
+
+def _reorder_forecast_plot_targets(
+    target_names: list[str],
+    *arrays: np.ndarray | None,
+) -> tuple[list[str], list[np.ndarray | None]]:
+    """Reorder target names/columns for forecast plotting only."""
+    index_by_name = {name: idx for idx, name in enumerate(target_names)}
+    ordered_names = [name for name in FORECAST_PLOT_TARGET_ORDER if name in index_by_name]
+    ordered_indices = [index_by_name[name] for name in ordered_names]
+    reordered_arrays: list[np.ndarray | None] = []
+    for arr in arrays:
+        if arr is None:
+            reordered_arrays.append(None)
+        else:
+            reordered_arrays.append(arr[:, ordered_indices])
+    return ordered_names, reordered_arrays
+
 
 # --------------------------------------------------------------------------------------
 # Device selection
@@ -1423,7 +1458,7 @@ def inspect_dataset_shapes(datasets: dict[str, Any]) -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Plotting (2 x 7 grid)
+# Plotting
 # --------------------------------------------------------------------------------------
 
 def plot_forecast_vs_truth_grid(
@@ -1442,7 +1477,7 @@ def plot_forecast_vs_truth_grid(
     """
     Grid includes control + all targets.
       - [0] control profile across all forecast steps
-      - remaining 13 plots: each target (truth + pred)
+      - remaining target plots: each target (truth + pred)
 
     Control profile is extracted from x_profile windows as:
         control_series[step] = x_profile[step, -1, state_dim + control_channel]
@@ -1464,6 +1499,10 @@ def plot_forecast_vs_truth_grid(
     if len(target_names) != num_targets:
         raise ValueError(f"target_names must have length {num_targets}, got {len(target_names)}")
 
+    target_names, reordered = _reorder_forecast_plot_targets(target_names, y_true, y_pred)
+    y_true, y_pred = reordered
+    num_targets = len(target_names)
+
     control_dim = num_features - state_dim
     if control_dim <= 0:
         raise ValueError(
@@ -1477,9 +1516,10 @@ def plot_forecast_vs_truth_grid(
     control_series = x_profile[:, -1, control_idx]  # (num_steps,)
 
     nplots = num_targets + 1
-    cols = 5
-    rows = ceil(nplots / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(24, 4 * rows))
+    rows, cols = 4, 4
+    if nplots > rows * cols:
+        raise ValueError(f"Plot requires {nplots} panels but 4x4 supports only 16.")
+    fig, axes = plt.subplots(rows, cols, figsize=(24, 16))
     axes = np.atleast_1d(axes).ravel()
 
     # Control plot (top-left)
@@ -1618,6 +1658,10 @@ def _plot_ensemble_forecast_vs_truth_grid(
     if len(target_names) != num_targets:
         raise ValueError(f"target_names must have length {num_targets}, got {len(target_names)}")
 
+    target_names, reordered = _reorder_forecast_plot_targets(target_names, y_true, y_mean, y_2sigma, y_dsigma_dt)
+    y_true, y_mean, y_2sigma, y_dsigma_dt = reordered
+    num_targets = len(target_names)
+
     if t_series is None:
         t_series = np.arange(num_steps, dtype=np.float32)
     else:
@@ -1631,9 +1675,10 @@ def _plot_ensemble_forecast_vs_truth_grid(
     )
 
     nplots = num_targets + 1
-    cols = 5
-    rows = ceil(nplots / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(24, 4 * rows), sharex=True)
+    rows, cols = 4, 4
+    if nplots > rows * cols:
+        raise ValueError(f"Plot requires {nplots} panels but 4x4 supports only 16.")
+    fig, axes = plt.subplots(rows, cols, figsize=(24, 16), sharex=True)
     axes_flat = np.atleast_1d(axes).flatten()
 
     axes_flat[0].plot(t_series, control_series, linewidth=1.5, color="black")
@@ -1668,7 +1713,7 @@ def _plot_ensemble_forecast_vs_truth_grid(
         ax.set_title(target_name)
         ax.grid(True, alpha=0.3)
 
-    for idx in range(max(0, nplots - cols), nplots):
+    for idx in range(nplots - cols, nplots):
         axes_flat[idx].set_xlabel("Time (s)")
     axes_flat[0].set_ylabel(control_name)
     for idx, target_name in enumerate(target_names, start=1):
@@ -2043,6 +2088,14 @@ class LSTMPipeline:
             state_dim=self.config.state_dim,
             control_channel=self.config.control_channel,
         )
+
+    @staticmethod
+    def save_model_pt(model: nn.Module, output_path: Path) -> Path:
+        """Save model weights to a PyTorch .pt file."""
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(model.state_dict(), output_path)
+        return output_path
 
 
 # --------------------------------------------------------------------------------------
