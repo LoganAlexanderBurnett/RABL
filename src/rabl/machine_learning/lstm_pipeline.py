@@ -48,6 +48,7 @@ import os
 import random
 import gc
 import re
+import json
 
 import h5py
 import matplotlib.pyplot as plt
@@ -143,6 +144,14 @@ def _reorder_forecast_plot_targets(
         else:
             reordered_arrays.append(arr[:, ordered_indices])
     return ordered_names, reordered_arrays
+
+
+def _disable_y_offset_if_requested(ax: plt.Axes, target_name: str) -> None:
+    if target_name != "x_steam_out":
+        return
+    formatter = ax.yaxis.get_major_formatter()
+    if hasattr(formatter, "set_useOffset"):
+        formatter.set_useOffset(False)
 
 
 # --------------------------------------------------------------------------------------
@@ -1540,6 +1549,7 @@ def plot_forecast_vs_truth_grid(
         ax.set_title(name)
         ax.set_xlabel("Forecast step")
         ax.set_ylabel(name)
+        _disable_y_offset_if_requested(ax, name)
         ax.grid(True)
         ax.legend(fontsize=7, loc="best")
 
@@ -1711,6 +1721,7 @@ def _plot_ensemble_forecast_vs_truth_grid(
             )
             ax2.axhline(0.0, color="0.5", linewidth=0.9, linestyle="--", alpha=0.8)
         ax.set_title(target_name)
+        _disable_y_offset_if_requested(ax, target_name)
         ax.grid(True, alpha=0.3)
 
     for idx in range(nplots - cols, nplots):
@@ -1961,6 +1972,101 @@ def save_forecast_profiles_pdf(
                 plt.close(fig_deriv)
 
     print(f"Saved forecast PDF to: {output_pdf_path}")
+
+
+def compute_and_save_rolling_forecast_metrics(
+    *,
+    forecast_h5_path: Path,
+    output_json_path: Path,
+) -> dict[str, Any]:
+    """
+    Compute forecast metrics from rolling_forecasts.h5 for either:
+      - single-model schema: x(t)_*, x^~(t)_*
+      - ensemble schema: x_true(t)_*, x_mean(t)_*, x_2sigma(t)_*
+    """
+    forecast_h5_path = Path(forecast_h5_path)
+    output_json_path = Path(output_json_path)
+    output_json_path.parent.mkdir(parents=True, exist_ok=True)
+
+    y_true_all: list[np.ndarray] = []
+    y_pred_all: list[np.ndarray] = []
+    y_2sigma_all: list[np.ndarray] = []
+    horizon_rmse_chunks: list[np.ndarray] = []
+    horizon_mae_chunks: list[np.ndarray] = []
+    schema_mode: str | None = None
+    target_names: list[str] | None = None
+
+    with h5py.File(forecast_h5_path, "r") as h5f:
+        for profile_name in sorted(h5f.keys()):
+            group = h5f[profile_name]
+            table = group["data"][...].astype(np.float64)
+            cols = _decode_columns(group.attrs.get("columns", []))
+            mode, truth_cols, pred_cols, sigma_cols = _resolve_forecast_columns(
+                profile_name=profile_name,
+                columns=cols,
+                target_names=list(TARGET_NAMES),
+            )
+            if schema_mode is None:
+                schema_mode = mode
+                target_names = [c.split(")_", 1)[1] for c in truth_cols]
+            y_true = np.column_stack([table[:, cols.index(c)] for c in truth_cols])
+            y_pred = np.column_stack([table[:, cols.index(c)] for c in pred_cols])
+            y_true_all.append(y_true)
+            y_pred_all.append(y_pred)
+            err = y_pred - y_true
+            horizon_rmse_chunks.append(np.sqrt(np.mean(err**2, axis=1)))
+            horizon_mae_chunks.append(np.mean(np.abs(err), axis=1))
+            if sigma_cols:
+                y_2sigma = np.column_stack([table[:, cols.index(c)] for c in sigma_cols])
+                y_2sigma_all.append(y_2sigma)
+
+    if not y_true_all or schema_mode is None or target_names is None:
+        raise ValueError(f"No forecast profiles found in {forecast_h5_path}")
+
+    y_true_cat = np.concatenate(y_true_all, axis=0)
+    y_pred_cat = np.concatenate(y_pred_all, axis=0)
+    err = y_pred_cat - y_true_cat
+    abs_err = np.abs(err)
+
+    rmse_per_target = np.sqrt(np.mean(err**2, axis=0))
+    mae_per_target = np.mean(abs_err, axis=0)
+    bias_per_target = np.mean(err, axis=0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        y_range = np.nanmax(y_true_cat, axis=0) - np.nanmin(y_true_cat, axis=0)
+        nrmse_per_target = np.where(y_range > 0, rmse_per_target / y_range, np.nan)
+        smape_per_target = 200.0 * np.nanmean(abs_err / (np.abs(y_true_cat) + np.abs(y_pred_cat) + 1e-12), axis=0)
+
+    ss_res = np.sum((y_true_cat - y_pred_cat) ** 2, axis=0)
+    y_mean = np.mean(y_true_cat, axis=0)
+    ss_tot = np.sum((y_true_cat - y_mean) ** 2, axis=0)
+    r2_per_target = np.where(ss_tot > 0, 1.0 - ss_res / ss_tot, np.nan)
+
+    horizon_rmse = np.mean(np.stack(horizon_rmse_chunks, axis=0), axis=0)
+    horizon_mae = np.mean(np.stack(horizon_mae_chunks, axis=0), axis=0)
+
+    result: dict[str, Any] = {
+        "schema_mode": schema_mode,
+        "targets": target_names,
+        "smape": float(np.nanmean(smape_per_target)),
+        "nrmse": float(np.nanmean(nrmse_per_target)),
+        "per_target_rmse": {n: float(v) for n, v in zip(target_names, rmse_per_target, strict=True)},
+        "per_target_mae": {n: float(v) for n, v in zip(target_names, mae_per_target, strict=True)},
+        "per_target_bias": {n: float(v) for n, v in zip(target_names, bias_per_target, strict=True)},
+        "per_target_r2": {n: float(v) for n, v in zip(target_names, r2_per_target, strict=True)},
+        "horizon_mean_rmse": horizon_rmse.tolist(),
+        "horizon_mean_mae": horizon_mae.tolist(),
+    }
+
+    if schema_mode == "ensemble" and y_2sigma_all:
+        sigma95 = np.concatenate(y_2sigma_all, axis=0)
+        half_width = sigma95
+        cov95 = float(np.mean(abs_err <= half_width))
+        result["empirical_coverage_95"] = cov95
+        result["calibration_error_95"] = float(abs(cov95 - 0.95))
+        result["interval_width_95_mean"] = float(np.mean(2.0 * half_width))
+
+    output_json_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return result
 
 
 # --------------------------------------------------------------------------------------

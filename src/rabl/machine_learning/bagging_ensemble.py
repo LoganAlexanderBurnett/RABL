@@ -548,6 +548,10 @@ def plot_ensemble_forecast_profile_grid(
             )
             ax2.axhline(0.0, color="0.5", linewidth=0.9, linestyle="--", alpha=0.8)
         ax.set_title(target_name)
+        if target_name == "x_steam_out":
+            formatter = ax.yaxis.get_major_formatter()
+            if hasattr(formatter, "set_useOffset"):
+                formatter.set_useOffset(False)
         ax.grid(True, alpha=0.3)
 
     for idx in range(nplots - cols, nplots):
