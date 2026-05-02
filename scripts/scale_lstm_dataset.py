@@ -55,6 +55,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional path to save sampled test profile IDs as a reusable manifest.",
     )
+    parser.add_argument(
+        "--train-profile-limit-with-manifests",
+        dest="train_profile_limit_with_manifests",
+        type=int,
+        default=None,
+        help=(
+            "Only when both --test-manifest and --val-manifest are provided: "
+            "use only the first N remaining profiles for the train split."
+        ),
+    )
     return parser
 
 
@@ -77,6 +87,11 @@ def main() -> None:
         raise SystemExit("--save-test-manifest cannot be used with --val-manifest.")
     if args.save_test_manifest is not None and args.test_count is None:
         raise SystemExit("--save-test-manifest requires --test-count.")
+    if args.train_profile_limit_with_manifests is not None:
+        if args.test_manifest is None or args.val_manifest is None:
+            raise SystemExit(
+                "--train-profile-limit-with-manifests requires both --test-manifest and --val-manifest."
+            )
 
     splitter = LSTMDatasetScalerSplitter(
         input_path=input_path,
@@ -84,6 +99,7 @@ def main() -> None:
         split_mode=args.split_mode,
         test_manifest_path=args.test_manifest,
         val_manifest_path=args.val_manifest,
+        train_profile_limit_with_manifests=args.train_profile_limit_with_manifests,
         test_count=args.test_count,
         save_test_manifest_path=args.save_test_manifest,
     )

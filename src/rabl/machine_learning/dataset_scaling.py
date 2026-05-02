@@ -42,6 +42,7 @@ class LSTMDatasetScalerSplitter:
         split_mode: SplitMode = "sample",
         test_manifest_path: Path | None = None,
         val_manifest_path: Path | None = None,
+        train_profile_limit_with_manifests: int | None = None,
         test_count: int | None = None,
         save_test_manifest_path: Path | None = None,
     ) -> None:
@@ -54,6 +55,7 @@ class LSTMDatasetScalerSplitter:
         self.split_mode = split_mode
         self.test_manifest_path = Path(test_manifest_path) if test_manifest_path else None
         self.val_manifest_path = Path(val_manifest_path) if val_manifest_path else None
+        self.train_profile_limit_with_manifests = train_profile_limit_with_manifests
         self.test_count = test_count
         self.save_test_manifest_path = (
             Path(save_test_manifest_path) if save_test_manifest_path else None
@@ -71,6 +73,14 @@ class LSTMDatasetScalerSplitter:
         else:
             if self.splits.train <= 0 or self.splits.val <= 0:
                 raise ValueError("train_frac and val_frac must be positive when using fixed test splits.")
+        if self.train_profile_limit_with_manifests is not None:
+            if self.train_profile_limit_with_manifests < 1:
+                raise ValueError("train_profile_limit_with_manifests must be >= 1 when provided.")
+            if self.test_manifest_path is None or self.val_manifest_path is None:
+                raise ValueError(
+                    "train_profile_limit_with_manifests can only be used when both "
+                    "test_manifest_path and val_manifest_path are provided."
+                )
 
         output_path = self._resolve_output_path()
 
@@ -310,7 +320,9 @@ class LSTMDatasetScalerSplitter:
             raise ValueError("Fixed test selection leaves no profiles for train/val.")
 
         if val_keys:
-            train_keys = list(train_pool_keys)
+            train_keys = sorted(train_pool_keys)
+            if self.train_profile_limit_with_manifests is not None:
+                train_keys = train_keys[: self.train_profile_limit_with_manifests]
             if not train_keys:
                 raise ValueError("Fixed test split produced empty train or val split.")
             payload = {
@@ -355,6 +367,10 @@ class LSTMDatasetScalerSplitter:
             "val_profiles": sorted(payload["val"].keys()),
             "test_profiles": sorted(test_keys),
         }
+        if self.train_profile_limit_with_manifests is not None:
+            split_definition["train_profile_limit_with_manifests"] = int(
+                self.train_profile_limit_with_manifests
+            )
         if extra_meta:
             split_definition.update(extra_meta)
         return payload, split_definition
@@ -415,6 +431,9 @@ class LSTMDatasetScalerSplitter:
             )
             dst_h5f.attrs["val_manifest_path"] = str(
                 split_definition.get("val_manifest_path", "")
+            )
+            dst_h5f.attrs["train_profile_limit_with_manifests"] = int(
+                split_definition.get("train_profile_limit_with_manifests", 0)
             )
         if split_strategy == "fixed_count":
             dst_h5f.attrs["split_seed"] = int(split_definition.get("split_seed", self.seed))
