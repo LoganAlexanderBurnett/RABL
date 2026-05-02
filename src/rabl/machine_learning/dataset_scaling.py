@@ -82,8 +82,6 @@ class LSTMDatasetScalerSplitter:
                     "test_manifest_path and val_manifest_path are provided."
                 )
 
-        output_path = self._resolve_output_path()
-
         with h5py.File(self.input_path, "r") as h5f:
             files_group = h5f.get("files")
             if files_group is None:
@@ -94,6 +92,7 @@ class LSTMDatasetScalerSplitter:
 
             rng = np.random.default_rng(self.seed)
             split_payload, split_definition = self._build_split_payload(files_group, file_keys, rng)
+            output_path = self._resolve_output_path(split_definition)
             train_stats = self._compute_stats(files_group, split_payload["train"])
 
             with h5py.File(output_path, "w") as out_h5f:
@@ -104,7 +103,7 @@ class LSTMDatasetScalerSplitter:
 
         return output_path
 
-    def _resolve_output_path(self) -> Path:
+    def _resolve_output_path(self, split_definition: dict[str, list[str] | str | int]) -> Path:
         base_dir = self.output_dir or self.input_path.parents[2] / "datasets" / "scaled_split"
         base_dir = Path(base_dir)
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -112,10 +111,17 @@ class LSTMDatasetScalerSplitter:
             return base_dir / self.output_name
 
         stem = self.input_path.stem
-        name = (
-            f"{stem}_{self.scaling_type}_train{self.splits.train:.2f}"
-            f"_val{self.splits.val:.2f}_test{self.splits.test:.2f}.h5"
-        )
+        split_strategy = str(split_definition.get("split_strategy", "fractional"))
+        if split_strategy == "fractional":
+            split_suffix = (
+                f"train{self.splits.train:.2f}_val{self.splits.val:.2f}_test{self.splits.test:.2f}"
+            )
+        else:
+            n_train = len(split_definition.get("train_profiles", []))
+            n_val = len(split_definition.get("val_profiles", []))
+            n_test = len(split_definition.get("test_profiles", []))
+            split_suffix = f"train{n_train}profiles_val{n_val}profiles_test{n_test}profiles"
+        name = f"{stem}_{self.scaling_type}_{split_suffix}.h5"
         return base_dir / name
 
     def _split_keys(self, keys: np.ndarray) -> tuple[list[str], list[str], list[str]]:
