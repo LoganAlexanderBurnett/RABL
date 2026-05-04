@@ -141,7 +141,7 @@ model HPMicroPK
 
   // Active heat-transfer metal thermal capacitance.
   // Baseline from Sulzer/KVK active-tube metal area scaling.
-  parameter SI.HeatCapacity C_sg = 2.55e5
+  parameter SI.HeatCapacity C_sg = 8.775e5
     "Active steam-generator heat-transfer metal capacitance [J/K]";
 
 
