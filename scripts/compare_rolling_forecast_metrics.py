@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,23 @@ def _nan_if_missing(d: dict[str, Any], key: str) -> float:
         return float(val)
     except Exception:
         return float("nan")
+
+
+def _infer_train_profile_count(label: str, path: Path, d: dict[str, Any], fallback: int) -> int:
+    for candidate in (
+        str(d.get("train_profiles", "")),
+        str(d.get("num_train_profiles", "")),
+        label,
+        path.stem,
+        str(path),
+    ):
+        match = re.search(r"train(\d+)profiles", candidate, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        match = re.search(r"train[_-]?profiles[_-]?(\d+)", candidate, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return int(fallback)
 
 
 def main() -> None:
@@ -109,19 +127,28 @@ def main() -> None:
     axes[1, 1].set_xticks(x, series_labels, rotation=20, ha="right")
     axes[1, 1].grid(alpha=0.3)
 
-    # Horizon-wise curves
+    # Horizon-wise MAE curves, colored by train-profile count (plasma colormap)
     ax = axes[1, 2]
-    for label, d in zip(series_labels, datasets, strict=True):
-        rmse_h = np.asarray(d.get("horizon_mean_rmse", []), dtype=float)
+    train_profile_counts = [
+        _infer_train_profile_count(label, path, d, fallback=i)
+        for i, (label, path, d) in enumerate(zip(series_labels, args.metrics_json, datasets, strict=True))
+    ]
+    color_norm = plt.Normalize(vmin=min(train_profile_counts), vmax=max(train_profile_counts))
+    cmap = plt.cm.get_cmap("plasma")
+
+    for label, d, train_count in zip(series_labels, datasets, train_profile_counts, strict=True):
         mae_h = np.asarray(d.get("horizon_mean_mae", []), dtype=float)
-        if rmse_h.size:
-            ax.plot(np.arange(rmse_h.size), rmse_h, label=f"{label} RMSE", linewidth=1.4)
         if mae_h.size:
-            ax.plot(np.arange(mae_h.size), mae_h, linestyle="--", label=f"{label} MAE", linewidth=1.2)
-    ax.set_title("Horizon-wise Mean Error")
+            line_color = cmap(color_norm(train_count))
+            ax.plot(np.arange(mae_h.size), mae_h, label=label, linewidth=1.6, color=line_color)
+    ax.set_title("Horizon-wise MAE")
     ax.set_xlabel("Horizon step")
+    ax.set_ylabel("Mean Absolute Error")
     ax.grid(alpha=0.3)
     ax.legend(fontsize=8)
+    sm = plt.cm.ScalarMappable(norm=color_norm, cmap=cmap)
+    sm.set_array([])
+    fig.colorbar(sm, ax=ax, label="Training profiles used")
 
     fig.suptitle("Rolling Forecast Metrics Comparison", fontsize=15)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
