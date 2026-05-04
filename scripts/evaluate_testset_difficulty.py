@@ -15,6 +15,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = REPO_ROOT / "src"
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
@@ -340,6 +341,7 @@ def main() -> None:
     parser.add_argument("--dt", type=float, default=1.0, help="Timestep size for velocity estimate.")
     parser.add_argument("--config-path", type=Path, default=REPO_ROOT / "scripts" / "config.py")
     parser.add_argument("--include-per-target", action="store_true", help="Include per-target MAE/MSE columns.")
+    parser.add_argument("--num-workers", type=int, default=10, help="Number of worker threads for profile evaluation.")
     args = parser.parse_args()
 
     out_dir = args.out_dir
@@ -366,8 +368,7 @@ def main() -> None:
     rho_idx = TARGET_NAMES.index("rho_dollars")
     control_idx = state_dim  # first control channel (drumAngleDeg)
 
-    per_profile_rows: list[dict[str, Any]] = []
-    for profile_name, x_tensor, y_tensor in ProfileDataset(args.scaled_h5, test_profile_names, "test"):
+    def _evaluate_one(profile_name: str, x_tensor: Any, y_tensor: Any) -> dict[str, Any]:
         x_scaled = x_tensor.numpy()
         y_scaled = y_tensor.numpy()
 
@@ -406,7 +407,21 @@ def main() -> None:
                 row[f"MAE_{tgt}"] = float(np.mean(abs_err[:, idx]))
                 row[f"MSE_{tgt}"] = float(np.mean(sq_err[:, idx]))
 
-        per_profile_rows.append(row)
+        return row
+
+    per_profile_rows: list[dict[str, Any]] = []
+    entries = list(ProfileDataset(args.scaled_h5, test_profile_names, "test"))
+    if int(args.num_workers) <= 1:
+        for profile_name, x_tensor, y_tensor in entries:
+            per_profile_rows.append(_evaluate_one(profile_name, x_tensor, y_tensor))
+    else:
+        with ThreadPoolExecutor(max_workers=int(args.num_workers)) as executor:
+            futures = [
+                executor.submit(_evaluate_one, profile_name, x_tensor, y_tensor)
+                for profile_name, x_tensor, y_tensor in entries
+            ]
+            for fut in as_completed(futures):
+                per_profile_rows.append(fut.result())
 
     per_profile_csv = out_dir / "per_profile_metrics_and_difficulty.csv"
     fieldnames = list(per_profile_rows[0].keys())

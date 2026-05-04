@@ -95,6 +95,12 @@ def parse_args() -> argparse.Namespace:
         default=1e-3,
         help="Learning rate for the optimizer.",
     )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=10,
+        help="Number of worker threads for profile-level forecast evaluation.",
+    )
     return parser.parse_args()
 
 
@@ -130,7 +136,8 @@ def main() -> None:
         target_names=pipeline.config.target_names,
         max_plots=args.max_plots,
         plot_callback=pipeline.plot,
-        h5_path=args.h5_path
+        h5_path=args.h5_path,
+        num_workers=args.num_workers,
     )
 
     if "cuda" in str(used_device).lower():

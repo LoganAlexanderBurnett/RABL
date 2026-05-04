@@ -43,6 +43,7 @@ from math import ceil
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import os
 import random
@@ -1284,6 +1285,7 @@ def test_and_save_forecasts(
     plot_callback: Callable[..., None] | None = None,
     use_tqdm: bool = True,
     verbose: int = 1,
+    num_workers: int = 10,
 ) -> dict[str, float]:
     if target_names is None:
         target_names = list(TARGET_NAMES)
@@ -1299,22 +1301,12 @@ def test_and_save_forecasts(
         total_profiles = len(profile_ds)
     except TypeError:
         total_profiles = None
-    progress = _iter_with_optional_tqdm(
-        profile_ds,
-        use_tqdm=use_tqdm,
-        total=total_profiles,
-        desc="Forecast profiles",
-        unit="profile",
-    )
-    for profile_name, x_profile, y_profile in progress:
-        fetch_start = perf_counter()
-        fetch_times.append(perf_counter() - fetch_start)
-
+    def _forecast_single(profile_name: str, x_profile: torch.Tensor, y_profile: torch.Tensor) -> dict[str, Any]:
         x_np = x_profile.numpy()
         y_np = y_profile.numpy()
         inference_start = perf_counter()
         y_pred = rolling_forecast(model, x_np, state_dim=state_dim)
-        inference_times.append(perf_counter() - inference_start)
+        inference_time = perf_counter() - inference_start
 
         y_true = y_np
         y_pred_out = y_pred
@@ -1334,34 +1326,80 @@ def test_and_save_forecasts(
         denominator = np.where(np.abs(y_true) > 1e-8, np.abs(y_true), np.nan)
         mape = np.nanmean(abs_error / denominator, axis=0)
         mape = np.nan_to_num(mape, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32) * 100.0
+        return {
+            "profile": str(profile_name),
+            "table": table,
+            "mae": mae,
+            "rmse": rmse,
+            "mape": mape,
+            "x_np": x_np,
+            "y_true": y_true,
+            "y_pred_out": y_pred_out,
+            "inference_time": inference_time,
+        }
 
-        forecasts.append(
-            {
-                "profile": str(profile_name),
-                "table": table,
-                "mae": mae,
-                "rmse": rmse,
-                "mape": mape,
-            }
-        )
-        if plot_callback is not None and len(forecasts) <= max_plots:
-            save_path = out_dir / f"rolling_forecast_{profile_name}.png"
-            x_plot = x_np
-            if scaling_stats is not None:
-                control_idx = state_dim + control_channel
-                x_plot = x_np.copy()
-                x_plot[:, :, control_idx] = _descale_feature_from_stats(
-                    scaling_stats, x_plot[:, :, control_idx], control_idx
+    progress = _iter_with_optional_tqdm(
+        use_tqdm=use_tqdm,
+        iterable=range(total_profiles or 0),
+        total=total_profiles,
+        desc="Forecast profiles",
+        unit="profile",
+    )
+    if num_workers <= 1:
+        iterator = profile_ds
+        for profile_name, x_profile, y_profile in iterator:
+            rec = _forecast_single(profile_name, x_profile, y_profile)
+            inference_times.append(rec.pop("inference_time"))
+            forecasts.append({k: rec[k] for k in ("profile", "table", "mae", "rmse", "mape")})
+            if use_tqdm and hasattr(progress, "update"):
+                progress.update(1)
+            if plot_callback is not None and len(forecasts) <= max_plots:
+                save_path = out_dir / f"rolling_forecast_{profile_name}.png"
+                x_plot = rec["x_np"]
+                if scaling_stats is not None:
+                    control_idx = state_dim + control_channel
+                    x_plot = x_plot.copy()
+                    x_plot[:, :, control_idx] = _descale_feature_from_stats(
+                        scaling_stats, x_plot[:, :, control_idx], control_idx
+                    )
+                plot_callback(
+                    x_profile=x_plot,
+                    y_true=rec["y_true"],
+                    y_pred=rec["y_pred_out"],
+                    title=f"Rolling Forecast - {profile_name}",
+                    save_path=save_path,
                 )
-            plot_callback(
-                x_profile=x_plot,
-                y_true=y_true,
-                y_pred=y_pred_out,
-                title=f"Rolling Forecast - {profile_name}",
-                save_path=save_path,
-            )
-        if use_tqdm and hasattr(progress, "set_postfix"):
-            progress.set_postfix(mae_avg=f"{float(np.mean(mae)):.6e}")
+    else:
+        with ThreadPoolExecutor(max_workers=int(num_workers)) as executor:
+            futures = [
+                executor.submit(_forecast_single, profile_name, x_profile, y_profile)
+                for profile_name, x_profile, y_profile in profile_ds
+            ]
+            for fut in as_completed(futures):
+                rec = fut.result()
+                inference_times.append(rec.pop("inference_time"))
+                forecasts.append({k: rec[k] for k in ("profile", "table", "mae", "rmse", "mape")})
+                if use_tqdm and hasattr(progress, "update"):
+                    progress.update(1)
+                if plot_callback is not None and len(forecasts) <= max_plots:
+                    profile_name = str(rec["profile"])
+                    save_path = out_dir / f"rolling_forecast_{profile_name}.png"
+                    x_plot = rec["x_np"]
+                    if scaling_stats is not None:
+                        control_idx = state_dim + control_channel
+                        x_plot = x_plot.copy()
+                        x_plot[:, :, control_idx] = _descale_feature_from_stats(
+                            scaling_stats, x_plot[:, :, control_idx], control_idx
+                        )
+                    plot_callback(
+                        x_profile=x_plot,
+                        y_true=rec["y_true"],
+                        y_pred=rec["y_pred_out"],
+                        title=f"Rolling Forecast - {profile_name}",
+                        save_path=save_path,
+                    )
+                if use_tqdm and hasattr(progress, "set_postfix"):
+                    progress.set_postfix(mae_avg=f"{float(np.mean(rec['mae'])):.6e}")
     if use_tqdm and hasattr(progress, "close"):
         progress.close()
 
