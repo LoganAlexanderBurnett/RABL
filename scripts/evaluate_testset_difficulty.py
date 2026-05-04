@@ -341,7 +341,7 @@ def main() -> None:
     parser.add_argument("--dt", type=float, default=1.0, help="Timestep size for velocity estimate.")
     parser.add_argument("--config-path", type=Path, default=REPO_ROOT / "scripts" / "config.py")
     parser.add_argument("--include-per-target", action="store_true", help="Include per-target MAE/MSE columns.")
-    parser.add_argument("--num-workers", type=int, default=10, help="Number of worker threads for profile evaluation.")
+    parser.add_argument("--num-workers", type=int, default=4, help="Number of worker threads for profile evaluation.")
     args = parser.parse_args()
 
     out_dir = args.out_dir

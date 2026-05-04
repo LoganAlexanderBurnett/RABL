@@ -1285,7 +1285,7 @@ def test_and_save_forecasts(
     plot_callback: Callable[..., None] | None = None,
     use_tqdm: bool = True,
     verbose: int = 1,
-    num_workers: int = 10,
+    num_workers: int = 4,
 ) -> dict[str, float]:
     if target_names is None:
         target_names = list(TARGET_NAMES)

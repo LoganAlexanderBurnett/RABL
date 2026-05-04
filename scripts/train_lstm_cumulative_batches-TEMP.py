@@ -24,7 +24,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--max-plots", type=int, default=5)
-    parser.add_argument("--num-workers", type=int, default=10)
+    parser.add_argument("--num-workers", type=int, default=4)
 
     parser.add_argument("--n-lstm", type=int, default=1)
     parser.add_argument("--lstm-hidden", type=int, default=64)

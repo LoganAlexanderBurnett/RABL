@@ -98,7 +98,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=10,
+        default=4,
         help="Number of worker threads for profile-level forecast evaluation.",
     )
     return parser.parse_args()
