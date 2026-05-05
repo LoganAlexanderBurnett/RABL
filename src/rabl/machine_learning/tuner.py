@@ -36,7 +36,7 @@ class GridSearchConfig:
     n_lstm_values: list[int]
     hidden_lstm_values: list[int]
     hidden_fc_values: list[int]
-    n_fc: int = 1
+    n_fc_values: list[int]
     epochs: int = 20
     seed: int = 123
     out_dir: Path = Path("outputs") / "ml_tuning"
@@ -58,6 +58,10 @@ class GridSearchConfig:
     prune_strategy: str = "successive_halving"
 
     def __post_init__(self) -> None:
+        if not self.n_fc_values:
+            raise ValueError("n_fc_values must contain at least one value.")
+        if any(v < 1 for v in self.n_fc_values):
+            raise ValueError("All n_fc values must be >= 1.")
         if self.min_epochs is None and self.max_epochs is None:
             return
         if self.min_epochs is None or self.max_epochs is None:
@@ -83,6 +87,7 @@ class TrialResult:
     learning_rate: float
     batch_size: int
     n_lstm: int
+    n_fc: int
     hidden_lstm: int
     hidden_fc: int
     best_val_loss: float
@@ -131,6 +136,7 @@ def count_grid_combinations(config: GridSearchConfig) -> int:
         * len(config.batch_sizes)
         * len(config.n_lstm_values)
         * len(config.hidden_lstm_values)
+        * len(config.n_fc_values)
         * len(config.hidden_fc_values)
     )
 
@@ -193,10 +199,11 @@ def _all_trial_params(config: GridSearchConfig) -> list[dict[str, Any]]:
         config.batch_sizes,
         config.n_lstm_values,
         config.hidden_lstm_values,
+        config.n_fc_values,
         config.hidden_fc_values,
     )
     params: list[dict[str, Any]] = []
-    for (lookback, dataset_path), learning_rate, batch_size, n_lstm, hidden_lstm, hidden_fc in trial_grid:
+    for (lookback, dataset_path), learning_rate, batch_size, n_lstm, hidden_lstm, n_fc, hidden_fc in trial_grid:
         params.append(
             {
                 "lookback": lookback,
@@ -204,6 +211,7 @@ def _all_trial_params(config: GridSearchConfig) -> list[dict[str, Any]]:
                 "learning_rate": learning_rate,
                 "batch_size": batch_size,
                 "n_lstm": n_lstm,
+                "n_fc": n_fc,
                 "hidden_lstm": hidden_lstm,
                 "hidden_fc": hidden_fc,
             }
@@ -231,8 +239,8 @@ def _stage_train_trial(
         n_lstm=params["n_lstm"],
         lstm_hidden=params["hidden_lstm"],
         lstm_dropout=config.lstm_dropout,
-        n_fc=config.n_fc,
-        fc_hidden=(params["hidden_fc"],),
+        n_fc=params["n_fc"],
+        fc_hidden=tuple([params["hidden_fc"]] * int(params["n_fc"])),
         learning_rate=params["learning_rate"],
         step_lr_step_size=config.step_lr_step_size,
         step_lr_gamma=config.step_lr_gamma,
@@ -409,7 +417,7 @@ def _print_tuning_overview(config: GridSearchConfig, best_result: TrialResult, t
                     hp = trial.get("sampled_hyperparameters", {})
                     trial_name = (
                         f"trial_{trial_idx:04d}(lr={hp.get('learning_rate')},bs={hp.get('batch_size')},"
-                        f"nl={hp.get('n_lstm')},hl={hp.get('hidden_lstm')},hf={hp.get('hidden_fc')})"
+                        f"nl={hp.get('n_lstm')},nfc={hp.get('n_fc')},hl={hp.get('hidden_lstm')},hf={hp.get('hidden_fc')})"
                     )
                     rung_metrics = trial.get("rung_metrics", [])
                     match = next((m for m in rung_metrics if int(m.get("rung_index", -1)) == rung_idx), None)
@@ -437,14 +445,14 @@ def _print_tuning_overview(config: GridSearchConfig, best_result: TrialResult, t
             print(
                 f"   - Trial {idx:04d}: "
                 f"lb={result.get('lookback')}, lr={result.get('learning_rate')}, bs={result.get('batch_size')}, "
-                f"nl={result.get('n_lstm')}, hl={result.get('hidden_lstm')}, hf={result.get('hidden_fc')} "
+                f"nl={result.get('n_lstm')}, nfc={result.get('n_fc')}, hl={result.get('hidden_lstm')}, hf={result.get('hidden_fc')} "
                 f"-> best_val_loss={result.get('best_val_loss')}"
             )
 
     print(
         "5) The winning configuration was: "
         f"lookback={best_result.lookback}, lr={best_result.learning_rate:g}, "
-        f"batch={best_result.batch_size}, n_lstm={best_result.n_lstm}, "
+        f"batch={best_result.batch_size}, n_lstm={best_result.n_lstm}, n_fc={best_result.n_fc}, "
         f"hidden_lstm={best_result.hidden_lstm}, hidden_fc={best_result.hidden_fc}."
     )
     print(f"6) Its best validation loss was {best_result.best_val_loss:.6e}.")
@@ -474,6 +482,7 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
         config.batch_sizes,
         config.n_lstm_values,
         config.hidden_lstm_values,
+        config.n_fc_values,
         config.hidden_fc_values,
     )
 
@@ -487,6 +496,7 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
         batch_size,
         n_lstm,
         hidden_lstm,
+        n_fc,
         hidden_fc,
     ) in enumerate(trial_grid, start=1):
         print("\n" + "#" * 100)
@@ -502,6 +512,7 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
             f"_lr{learning_rate:g}"
             f"_bs{batch_size}"
             f"_nl{n_lstm}"
+            f"_nfc{n_fc}"
             f"_hl{hidden_lstm}"
             f"_hf{hidden_fc}"
         )
@@ -510,7 +521,7 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
 
         print(
             f"[{trial_index}/{total_trials}] lookback={lookback}, lr={learning_rate:g}, "
-            f"batch_size={batch_size}, n_lstm={n_lstm}, hidden_lstm={hidden_lstm}, hidden_fc={hidden_fc}"
+            f"batch_size={batch_size}, n_lstm={n_lstm}, n_fc={n_fc}, hidden_lstm={hidden_lstm}, hidden_fc={hidden_fc}"
         )
 
         datasets = build_datasets(h5_path=dataset_path, batch_size=batch_size, seed=config.seed)
@@ -521,8 +532,8 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
             n_lstm=n_lstm,
             lstm_hidden=hidden_lstm,
             lstm_dropout=config.lstm_dropout,
-            n_fc=config.n_fc,
-            fc_hidden=(hidden_fc,),
+            n_fc=n_fc,
+            fc_hidden=tuple([hidden_fc] * int(n_fc)),
             learning_rate=learning_rate,
             step_lr_step_size=config.step_lr_step_size,
             step_lr_gamma=config.step_lr_gamma,
@@ -548,6 +559,7 @@ def run_grid_search(config: GridSearchConfig) -> tuple[list[TrialResult], TrialR
             learning_rate=learning_rate,
             batch_size=batch_size,
             n_lstm=n_lstm,
+            n_fc=n_fc,
             hidden_lstm=hidden_lstm,
             hidden_fc=hidden_fc,
             best_val_loss=float(best_val_loss),
@@ -835,6 +847,7 @@ def run_hyperband_search(config: GridSearchConfig) -> tuple[list[TrialResult], T
                 learning_rate=float(params["learning_rate"]),
                 batch_size=int(params["batch_size"]),
                 n_lstm=int(params["n_lstm"]),
+                n_fc=int(params["n_fc"]),
                 hidden_lstm=int(params["hidden_lstm"]),
                 hidden_fc=int(params["hidden_fc"]),
                 best_val_loss=float(trial["best_val_loss"]),
@@ -917,8 +930,8 @@ def test_best_model(config: GridSearchConfig, best_result: TrialResult) -> dict[
         n_lstm=best_result.n_lstm,
         lstm_hidden=best_result.hidden_lstm,
         lstm_dropout=config.lstm_dropout,
-        n_fc=config.n_fc,
-        fc_hidden=(best_result.hidden_fc,),
+        n_fc=best_result.n_fc,
+        fc_hidden=tuple([best_result.hidden_fc] * int(best_result.n_fc)),
     )
     state_dict = torch.load(weights_path, map_location="cpu")
     model.load_state_dict(state_dict)
@@ -1007,7 +1020,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-lstm", type=int, nargs="+", required=True, dest="n_lstm_values")
     parser.add_argument("--hidden-lstm", type=int, nargs="+", required=True, dest="hidden_lstm_values")
     parser.add_argument("--hidden-fc", type=int, nargs="+", required=True, dest="hidden_fc_values")
-    parser.add_argument("--n-fc", type=int, default=1, help="Number of FC layers in the model head.")
+    parser.add_argument(
+        "--n-fc",
+        type=int,
+        nargs="+",
+        default=[1],
+        dest="n_fc_values",
+        help="One or more FC-layer counts for the model head.",
+    )
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument(
         "--min-epochs",
@@ -1178,7 +1198,7 @@ def main() -> None:
         n_lstm_values=list(args.n_lstm_values),
         hidden_lstm_values=list(args.hidden_lstm_values),
         hidden_fc_values=list(args.hidden_fc_values),
-        n_fc=args.n_fc,
+        n_fc_values=list(args.n_fc_values),
         epochs=args.epochs,
         seed=args.seed,
         out_dir=args.out_dir,
