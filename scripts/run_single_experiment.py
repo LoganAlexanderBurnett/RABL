@@ -37,7 +37,7 @@ if str(SRC_PATH) not in sys.path:
 from rabl.paths import resolve_output_root
 from rabl.machine_learning import build_lstm_dataset
 from rabl.machine_learning.dataset_scaling import LSTMDatasetScalerSplitter
-from rabl.machine_learning.tuner import GridSearchConfig, run_grid_search
+from rabl.machine_learning.tuner import GridSearchConfig, run_grid_search, run_hyperband_search
 from rabl.machine_learning.bagging_ensemble import run_bagging_ensemble
 from rabl.machine_learning.lstm_pipeline import save_forecast_profiles_pdf
 from rabl.machine_learning.recursive_branching import (
@@ -268,7 +268,18 @@ def _normalize_n_fc_values(grid: dict[str, Any]) -> list[int]:
     return [int(value) for value in raw]
 
 
-def _tune(scaled_h5: Path, out_dir: Path, seed: int, grid: dict[str, Any]) -> Any:
+def _optional_int(grid: dict[str, Any], key: str) -> int | None:
+    value = grid.get(key)
+    return None if value is None else int(value)
+
+
+def _tune(scaled_h5: Path, out_dir: Path, seed: int, grid: dict[str, Any]) -> tuple[Any, str]:
+    method = str(grid.get("method", "grid")).strip().lower()
+    if method not in {"grid", "hyperband"}:
+        raise ValueError(f"Unsupported tuning method {method!r}; expected 'grid' or 'hyperband'.")
+    if method == "hyperband" and (grid.get("min_epochs") is None or grid.get("max_epochs") is None):
+        raise ValueError("Hyperband tuning requires hp_grid.min_epochs and hp_grid.max_epochs.")
+
     tune_cfg = GridSearchConfig(
         lookback_datasets={int(grid["lookback"]): scaled_h5},
         learning_rates=list(grid["learning_rates"]),
@@ -281,11 +292,26 @@ def _tune(scaled_h5: Path, out_dir: Path, seed: int, grid: dict[str, Any]) -> An
         seed=seed,
         out_dir=out_dir,
         prefer_gpu=bool(grid.get("prefer_gpu", True)),
-        preload_train_to_device=True,
-        preload_val_to_device=True,
+        lstm_dropout=float(grid.get("lstm_dropout", 0.0)),
+        preload_train_to_device=bool(grid.get("preload_train_to_device", True)),
+        preload_val_to_device=bool(grid.get("preload_val_to_device", True)),
+        early_stopping_patience=_optional_int(grid, "early_stopping_patience"),
+        early_stopping_min_delta=float(grid.get("early_stopping_min_delta", 0.0)),
+        restore_best_weights=bool(grid.get("restore_best_weights", True)),
+        step_lr_step_size=int(grid.get("step_lr_step_size", 30)),
+        step_lr_gamma=float(grid.get("step_lr_gamma", 0.5)),
+        use_tqdm=bool(grid.get("use_tqdm", True)),
+        verbose=int(grid.get("verbose", 1)),
+        min_epochs=_optional_int(grid, "min_epochs"),
+        max_epochs=_optional_int(grid, "max_epochs"),
+        reduction_factor=int(grid.get("reduction_factor", 3)),
+        prune_strategy=str(grid.get("prune_strategy", "successive_halving")),
     )
-    _results, best = run_grid_search(tune_cfg)
-    return best
+    if method == "hyperband":
+        _results, best = run_hyperband_search(tune_cfg)
+    else:
+        _results, best = run_grid_search(tune_cfg)
+    return best, method
 
 
 def _sample_random_profiles(batch_dir: Path, *, n_profiles: int, seed: int, variography_params: dict[str, Any]) -> None:
@@ -951,7 +977,7 @@ def main() -> None:
 
         _print_step_banner(cycle + 1, "Hyperparameter tuning")
         t0 = perf_counter()
-        best = _tune(
+        best, tuning_method = _tune(
             scaled_h5=scaled_h5,
             out_dir=cycle_dir / "tuning",
             seed=cycle_seed,
@@ -1095,6 +1121,7 @@ def main() -> None:
                 "input_batches": cycle_input_batches,
                 "unscaled_h5": str(unscaled_h5),
                 "scaled_h5": str(scaled_h5),
+                "tuning_method": tuning_method,
                 "best_trial": {
                     "learning_rate": best.learning_rate,
                     "batch_size": best.batch_size,
