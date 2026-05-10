@@ -12,14 +12,16 @@ import numpy as np
 from scipy.io import loadmat, savemat
 from dymola.dymola_interface import DymolaInterface
 
+from rabl.paths import resolve_output_root
+
 
 @dataclass(frozen=True)
 class BatchConfig:
-    # Paths RELATIVE to this script file for portability
+    # Paths RELATIVE to this script file for portability, except generated outputs.
     package_mo: str = r"../../modelica/MicroreactorPK/package.mo"
     model_name: str = "MicroreactorPK.Experiments.RunOneProfile"
-    profiles_dir: str = r"../../../outputs/variography_profiles/test_batch"
-    out_dir: str = r"../../../outputs/sim_profiles/test_batch"
+    profiles_dir: str = str(resolve_output_root() / "variography_profiles" / "test_batch")
+    out_dir: str = str(resolve_output_root() / "sim_profiles" / "test_batch")
 
     # Workflow mode
     profile_mode: str = "flat_mat"  # flat_mat | branched_mat

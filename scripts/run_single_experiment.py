@@ -34,6 +34,7 @@ SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
+from rabl.paths import resolve_output_root
 from rabl.machine_learning import build_lstm_dataset
 from rabl.machine_learning.dataset_scaling import LSTMDatasetScalerSplitter
 from rabl.machine_learning.tuner import GridSearchConfig, run_grid_search
@@ -108,8 +109,9 @@ class ExperimentConfig:
     test_manifest_path: str | None = None
     val_manifest_path: str | None = None
     config_py_path: str = str(REPO_ROOT / "scripts" / "config.py")
-    sim_root: str = str(REPO_ROOT / "outputs" / "sim_profiles")
-    variography_root: str = str(REPO_ROOT / "outputs" / "variography_profiles")
+    output_root: str | None = None
+    sim_root: str | None = None
+    variography_root: str | None = None
 
 
 def _load_cfg(path: Path) -> ExperimentConfig:
@@ -853,7 +855,7 @@ def _save_forecast_pdf_subset(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run one full experiment starting from sim batch folders.")
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--base-output-dir", type=Path, default=REPO_ROOT / "outputs" / "experiments")
+    parser.add_argument("--base-output-dir", type=Path, default=None)
     parser.add_argument(
         "--plot-n-forecasts",
         type=int,
@@ -868,14 +870,16 @@ def main() -> None:
     if cfg.strategy not in {"branching", "random"}:
         raise SystemExit("strategy must be branching or random.")
 
-    run_dir = args.base_output_dir / cfg.experiment_id
+    output_root = resolve_output_root(cfg.output_root)
+    base_output_dir = args.base_output_dir.resolve() if args.base_output_dir else output_root / "experiments"
+    run_dir = base_output_dir / cfg.experiment_id
     run_dir.mkdir(parents=True, exist_ok=True)
     configured_test_manifest = Path(cfg.test_manifest_path).resolve() if cfg.test_manifest_path else None
     configured_val_manifest = Path(cfg.val_manifest_path).resolve() if cfg.val_manifest_path else None
     generated_test_manifest = run_dir / "test_manifest.json"
 
-    sim_root = Path(cfg.sim_root).resolve()
-    var_root = Path(cfg.variography_root).resolve()
+    sim_root = Path(cfg.sim_root).resolve() if cfg.sim_root else output_root / "sim_profiles"
+    var_root = Path(cfg.variography_root).resolve() if cfg.variography_root else output_root / "variography_profiles"
     cfg_py = Path(cfg.config_py_path).resolve()
     variography_params = _load_variography_params(cfg_py)
     known_batches = list(cfg.initial_sim_batches)

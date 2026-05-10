@@ -2,6 +2,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from rabl.paths import resolve_output_root
+
 
 def format_cumulative_batch_window(start_batch: int, end_batch: int) -> str:
     """
@@ -32,6 +34,7 @@ def run_command(cmd: list[str], cwd: Path) -> None:
 
 def main():
     repo_root = Path(__file__).resolve().parents[1]
+    output_root = resolve_output_root()
 
     start_batch = 1
     first_end_batch = 4
@@ -44,16 +47,14 @@ def main():
         )
 
         scaled_h5 = (
-            repo_root
-            / "outputs"
+            output_root
             / "datasets"
             / "scaled_split"
             / f"lstm_merged_batches_{batch_window}_k12_minmax_train0.70_val0.15_test0.15.h5"
         )
 
         out_dir = (
-            repo_root
-            / "outputs"
+            output_root
             / "ml_results"
             / "training_playground"
             / f"Batch{batch_window}_k12_minmax"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from rabl.paths import resolve_output_root
 from rabl.machine_learning.lstm_pipeline import (
     LSTMPipeline,
     LSTMPipelineConfig,
@@ -13,9 +14,9 @@ from rabl.machine_learning.lstm_pipeline import (
 )
 
 
-repo_root = Path(__file__).resolve().parents[1]
-DEFAULT_H5_PATH = repo_root / "outputs" / "datasets" / "lstm_toy_batch_0001-batch_0001_k3_standard_train0.70_val0.15_test0.15.h5"
-DEFAULT_OUT_DIR = repo_root / "outputs" / "ml_results" / "toy_results"
+OUTPUT_ROOT = resolve_output_root()
+DEFAULT_H5_PATH = OUTPUT_ROOT / "datasets" / "lstm_toy_batch_0001-batch_0001_k3_standard_train0.70_val0.15_test0.15.h5"
+DEFAULT_OUT_DIR = OUTPUT_ROOT / "ml_results" / "toy_results"
 
 
 def parse_args() -> argparse.Namespace:

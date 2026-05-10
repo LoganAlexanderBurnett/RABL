@@ -19,7 +19,8 @@ Intended usage (example):
 
     datasets = build_datasets(Path("your_dataset.h5"), batch_size=32, seed=123)
     inspect_dataset_shapes(datasets)
-    model, history, used_device = train_with_fallback(datasets, epochs=50, out_dir=Path("outputs"))
+    output_root = resolve_output_root()
+    model, history, used_device = train_with_fallback(datasets, epochs=50, out_dir=output_root)
 
     name, x_prof, y_prof = next(iter(datasets["test_profile_ds"]))
     x_prof = x_prof.numpy()
@@ -32,7 +33,7 @@ Intended usage (example):
         y_pred=y_pred,
         target_names=TARGET_NAMES,
         title=f"Rolling Forecast - {name}",
-        save_path=Path("outputs/rolling_forecast.png"),
+        save_path=output_root / "rolling_forecast.png",
     )
 """
 
@@ -43,6 +44,8 @@ from math import ceil
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Iterable
+
+from rabl.paths import resolve_output_root
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import os
@@ -866,7 +869,7 @@ def train_model(
                 f"Preloaded {len(val_source)} validation batches to {training_device} in {val_preload_time_s:.2f}s."
             )
 
-    resolved_plot_path = Path(plot_path) if plot_path is not None else Path("outputs") / "plots" / "lstm_training_curves.png"
+    resolved_plot_path = Path(plot_path) if plot_path is not None else resolve_output_root() / "plots" / "lstm_training_curves.png"
 
     profiler: torch.profiler.profile | None = None
     profiler_trace_dir = resolved_plot_path.parent / "torch_profiler_traces" if enable_torch_profiler else None
@@ -2160,7 +2163,7 @@ class LSTMPipeline:
         self,
         *,
         epochs: int = DEFAULT_EPOCHS,
-        out_dir: Path = Path("outputs"),
+        out_dir: Path | None = None,
         prefer_gpu: bool = True,
         preload_train_to_device: bool = False,
         deterministic_seed: int | None = None,
@@ -2185,7 +2188,7 @@ class LSTMPipeline:
         return train_with_fallback(
             self.datasets,
             epochs=epochs,
-            out_dir=out_dir,
+            out_dir=resolve_output_root() if out_dir is None else out_dir,
             n_lstm=self.config.n_lstm,
             lstm_hidden=self.config.lstm_hidden,
             lstm_dropout=self.config.lstm_dropout,
@@ -2246,12 +2249,13 @@ class LSTMPipeline:
 # --------------------------------------------------------------------------------------
 def main() -> None:
     # Example local run: edit the dataset path
-    h5_path = Path(r"../outputs/datasets/lstm_merged_batch_0001-batch_0001_k10_standard_train0.70_val0.15_test0.15.h5")
+    output_root = resolve_output_root()
+    h5_path = output_root / "datasets" / "lstm_merged_batch_0001-batch_0001_k10_standard_train0.70_val0.15_test0.15.h5"
     batch_size = 64
     epochs = 20
     seed = 123
 
-    out_dir = Path("outputs")
+    out_dir = output_root
     out_dir.mkdir(parents=True, exist_ok=True)
 
     datasets = build_datasets(h5_path=h5_path, batch_size=batch_size, seed=seed)

@@ -1,6 +1,8 @@
 from pathlib import Path
 import argparse
 
+from rabl.paths import resolve_output_root
+
 from rabl.machine_learning.lstm_pipeline import (
     LSTMPipeline,
     LSTMPipelineConfig,
@@ -43,15 +45,15 @@ def main():
         start_batch=args.start_batch,
     )
 
-    h5_path = Path(
-        f"outputs/datasets/scaled_split/"
-        f"lstm_merged_batches_{batch_window}_k12_minmax_train0.70_val0.15_test0.15.h5"
+    output_root = resolve_output_root()
+    h5_path = (
+        output_root
+        / "datasets"
+        / "scaled_split"
+        / f"lstm_merged_batches_{batch_window}_k12_minmax_train0.70_val0.15_test0.15.h5"
     )
 
-    out_dir = Path(
-        f"outputs/ml_results/training_playground/"
-        f"Batch{batch_window}_k12_minmax"
-    )
+    out_dir = output_root / "ml_results" / "training_playground" / f"Batch{batch_window}_k12_minmax"
 
     out_dir.mkdir(parents=True, exist_ok=True)
 

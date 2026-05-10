@@ -19,6 +19,7 @@ from typing import Any
 
 import torch
 
+from rabl.paths import resolve_output_root
 from rabl.machine_learning.lstm_pipeline import (
     build_datasets,
     build_model,
@@ -39,7 +40,7 @@ class GridSearchConfig:
     n_fc_values: list[int]
     epochs: int = 20
     seed: int = 123
-    out_dir: Path = Path("outputs") / "ml_tuning"
+    out_dir: Path = resolve_output_root() / "ml_tuning"
     prefer_gpu: bool = True
     lstm_dropout: float = 0.0
     preload_train_to_device: bool = True
@@ -1054,7 +1055,7 @@ def parse_args() -> argparse.Namespace:
         help="Rung pruning strategy (currently only successive_halving).",
     )
     parser.add_argument("--seed", type=int, default=123)
-    parser.add_argument("--out-dir", type=Path, default=Path("outputs") / "ml_tuning")
+    parser.add_argument("--out-dir", type=Path, default=resolve_output_root() / "ml_tuning")
     parser.add_argument(
         "--lstm-dropout",
         type=float,

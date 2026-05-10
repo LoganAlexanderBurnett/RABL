@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 
+from rabl.paths import resolve_output_root
+
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -153,8 +155,7 @@ def main() -> None:
     config_path = script_dir / "config.py"
     config = _validate_config(_load_config(config_path))
 
-    repo_root = script_dir.parent
-    sim_root = repo_root / "outputs" / "sim_profiles"
+    sim_root = resolve_output_root() / "sim_profiles"
 
     for batch_number in config["batch_numbers"]:
         batch_name = f"batch_{batch_number:04d}"

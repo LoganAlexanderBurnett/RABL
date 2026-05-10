@@ -1,11 +1,11 @@
 from pathlib import Path
 
+from rabl.paths import resolve_output_root
 from rabl.machine_learning import LSTMDatasetScalerSplitter
 
 
 def main() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    input_path = repo_root / "outputs" / "datasets" / "lstm_toy_batch_0001-batch_0001_k3.h5"
+    input_path = resolve_output_root() / "datasets" / "lstm_toy_batch_0001-batch_0001_k3.h5"
 
     splitter = LSTMDatasetScalerSplitter(
         input_path=input_path,

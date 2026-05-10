@@ -6,6 +6,8 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 
+from rabl.paths import resolve_output_root
+
 
 def _load_features(
     h5f: h5py.File,
@@ -75,7 +77,7 @@ def plot_feature_correlations(
     fig.tight_layout()
 
     if output_path is None:
-        output_dir = input_path.parents[2] / "outputs" / "datasets"
+        output_dir = resolve_output_root() / "datasets"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{input_path.stem}_all_splits_correlations.png"
     else:

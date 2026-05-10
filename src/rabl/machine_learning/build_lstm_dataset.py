@@ -6,6 +6,8 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from rabl.paths import resolve_output_root
+
 
 STATE_COLUMNS = (
     "TN2",
@@ -214,8 +216,9 @@ def main() -> None:
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[3]
-    sim_root = repo_root / "outputs" / "sim_profiles"
-    output_dir = repo_root / "outputs" / "datasets"
+    output_root = resolve_output_root()
+    sim_root = output_root / "sim_profiles"
+    output_dir = output_root / "datasets"
     config_path = repo_root / "scripts" / "config.py"
 
     config = _validate_config(_load_config(config_path))

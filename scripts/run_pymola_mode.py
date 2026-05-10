@@ -29,6 +29,7 @@ if str(SRC_PATH) not in sys.path:
 
 try:
     # Import directly from pymola so dependency/import errors surface clearly.
+    from rabl.paths import resolve_output_root
     from rabl.interface.pymola import BatchConfig, DymolaBatchRunner
 except ModuleNotFoundError as exc:
     raise SystemExit(
@@ -89,13 +90,13 @@ def _next_batch_dir(base_dir: Path) -> Path:
     return candidate
 
 
-def _resolve_output_dir(args: argparse.Namespace) -> str:
+def _resolve_output_dir(args: argparse.Namespace, output_root: Path) -> str:
     if args.run_mode == "testing":
         if args.out is None:
             raise SystemExit("--out is required when --run-mode=testing")
-        return _repo_rel(args.out, "../../../outputs/sim_profiles/test_batch")
+        return _repo_rel(args.out, str(output_root / "sim_profiles" / "test_batch"))
 
-    production_base = (REPO_ROOT / "outputs" / "sim_profiles").resolve()
+    production_base = (output_root / "sim_profiles").resolve()
     out_dir = _next_batch_dir(production_base)
     print(f"[run-mode=production] Created output directory: {out_dir}")
     return str(out_dir)
@@ -193,6 +194,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=("flat_mat", "branched_mat"), required=True, help="Execution workflow mode.")
     parser.add_argument("--run-mode", choices=("testing", "production"), default="testing", help="Run mode. testing requires --out; production auto-creates next batch dir.")
     parser.add_argument("--out", default=None, help="Output directory for run artifacts/results (required in testing mode).")
+    parser.add_argument("--output-root", type=Path, default=None, help="Root for generated outputs (overrides RABL_OUTPUT_ROOT).")
     parser.add_argument(
         "--profiles",
         default=None,
@@ -307,15 +309,16 @@ def _run_branch_start_time_checks(branched_results_dir: Path, branch_index: dict
 
 def main() -> None:
     args = parse_args()
+    output_root = resolve_output_root(args.output_root)
 
-    out_dir = _resolve_output_dir(args)
-    profiles_dir = _repo_rel(args.profiles, "../../../outputs/variography_profiles/test_batch")
+    out_dir = _resolve_output_dir(args, output_root)
+    profiles_dir = _repo_rel(args.profiles, str(output_root / "variography_profiles" / "test_batch"))
     branch_index: dict[tuple[str, str], tuple[str | None, float | None]] = {}
 
     if args.mode == "branched_mat":
         if args.profiles is None:
             raise SystemExit("--profiles is required when --mode=branched_mat")
-        mat_batch_dir = Path(_repo_rel(args.profiles, "../../../outputs/variography_profiles/test_batch"))
+        mat_batch_dir = Path(_repo_rel(args.profiles, str(output_root / "variography_profiles" / "test_batch")))
         branch_index = _load_branch_manifest_index(mat_batch_dir)
 
     cfg = BatchConfig(
@@ -363,7 +366,7 @@ def main() -> None:
         out_dir_path = Path(out_dir)
         _cleanup_production_artifacts(out_dir_path)
         if args.mode == "branched_mat":
-            sim_root = (REPO_ROOT / "outputs" / "sim_profiles").resolve()
+            sim_root = (output_root / "sim_profiles").resolve()
             _copy_branched_results_to_batch_root_with_global_numbering(out_dir_path, sim_root)
 
 

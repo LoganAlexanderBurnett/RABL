@@ -6,6 +6,8 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 
+from rabl.paths import resolve_output_root
+
 
 def _collect_samples(
     h5f: h5py.File,
@@ -173,8 +175,7 @@ def plot_scaled_features(
     fig.tight_layout(rect=[0, 0.03, 1, 0.98])
 
     if output_path is None:
-        repo_root = Path(__file__).resolve().parents[3]
-        output_dir = repo_root / "outputs" / "datasets"
+        output_dir = resolve_output_root() / "datasets"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{input_path.stem}_all_splits_feature_distributions.png"
     else:
@@ -230,8 +231,7 @@ def plot_scaled_features(
 
 
 def main() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    input_path = repo_root / "outputs" / "datasets" / (
+    input_path = resolve_output_root() / "datasets" / (
         "lstm_merged_batch_0001-batch_0001_k10_standard_train0.70_val0.15_test0.15.h5"
     )
     output_path = plot_scaled_features(input_path)

@@ -5,6 +5,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from rabl.paths import resolve_output_root
 from rabl.machine_learning import build_lstm_dataset
 
 TOY_SCALE_FACTORS = (
@@ -160,10 +161,11 @@ def _build_h5_dataset(sim_root: Path, output_dir: Path) -> Path:
 
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    variography_dir = repo_root / "outputs" / "variography_profiles" / "batch_0001"
-    toy_root = repo_root / "outputs" / "toy_profiles"
+    output_root = resolve_output_root()
+    variography_dir = output_root / "variography_profiles" / "batch_0001"
+    toy_root = output_root / "toy_profiles"
     toy_batch_dir = toy_root / "batch_0001"
-    output_dir = repo_root / "outputs" / "datasets"
+    output_dir = output_root / "datasets"
 
     if len(TOY_SCALE_FACTORS) != len(build_lstm_dataset.STATE_COLUMNS):
         raise SystemExit("TOY_SCALE_FACTORS length must match STATE_COLUMNS.")

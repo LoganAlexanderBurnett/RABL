@@ -33,6 +33,7 @@ SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
+from rabl.paths import resolve_output_root
 from rabl.machine_learning.bagging_ensemble import (
     _save_ensemble_rolling_forecasts_hdf5,
 )
@@ -610,7 +611,7 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
     manifest_path = config.output_dir / "branched_profiles_manifest.json"
     if manifest_path.exists():
         manifest_path.unlink()
-    next_profile_index = _find_latest_variography_profile_index(REPO_ROOT / "outputs" / "variography_profiles") + 1
+    next_profile_index = _find_latest_variography_profile_index(config.output_dir.parent) + 1
     for root_index in range(config.Nr):
         run_output_dir = config.output_dir / f"root_{root_index:03d}" if multiple_roots else config.output_dir
         print(f"\n=== Root Profile {root_index + 1}/{config.Nr} ===\n")
@@ -709,7 +710,7 @@ def _resolve_output_dir(args: argparse.Namespace) -> Path:
             raise SystemExit("--output-dir is required when --run-mode=testing")
         return args.output_dir
 
-    production_base = REPO_ROOT / "outputs" / "variography_profiles"
+    production_base = resolve_output_root(args.output_root) / "variography_profiles"
     out_dir = _next_batch_dir(production_base)
     print(f"[run-mode=production] Created output directory: {out_dir}")
     return out_dir
@@ -730,6 +731,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bagged-h5-path", type=Path, required=True, help="Path to bagged/scaled HDF5 containing 'scaling' group.")
     parser.add_argument("--run-mode", choices=("testing", "production"), default="testing", help="Run mode. testing requires --output-dir; production auto-creates next batch dir.")
     parser.add_argument("--output-dir", type=Path, default=None, help="Directory for branching outputs and plots (required in testing mode).")
+    parser.add_argument("--output-root", type=Path, default=None, help="Root for generated outputs (overrides RABL_OUTPUT_ROOT).")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help=f"Path to config.py (default: {DEFAULT_CONFIG_PATH}).")
 
     parser.add_argument("--T", type=float, default=200.0)

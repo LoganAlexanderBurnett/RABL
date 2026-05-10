@@ -4,6 +4,7 @@ from pathlib import Path
 from time import time
 
 import numpy as np
+from rabl.paths import resolve_output_root
 from rabl.interface import BatchConfig, DymolaBatchRunner
 from rabl.variography.DrumVariography import DrumProfileGenerator
 
@@ -91,9 +92,9 @@ def main() -> None:
     config_path = script_dir / "config.py"
     config = _validate_config(_load_config(config_path))
 
-    repo_root = script_dir.parent
-    variography_root = repo_root / "outputs" / "variography_profiles"
-    sim_root = repo_root / "outputs" / "sim_profiles"
+    output_root = resolve_output_root()
+    variography_root = output_root / "variography_profiles"
+    sim_root = output_root / "sim_profiles"
 
     batch_name = f"batch_{config['batch_number']:04d}"
     variography_dir = variography_root / batch_name

@@ -45,6 +45,7 @@
   },
 
   "config_py_path": "scripts/config.py",
-  "sim_root": "outputs/sim_profiles",
-  "variography_root": "outputs/variography_profiles"
+  "output_root": null,
+  "sim_root": null,
+  "variography_root": null
 }

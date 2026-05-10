@@ -4,6 +4,8 @@ import shutil
 import subprocess
 import sys
 
+from rabl.paths import resolve_output_root
+
 
 # =============================================================================
 # User settings
@@ -169,7 +171,7 @@ def run_command(cmd: list[str], cwd: Path) -> None:
         )
 
 
-def find_scaled_h5(repo_root: Path, batch_window: str, lookback: int) -> Path:
+def find_scaled_h5(output_root: Path, batch_window: str, lookback: int) -> Path:
     """
     Find the scaled HDF5 file created by scale_lstm_dataset.py.
 
@@ -180,7 +182,7 @@ def find_scaled_h5(repo_root: Path, batch_window: str, lookback: int) -> Path:
         lstm_merged_batches_0001-...-0012_k12_minmax_train1100profiles_val1000profiles_test2000profiles.h5
         lstm_merged_batches_0001-...-0013_k12_minmax_train1200profiles_val1000profiles_test2000profiles.h5
     """
-    scaled_dir = repo_root / "outputs" / "datasets" / "scaled_split"
+    scaled_dir = output_root / "datasets" / "scaled_split"
     pattern = f"lstm_merged_batches_{batch_window}_k{lookback}_minmax*.h5"
 
     matches = sorted(scaled_dir.glob(pattern))
@@ -308,6 +310,7 @@ def train_cumulative_lstm_directly(
 def main() -> None:
     repo_root = get_repo_root()
     ensure_python_import_paths(repo_root)
+    output_root = resolve_output_root()
 
     scripts_dir = repo_root / "scripts"
     config_path = scripts_dir / "config.py"
@@ -376,8 +379,7 @@ def main() -> None:
         )
 
         unscaled_h5 = (
-            repo_root
-            / "outputs"
+            output_root
             / "datasets"
             / "unscaled_unsplit"
             / f"lstm_merged_batches_{batch_window}_k{LOOKBACK}.h5"
@@ -422,7 +424,7 @@ def main() -> None:
         )
 
         scaled_h5 = find_scaled_h5(
-            repo_root=repo_root,
+            output_root=output_root,
             batch_window=batch_window,
             lookback=LOOKBACK,
         )
@@ -433,8 +435,7 @@ def main() -> None:
         # 6. Train cumulative LSTM model directly
         # ---------------------------------------------------------------------
         out_dir = (
-            repo_root
-            / "outputs"
+            output_root
             / "ml_results"
             / "training_playground"
             / f"Batch{batch_window}_k{LOOKBACK}_minmax"
