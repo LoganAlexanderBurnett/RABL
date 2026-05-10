@@ -24,7 +24,7 @@
     "n_lstm_values": [1],
     "hidden_lstm_values": [48, 64, 96],
     "hidden_fc_values": [64, 96, 128],
-    "n_fc": 1,
+    "n_fc_values": [1],
     "epochs": 2,
     "min_epochs": 4,
     "max_epochs": 128,

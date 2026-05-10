@@ -105,6 +105,8 @@ class ExperimentConfig:
     hp_grid: dict[str, Any]
     branching: dict[str, Any]
     dymola: dict[str, Any]
+    test_manifest_path: str | None = None
+    val_manifest_path: str | None = None
     config_py_path: str = str(REPO_ROOT / "scripts" / "config.py")
     sim_root: str = str(REPO_ROOT / "outputs" / "sim_profiles")
     variography_root: str = str(REPO_ROOT / "outputs" / "variography_profiles")
@@ -181,16 +183,25 @@ def _build_from_batches(
     )
 
 
-def _scale_with_fixed_test(
+def _scale_with_fixed_manifests(
     *,
     unscaled_h5: Path,
     out_dir: Path,
     scaling_type: str,
     split_mode: str,
-    test_manifest: Path,
+    test_manifest: Path | None,
+    val_manifest: Path | None,
+    save_test_manifest: Path | None,
     test_count: int,
     seed: int,
 ) -> Path:
+    if test_manifest is not None or val_manifest is not None:
+        _validate_fixed_manifests_against_unscaled_h5(
+            unscaled_h5=unscaled_h5,
+            test_manifest=test_manifest,
+            val_manifest=val_manifest,
+        )
+
     splitter = LSTMDatasetScalerSplitter(
         input_path=unscaled_h5,
         scaling_type=scaling_type,
@@ -199,12 +210,60 @@ def _scale_with_fixed_test(
         val_frac=0.4,
         test_frac=0.0,
         seed=seed,
-        test_manifest_path=test_manifest if test_manifest.exists() else None,
-        test_count=None if test_manifest.exists() else test_count,
-        save_test_manifest_path=test_manifest if not test_manifest.exists() else None,
+        test_manifest_path=test_manifest,
+        val_manifest_path=val_manifest,
+        test_count=None if test_manifest is not None else test_count,
+        save_test_manifest_path=save_test_manifest,
         output_dir=out_dir,
     )
     return splitter.run()
+
+
+def _read_manifest_profiles(manifest_path: Path, field: str) -> list[str]:
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"Manifest must be a JSON object: {manifest_path}")
+    profiles = data.get(field)
+    if not isinstance(profiles, list):
+        raise ValueError(f"Manifest {manifest_path} must contain list field: {field}.")
+    normalized = [str(profile) for profile in profiles]
+    if not normalized:
+        raise ValueError(f"Manifest {manifest_path} field {field} is empty.")
+    return normalized
+
+
+def _validate_fixed_manifests_against_unscaled_h5(
+    *,
+    unscaled_h5: Path,
+    test_manifest: Path | None,
+    val_manifest: Path | None,
+) -> None:
+    with h5py.File(unscaled_h5, "r") as h5f:
+        files_group = h5f.get("files")
+        if files_group is None:
+            raise ValueError(f"Unscaled dataset is missing the 'files' group: {unscaled_h5}")
+        available_profiles = set(files_group.keys())
+
+    test_profiles = _read_manifest_profiles(test_manifest, "test_profiles") if test_manifest is not None else []
+    val_profiles = _read_manifest_profiles(val_manifest, "val_profiles") if val_manifest is not None else []
+
+    overlap = sorted(set(test_profiles).intersection(val_profiles))
+    if overlap:
+        raise ValueError(f"Test and val manifests overlap ({len(overlap)} profiles): {overlap[:10]}")
+
+    missing_test = sorted(set(test_profiles) - available_profiles)
+    if missing_test:
+        raise ValueError(f"Test manifest contains profiles absent from {unscaled_h5}: {missing_test[:10]}")
+    missing_val = sorted(set(val_profiles) - available_profiles)
+    if missing_val:
+        raise ValueError(f"Val manifest contains profiles absent from {unscaled_h5}: {missing_val[:10]}")
+
+
+def _normalize_n_fc_values(grid: dict[str, Any]) -> list[int]:
+    raw = grid.get("n_fc_values", grid.get("n_fc", [1]))
+    if isinstance(raw, (int, float, str)):
+        raw = [raw]
+    return [int(value) for value in raw]
 
 
 def _tune(scaled_h5: Path, out_dir: Path, seed: int, grid: dict[str, Any]) -> Any:
@@ -215,7 +274,7 @@ def _tune(scaled_h5: Path, out_dir: Path, seed: int, grid: dict[str, Any]) -> An
         n_lstm_values=list(grid["n_lstm_values"]),
         hidden_lstm_values=list(grid["hidden_lstm_values"]),
         hidden_fc_values=list(grid["hidden_fc_values"]),
-        n_fc=int(grid.get("n_fc", 1)),
+        n_fc_values=_normalize_n_fc_values(grid),
         epochs=int(grid.get("epochs", 20)),
         seed=seed,
         out_dir=out_dir,
@@ -303,6 +362,7 @@ def _run_recursive_branching_internal(
     lstm_hidden: int,
     n_lstm: int,
     fc_hidden: int,
+    n_fc: int,
     seed: int,
     variography_root: Path,
 ) -> Path:
@@ -327,8 +387,8 @@ def _run_recursive_branching_internal(
         lookback=int(cfg.lookback),
         n_lstm=int(n_lstm),
         lstm_hidden=int(lstm_hidden),
-        n_fc=1,
-        fc_hidden=(int(fc_hidden),),
+        n_fc=int(n_fc),
+        fc_hidden=tuple([int(fc_hidden)] * int(n_fc)),
         kernel=str(variography_params["KERNEL"]),
         ell=float(variography_params["ELL"]),
         sigma_theta_target=float(variography_params["SIGMA_THETA_TARGET"]),
@@ -634,6 +694,8 @@ def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
 def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     cycles = [int(m["cycle"]) for m in cycle_metrics]
+    train_samples = [int(m.get("train_sample_count", 0)) for m in cycle_metrics]
+    cumulative_train_samples = [int(np.sum(train_samples[: idx + 1])) for idx in range(len(train_samples))]
     rmse = [float(m["forecast_quality"]["rmse"]) for m in cycle_metrics]
     mae = [float(m["forecast_quality"]["mae"]) for m in cycle_metrics]
     cal = [float(m["uncertainty_quality"]["calibration_error"]) for m in cycle_metrics]
@@ -676,6 +738,93 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     fig.tight_layout()
     fig.savefig(out_dir / "metrics_vs_cycle.png", dpi=150)
     plt.close(fig)
+
+    x_values = cumulative_train_samples if len(set(train_samples)) != len(train_samples) else train_samples
+    x_label = "Cumulative train samples" if x_values == cumulative_train_samples else "Train samples"
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    axes[0].plot(x_values, rmse, marker="o", label="RMSE")
+    axes[0].plot(x_values, mae, marker="o", label="MAE")
+    axes[0].set_title("Forecast error vs data budget")
+    axes[0].set_xlabel(x_label)
+    axes[0].grid(alpha=0.3)
+    axes[0].legend()
+
+    axes[1].plot(x_values, cal, marker="o", color="C3")
+    axes[1].set_title("Calibration error vs data budget")
+    axes[1].set_xlabel(x_label)
+    axes[1].grid(alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(out_dir / "metrics_vs_train_samples.png", dpi=150)
+    plt.close(fig)
+
+
+def _summarize_split_h5(scaled_h5: Path) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    with h5py.File(scaled_h5, "r") as h5f:
+        for split in ("train", "val", "test"):
+            files_group = h5f[split]["files"]
+            profile_count = len(files_group)
+            sample_count = int(sum(int(group["X"].shape[0]) for group in files_group.values()))
+            summary[f"{split}_profile_count"] = int(profile_count)
+            summary[f"{split}_sample_count"] = sample_count
+    return summary
+
+
+def _decode_h5_strings(values: Any) -> list[str]:
+    return [value.decode("utf-8") if isinstance(value, bytes) else str(value) for value in values]
+
+
+def _get_resolved_split_manifests(scaled_h5: Path) -> dict[str, Any]:
+    resolved: dict[str, Any] = {
+        "val_manifest_path": None,
+        "test_manifest_path": None,
+        "val_profiles": [],
+        "test_profiles": [],
+    }
+    with h5py.File(scaled_h5, "r") as h5f:
+        if "val_manifest_path" in h5f.attrs:
+            resolved["val_manifest_path"] = str(h5f.attrs["val_manifest_path"])
+        if "test_manifest_path" in h5f.attrs:
+            resolved["test_manifest_path"] = str(h5f.attrs["test_manifest_path"])
+        split_definition = h5f.get("split_definition")
+        if split_definition is not None:
+            if "val_profiles" in split_definition:
+                resolved["val_profiles"] = _decode_h5_strings(split_definition["val_profiles"][()])
+            if "test_profiles" in split_definition:
+                resolved["test_profiles"] = _decode_h5_strings(split_definition["test_profiles"][()])
+    return resolved
+
+
+def _summarize_sim_batch(batch_dir: Path | None) -> dict[str, Any]:
+    if batch_dir is None:
+        return {
+            "new_batch_profile_count": 0,
+            "new_batch_sample_count": 0,
+            "new_batch_simulated_seconds": 0.0,
+        }
+
+    profile_count = 0
+    sample_count = 0
+    simulated_seconds = 0.0
+    for csv_path in sorted(batch_dir.glob("results_drum_profile_*.csv")):
+        with csv_path.open(newline="") as fp:
+            reader = csv.DictReader(fp)
+            rows = list(reader)
+        if not rows:
+            continue
+        profile_count += 1
+        sample_count += len(rows)
+        if "t" in rows[0] and "t" in rows[-1]:
+            try:
+                simulated_seconds += max(0.0, float(rows[-1]["t"]) - float(rows[0]["t"]))
+            except (TypeError, ValueError):
+                pass
+    return {
+        "new_batch_profile_count": int(profile_count),
+        "new_batch_sample_count": int(sample_count),
+        "new_batch_simulated_seconds": float(simulated_seconds),
+    }
 
 
 def _save_forecast_pdf_subset(
@@ -721,7 +870,9 @@ def main() -> None:
 
     run_dir = args.base_output_dir / cfg.experiment_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    test_manifest = run_dir / "test_manifest.json"
+    configured_test_manifest = Path(cfg.test_manifest_path).resolve() if cfg.test_manifest_path else None
+    configured_val_manifest = Path(cfg.val_manifest_path).resolve() if cfg.val_manifest_path else None
+    generated_test_manifest = run_dir / "test_manifest.json"
 
     sim_root = Path(cfg.sim_root).resolve()
     var_root = Path(cfg.variography_root).resolve()
@@ -765,15 +916,32 @@ def main() -> None:
 
         _print_step_banner(cycle + 1, "Scale + split dataset")
         t0 = perf_counter()
-        scaled_h5 = _scale_with_fixed_test(
+        active_test_manifest = configured_test_manifest or (generated_test_manifest if generated_test_manifest.exists() else None)
+        if configured_val_manifest is not None and active_test_manifest is None:
+            raise SystemExit(
+                "val_manifest_path requires test_manifest_path or an existing generated test_manifest.json; "
+                "provide both explicit manifests for the first cycle."
+            )
+        save_test_manifest = None if active_test_manifest is not None else generated_test_manifest
+        scaled_h5 = _scale_with_fixed_manifests(
             unscaled_h5=unscaled_h5,
             out_dir=cycle_dir / "scaled",
             scaling_type=cfg.scaling_type,
             split_mode=cfg.split_mode,
-            test_manifest=test_manifest,
+            test_manifest=active_test_manifest,
+            val_manifest=configured_val_manifest,
+            save_test_manifest=save_test_manifest,
             test_count=cfg.test_count,
             seed=cycle_seed,
         )
+        split_budget = _summarize_split_h5(scaled_h5)
+        resolved_split_manifests = _get_resolved_split_manifests(scaled_h5)
+        if resolved_split_manifests.get("test_manifest_path") in (None, ""):
+            resolved_test_manifest = active_test_manifest or save_test_manifest
+            if resolved_test_manifest is not None and resolved_test_manifest.exists():
+                resolved_split_manifests["test_manifest_path"] = str(resolved_test_manifest)
+        if resolved_split_manifests.get("val_manifest_path") in (None, "") and configured_val_manifest is not None:
+            resolved_split_manifests["val_manifest_path"] = str(configured_val_manifest)
         step_times["scale_split_dataset_sec"] = perf_counter() - t0
         _print_step_result(cycle + 1, "Scale + split complete", f"Output: {scaled_h5}")
 
@@ -791,7 +959,7 @@ def main() -> None:
             "Hyperparameter tuning complete",
             (
                 f"Best trial: lr={best.learning_rate}, bs={best.batch_size}, "
-                f"n_lstm={best.n_lstm}, hl={best.hidden_lstm}, hf={best.hidden_fc}"
+                f"n_lstm={best.n_lstm}, n_fc={best.n_fc}, hl={best.hidden_lstm}, hf={best.hidden_fc}"
             ),
         )
 
@@ -808,8 +976,8 @@ def main() -> None:
             learning_rate=best.learning_rate,
             n_lstm=best.n_lstm,
             lstm_hidden=best.hidden_lstm,
-            n_fc=1,
-            fc_hidden=(best.hidden_fc,),
+            n_fc=best.n_fc,
+            fc_hidden=tuple([best.hidden_fc] * int(best.n_fc)),
             prefer_gpu=cfg.prefer_gpu,
             preload_val_to_device=True,
         )
@@ -858,6 +1026,7 @@ def main() -> None:
                     lstm_hidden=int(best.hidden_lstm),
                     n_lstm=int(best.n_lstm),
                     fc_hidden=int(best.hidden_fc),
+                    n_fc=int(best.n_fc),
                     seed=cycle_seed,
                     variography_root=var_root,
                 )
@@ -893,9 +1062,11 @@ def main() -> None:
             sim_batch = sim_out_dir.name
             known_batches.append(sim_batch.replace("batch_", ""))
             _print_step_result(cycle + 1, "Dymola simulation complete", f"New simulation batch: {sim_batch}")
+            new_batch_budget = _summarize_sim_batch(sim_out_dir)
         else:
             var_batch = None
             sim_batch = None
+            new_batch_budget = _summarize_sim_batch(None)
             step_times["profile_generation_sec"] = 0.0
             step_times["dymola_simulation_sec"] = 0.0
 
@@ -925,8 +1096,12 @@ def main() -> None:
                     "batch_size": best.batch_size,
                     "n_lstm": best.n_lstm,
                     "hidden_lstm": best.hidden_lstm,
+                    "n_fc": best.n_fc,
                     "hidden_fc": best.hidden_fc,
                 },
+                "resolved_split_manifests": resolved_split_manifests,
+                **split_budget,
+                **new_batch_budget,
                 "bagged_h5_path": str(bagged_h5_path),
                 "model_paths": model_paths,
                 "forecast_h5": str(forecast_h5),
@@ -959,7 +1134,11 @@ def main() -> None:
 
     _plot_metrics_over_cycles(
         [
-            {"cycle": row["cycle"], **row["ensemble_test_metrics"]}
+            {
+                "cycle": row["cycle"],
+                "train_sample_count": row.get("train_sample_count", 0),
+                **row["ensemble_test_metrics"],
+            }
             for row in metadata["cycles"]
         ],
         out_dir=run_dir / "metrics_plots",
