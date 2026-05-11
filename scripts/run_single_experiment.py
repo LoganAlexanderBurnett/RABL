@@ -106,6 +106,7 @@ class ExperimentConfig:
     hp_grid: dict[str, Any]
     branching: dict[str, Any]
     dymola: dict[str, Any]
+    bag_split_mode: str = "profile"
     ensemble_forecast_num_workers: int = 4
     test_manifest_path: str | None = None
     val_manifest_path: str | None = None
@@ -1026,6 +1027,7 @@ def main() -> None:
             out_dir=cycle_dir / "ensemble",
             n_models=cfg.n_models,
             bag_fraction=cfg.bag_fraction,
+            bag_split_mode=cfg.bag_split_mode,
             seed=cycle_seed,
             batch_size=best.batch_size,
             epochs=int(cfg.hp_grid.get("epochs", 20)),
@@ -1148,6 +1150,7 @@ def main() -> None:
                 "input_batches": cycle_input_batches,
                 "unscaled_h5": str(unscaled_h5),
                 "scaled_h5": str(scaled_h5),
+                "bag_split_mode": cfg.bag_split_mode,
                 "tuning_method": tuning_method,
                 "best_trial": {
                     "learning_rate": best.learning_rate,
