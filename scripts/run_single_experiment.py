@@ -106,6 +106,7 @@ class ExperimentConfig:
     hp_grid: dict[str, Any]
     branching: dict[str, Any]
     dymola: dict[str, Any]
+    ensemble_forecast_num_workers: int = 4
     test_manifest_path: str | None = None
     val_manifest_path: str | None = None
     config_py_path: str = str(REPO_ROOT / "scripts" / "config.py")
@@ -362,23 +363,39 @@ def _find_latest_global_result_index(sim_root: Path) -> int:
     return max_idx
 
 
-def _copy_stitched_results_to_batch_root_with_global_numbering(out_dir: Path, sim_root: Path) -> None:
-    stitched = out_dir / "stitched_results"
-    if not stitched.exists():
-        return
-    sources = sorted(stitched.glob("results_*.csv"))
+def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, sim_root: Path) -> int:
+    branched_results_dir = out_dir / "branched_results"
+    if not branched_results_dir.exists():
+        raise RuntimeError(f"No branched_results directory found after branched simulation: {branched_results_dir}")
+
+    sources = sorted(branched_results_dir.glob("results_*.csv"))
     if not sources:
-        return
+        raise RuntimeError(f"No branched CSV results found after branched simulation: {branched_results_dir}")
+
     next_idx = _find_latest_global_result_index(sim_root) + 1
+    copied = 0
     for csv_src in sources:
         mat_src = csv_src.with_suffix(".mat")
         stem = f"results_drum_profile_{next_idx:05d}"
         csv_dst = out_dir / f"{stem}.csv"
         mat_dst = out_dir / f"{stem}.mat"
-        csv_dst.write_bytes(csv_src.read_bytes())
+        shutil.copy2(csv_src, csv_dst)
         if mat_src.exists():
-            mat_dst.write_bytes(mat_src.read_bytes())
+            shutil.copy2(mat_src, mat_dst)
+        copied += 1
         next_idx += 1
+    print(f"[step] Copied {copied} branched result profiles into batch root: {out_dir}")
+    return copied
+
+
+def _validate_dataset_csvs_exist(batch_dir: Path, *, mode: str) -> None:
+    if list(batch_dir.glob("results_drum_profile_*.csv")):
+        return
+    raise RuntimeError(
+        "Simulation batch produced no root-level dataset CSVs. "
+        f"mode={mode}, batch_dir={batch_dir}, expected_pattern={batch_dir / 'results_drum_profile_*.csv'}, "
+        f"branched_results_dir={batch_dir / 'branched_results'}"
+    )
 
 
 def _run_recursive_branching_internal(
@@ -456,9 +473,12 @@ def _run_dymola_internal(
     finally:
         runner.close()
     if mode == "branched_mat":
-        _plot_stitched_results(out_dir / "stitched_results")
-        _copy_stitched_results_to_batch_root_with_global_numbering(out_dir, sim_root)
+        _plot_stitched_results(out_dir / "branched_results")
+        copied_count = _copy_branched_results_to_batch_root_with_global_numbering(out_dir, sim_root)
+        if copied_count < 1:
+            raise RuntimeError(f"No branched result CSVs were copied into batch root: {out_dir}")
         _cleanup_production_artifacts(out_dir)
+    _validate_dataset_csvs_exist(out_dir, mode=mode)
     return out_dir
 
 
@@ -472,6 +492,12 @@ def _cleanup_production_artifacts(out_dir: Path) -> None:
         if not file_path.is_file():
             continue
         if stitched_dir in file_path.parents:
+            continue
+        if (
+            file_path.parent == out_dir
+            and file_path.suffix.lower() == ".mat"
+            and file_path.stem.startswith("results_drum_profile_")
+        ):
             continue
         if file_path.suffix.lower() in {".txt", ".c", ".exe", ".mat"}:
             file_path.unlink(missing_ok=True)
@@ -1010,6 +1036,7 @@ def main() -> None:
             fc_hidden=tuple([best.hidden_fc] * int(best.n_fc)),
             prefer_gpu=cfg.prefer_gpu,
             preload_val_to_device=True,
+            forecast_num_workers=int(cfg.ensemble_forecast_num_workers),
         )
         step_times["ensemble_training_sec"] = perf_counter() - t0
         model_paths = [str(Path(d) / "model.pt") for d in ensemble["model_dirs"]]

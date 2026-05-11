@@ -15,6 +15,7 @@
   "n_models": 5,
   "bag_fraction": 0.70,
   "prefer_gpu": true,
+  "ensemble_forecast_num_workers": 4,
 
   "hp_grid": {
     "method": "grid",

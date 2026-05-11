@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
@@ -375,6 +376,43 @@ def _save_ensemble_rolling_forecasts_hdf5(
             group.attrs["columns"] = column_attr
 
 
+def _forecast_ensemble_profile(
+    profile_name: str,
+    x_profile: torch.Tensor,
+    y_profile: torch.Tensor,
+    *,
+    models: list[torch.nn.Module],
+    scaling_stats: dict[str, Any],
+    state_dim: int,
+    control_channel: int,
+    derivative_order: int | None,
+    derivative_dt: float,
+) -> dict[str, Any]:
+    x_np = x_profile.numpy()
+    y_true = _descale_targets_from_stats(scaling_stats, y_profile.numpy())
+
+    per_model_preds: list[np.ndarray] = []
+    for model in models:
+        y_pred = rolling_forecast(model, x_np, state_dim=state_dim)
+        y_pred = _descale_targets_from_stats(scaling_stats, y_pred)
+        per_model_preds.append(y_pred)
+
+    pred_stack = np.stack(per_model_preds, axis=0)
+    y_mean = np.mean(pred_stack, axis=0)
+    y_two_sigma = 2.0 * np.std(pred_stack, axis=0, ddof=0)
+
+    t_series = np.arange(y_mean.shape[0], dtype=np.float32)
+    u_series = _extract_control_series(x_np, state_dim=state_dim, control_channel=control_channel)
+    control_idx = state_dim + control_channel
+    u_series = _descale_feature_from_stats(scaling_stats, u_series, control_idx)
+
+    table = np.column_stack([t_series, u_series, y_true, y_mean, y_two_sigma]).astype(np.float32)
+    entry: dict[str, Any] = {"profile": str(profile_name), "table": table}
+    if derivative_order is not None:
+        entry["dx_sigma_dt"] = finite_difference(y_two_sigma, order=derivative_order, dt=derivative_dt)
+    return entry
+
+
 def ensemble_rolling_forecast_and_save(
     models: list[torch.nn.Module],
     profile_ds: Iterable[tuple[str, torch.Tensor, torch.Tensor]],
@@ -386,38 +424,46 @@ def ensemble_rolling_forecast_and_save(
     target_names: list[str] | None = None,
     derivative_order: int | None = None,
     derivative_dt: float = 1.0,
+    num_workers: int = 4,
 ) -> None:
     if target_names is None:
         target_names = list(TARGET_NAMES)
 
     scaling_stats = _load_scaling_stats(h5_path)
-    forecasts: list[dict[str, Any]] = []
+    workers = max(1, int(num_workers))
+    indexed_forecasts: list[tuple[int, dict[str, Any]]] = []
 
-    for profile_name, x_profile, y_profile in profile_ds:
-        x_np = x_profile.numpy()
-        y_true = _descale_targets_from_stats(scaling_stats, y_profile.numpy())
+    def _run_one(
+        index: int,
+        profile_name: str,
+        x_profile: torch.Tensor,
+        y_profile: torch.Tensor,
+    ) -> tuple[int, dict[str, Any]]:
+        return index, _forecast_ensemble_profile(
+            profile_name,
+            x_profile,
+            y_profile,
+            models=models,
+            scaling_stats=scaling_stats,
+            state_dim=state_dim,
+            control_channel=control_channel,
+            derivative_order=derivative_order,
+            derivative_dt=derivative_dt,
+        )
 
-        per_model_preds: list[np.ndarray] = []
-        for model in models:
-            y_pred = rolling_forecast(model, x_np, state_dim=state_dim)
-            y_pred = _descale_targets_from_stats(scaling_stats, y_pred)
-            per_model_preds.append(y_pred)
+    if workers <= 1:
+        for index, (profile_name, x_profile, y_profile) in enumerate(profile_ds):
+            indexed_forecasts.append(_run_one(index, profile_name, x_profile, y_profile))
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [
+                executor.submit(_run_one, index, profile_name, x_profile, y_profile)
+                for index, (profile_name, x_profile, y_profile) in enumerate(profile_ds)
+            ]
+            for future in as_completed(futures):
+                indexed_forecasts.append(future.result())
 
-        pred_stack = np.stack(per_model_preds, axis=0)
-        y_mean = np.mean(pred_stack, axis=0)
-        y_two_sigma = 2.0 * np.std(pred_stack, axis=0, ddof=0)
-
-        t_series = np.arange(y_mean.shape[0], dtype=np.float32)
-        u_series = _extract_control_series(x_np, state_dim=state_dim, control_channel=control_channel)
-        control_idx = state_dim + control_channel
-        u_series = _descale_feature_from_stats(scaling_stats, u_series, control_idx)
-
-        table = np.column_stack([t_series, u_series, y_true, y_mean, y_two_sigma]).astype(np.float32)
-        entry: dict[str, Any] = {"profile": str(profile_name), "table": table}
-        if derivative_order is not None:
-            entry["dx_sigma_dt"] = finite_difference(y_two_sigma, order=derivative_order, dt=derivative_dt)
-        forecasts.append(entry)
-
+    forecasts = [entry for _index, entry in sorted(indexed_forecasts, key=lambda item: item[0])]
     _save_ensemble_rolling_forecasts_hdf5(
         forecasts,
         output_path=output_path,
@@ -602,6 +648,7 @@ def run_bagging_ensemble(
     prefer_gpu: bool = True,
     preload_val_to_device: bool = True,
     verbose: int = 1,
+    forecast_num_workers: int = 4,
 ) -> dict[str, Any]:
     config = BaggingEnsembleConfig(
         n_models=n_models,
@@ -692,6 +739,7 @@ def run_bagging_ensemble(
         state_dim=STATE_DIM,
         control_channel=0,
         target_names=list(TARGET_NAMES),
+        num_workers=forecast_num_workers,
     )
 
     return {
