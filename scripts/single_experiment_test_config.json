@@ -2,6 +2,7 @@
   "experiment_id": "single_exp_001",
   "strategy": "branching",
   "seed": 123,
+  "training_seed": 123,
   "retrain_cycles": 2,
 
   "initial_sim_batches": ["0001", "0002"],

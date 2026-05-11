@@ -106,6 +106,7 @@ class ExperimentConfig:
     hp_grid: dict[str, Any]
     branching: dict[str, Any]
     dymola: dict[str, Any]
+    training_seed: int | None = None
     bag_split_mode: str = "profile"
     ensemble_forecast_num_workers: int = 4
     test_manifest_path: str | None = None
@@ -941,9 +942,17 @@ def main() -> None:
         "config": cfg.__dict__,
         "cycles": [],
     }
+    base_seed = int(cfg.seed)
+    configured_training_seed = (
+        cfg.training_seed
+        if cfg.training_seed is not None
+        else cfg.hp_grid.get("training_seed", base_seed)
+    )
+    training_seed = int(configured_training_seed)
     seed_manifest: dict[str, Any] = {
         "timestamp_utc": metadata["timestamp_utc"],
-        "base_seed": int(cfg.seed),
+        "base_seed": base_seed,
+        "training_seed": training_seed,
         "cycles": [],
     }
 
@@ -1007,7 +1016,7 @@ def main() -> None:
         best, tuning_method = _tune(
             scaled_h5=scaled_h5,
             out_dir=cycle_dir / "tuning",
-            seed=cycle_seed,
+            seed=training_seed,
             grid=cfg.hp_grid,
         )
         step_times["hyperparameter_tuning_sec"] = perf_counter() - t0
@@ -1028,7 +1037,7 @@ def main() -> None:
             n_models=cfg.n_models,
             bag_fraction=cfg.bag_fraction,
             bag_split_mode=cfg.bag_split_mode,
-            seed=cycle_seed,
+            seed=training_seed,
             batch_size=best.batch_size,
             epochs=int(cfg.hp_grid.get("epochs", 20)),
             learning_rate=best.learning_rate,
@@ -1179,8 +1188,9 @@ def main() -> None:
             "cycle": cycle + 1,
             "cycle_seed": cycle_seed,
             "scale_split_dataset_seed": cycle_seed,
-            "hyperparameter_tuning_seed": cycle_seed,
-            "ensemble_training_seed": cycle_seed,
+            "hyperparameter_tuning_seed": training_seed,
+            "ensemble_training_seed": training_seed,
+            "ensemble_bagging_seed": training_seed,
         }
         if cycle < cfg.retrain_cycles - 1:
             if cfg.strategy == "branching":
