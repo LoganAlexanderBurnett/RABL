@@ -959,6 +959,8 @@ def main() -> None:
     all_start = perf_counter()
     for cycle in range(cfg.retrain_cycles):
         cycle_seed = int(cfg.seed + cycle)
+        branching_root_count = max(1, int(cfg.branching["N_r"]))
+        branching_seed = int(base_seed + cycle * branching_root_count)
         cycle_start = perf_counter()
         step_times: dict[str, float] = {}
         cycle_input_batches = list(known_batches)
@@ -1095,7 +1097,7 @@ def main() -> None:
                     n_lstm=int(best.n_lstm),
                     fc_hidden=int(best.hidden_fc),
                     n_fc=int(best.n_fc),
-                    seed=cycle_seed,
+                    seed=branching_seed,
                     variography_root=var_root,
                 )
                 step_times["profile_generation_sec"] = perf_counter() - t0
@@ -1194,9 +1196,9 @@ def main() -> None:
         }
         if cycle < cfg.retrain_cycles - 1:
             if cfg.strategy == "branching":
-                cycle_seed_info["profile_generation_seed"] = cycle_seed
+                cycle_seed_info["profile_generation_seed"] = branching_seed
                 cycle_seed_info["recursive_branching_root_seeds"] = [
-                    cycle_seed + root_idx for root_idx in range(int(cfg.branching["N_r"]))
+                    branching_seed + root_idx for root_idx in range(branching_root_count)
                 ]
             else:
                 cycle_seed_info["profile_generation_seed"] = cycle_seed
