@@ -1,9 +1,9 @@
 {
   "experiment_id": "single_exp_001",
   "strategy": "branching",
-  "seed": 123,
+  "seed": 789,
   "training_seed": 123,
-  "retrain_cycles": 2,
+  "retrain_cycles": 10,
 
   "initial_sim_batches": ["0001", "0002"],
 
@@ -12,32 +12,38 @@
   "split_mode": "profile",
 
   "test_count": 2000,
+  "test_manifest_path": "scripts/test_profiles_1001_3000.json",
+  "val_manifest_path": "scripts/val_profiles_0001_1000.json",
 
   "n_models": 5,
   "bag_fraction": 0.70,
-  "bag_split_mode": "profile",
+  "bag_split_mode": "sample",
   "prefer_gpu": true,
-  "ensemble_forecast_num_workers": 4,
+  "ensemble_forecast_num_workers": 5,
 
   "hp_grid": {
     "method": "grid",
     "lookback": 12,
-    "learning_rates": [1e-4, 3e-4, 6e-4],
-    "batch_sizes": [48, 64, 96],
+    "learning_rates": [3e-4],
+    "batch_sizes": [128],
     "n_lstm_values": [1],
-    "hidden_lstm_values": [48, 64, 96],
-    "hidden_fc_values": [64, 96, 128],
+    "hidden_lstm_values": [64],
+    "hidden_fc_values": [128],
     "n_fc_values": [1],
-    "epochs": 2,
+    "epochs": 50,
     "min_epochs": 4,
     "max_epochs": 128,
     "reduction_factor": 2,
-    "early_stopping_patience": 2,
+    "prune_strategy": "successive_halving",
+    "early_stopping_patience": 10,
+    "early_stopping_min_delta": 0.0,
+    "step_lr_gamma": 0.5,
+    "step_lr_step_size": 30,
     "prefer_gpu": true
   },
 
   "branching": {
-    "N_r": 1,
+    "N_r": 12,
     "N_k": 3,
     "N_b": 2,
     "device": "cpu"
@@ -48,7 +54,7 @@
   },
 
   "config_py_path": "scripts/config.py",
-  "output_root": null,
-  "sim_root": null,
-  "variography_root": null
+  "output_root": "rabl_outputs/",
+  "sim_root": "rabl_outputs/sim_profiles",
+  "variography_root": "rabl_outputs/variography_profiles"
 }
