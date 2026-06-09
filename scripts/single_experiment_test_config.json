@@ -20,6 +20,10 @@
   "bag_split_mode": "sample",
   "prefer_gpu": true,
   "ensemble_forecast_num_workers": 5,
+  "forecast_plot_bins": 5,
+  "forecast_plot_profiles_per_bin": 2,
+  "forecast_plot_selection_seed": 789,
+  "forecast_plot_selection_path": null,
 
   "hp_grid": {
     "method": "grid",

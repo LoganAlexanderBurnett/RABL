@@ -18,6 +18,7 @@ import json
 import re
 import shutil
 import sys
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -109,6 +110,10 @@ class ExperimentConfig:
     training_seed: int | None = None
     bag_split_mode: str = "profile"
     ensemble_forecast_num_workers: int = 4
+    forecast_plot_bins: int = 5
+    forecast_plot_profiles_per_bin: int = 2
+    forecast_plot_selection_seed: int | None = None
+    forecast_plot_selection_path: str | None = None
     test_manifest_path: str | None = None
     val_manifest_path: str | None = None
     config_py_path: str = str(REPO_ROOT / "scripts" / "config.py")
@@ -883,27 +888,224 @@ def _summarize_sim_batch(batch_dir: Path | None) -> dict[str, Any]:
     }
 
 
+def _forecast_plot_selection_path(*, cfg: ExperimentConfig, run_dir: Path) -> Path:
+    if cfg.forecast_plot_selection_path:
+        return Path(cfg.forecast_plot_selection_path).expanduser().resolve()
+    return run_dir / "forecast_plot_profile_selection.json"
+
+
+def _read_forecast_profile_angle_summary(group: h5py.Group, *, profile_name: str) -> dict[str, float] | None:
+    if "data" not in group:
+        warnings.warn(f"Forecast profile {profile_name!r} is missing dataset 'data'; skipping angle-bin selection.")
+        return None
+    table = np.asarray(group["data"][()], dtype=float)
+    if table.ndim != 2:
+        warnings.warn(f"Forecast profile {profile_name!r} has non-2D data shape {table.shape}; skipping.")
+        return None
+    columns = _decode_h5_strings(group.attrs.get("columns", []))
+    if len(columns) != table.shape[1]:
+        warnings.warn(
+            f"Forecast profile {profile_name!r} has {table.shape[1]} data columns but "
+            f"{len(columns)} metadata columns; skipping angle-bin selection."
+        )
+        return None
+    if "u(t)" not in columns:
+        warnings.warn(
+            f"Forecast profile {profile_name!r} is missing required column 'u(t)'; "
+            "skipping angle-bin selection."
+        )
+        return None
+    u_series = table[:, columns.index("u(t)")]
+    finite = u_series[np.isfinite(u_series)]
+    if finite.size == 0:
+        warnings.warn(
+            f"Forecast profile {profile_name!r} has no finite 'u(t)' values; skipping angle-bin selection."
+        )
+        return None
+    return {
+        "angle_mean": float(np.mean(finite)),
+        "angle_min": float(np.min(finite)),
+        "angle_max": float(np.max(finite)),
+    }
+
+
+def _select_angle_binned_forecast_profiles(
+    *,
+    forecast_h5_path: Path,
+    bins: int,
+    profiles_per_bin: int,
+    seed: int | None,
+) -> dict[str, Any]:
+    """Select forecast profiles by binning profiles on mean drum angle/control angle."""
+    bins = int(bins)
+    profiles_per_bin = int(profiles_per_bin)
+    if bins < 1:
+        raise ValueError("forecast_plot_bins must be >= 1.")
+    if profiles_per_bin < 0:
+        raise ValueError("forecast_plot_profiles_per_bin must be >= 0.")
+
+    profile_summaries: list[dict[str, Any]] = []
+    with h5py.File(forecast_h5_path, "r") as h5f:
+        for profile_name in sorted(h5f.keys()):
+            summary = _read_forecast_profile_angle_summary(
+                h5f[profile_name],
+                profile_name=profile_name,
+            )
+            if summary is not None:
+                profile_summaries.append({"profile_name": profile_name, **summary})
+
+    if not profile_summaries or profiles_per_bin == 0:
+        return {
+            "forecast_h5": str(forecast_h5_path),
+            "selection_seed": seed,
+            "angle_summary": "mean_u(t)",
+            "bins_requested": bins,
+            "bins_effective": 0,
+            "profiles_per_bin_requested": profiles_per_bin,
+            "angle_min": None,
+            "angle_max": None,
+            "bin_edges": [],
+            "selected_profiles": [],
+            "profile_bins": {},
+            "bin_metadata": [],
+        }
+
+    summaries = np.asarray([row["angle_mean"] for row in profile_summaries], dtype=float)
+    angle_min = float(np.min([row["angle_min"] for row in profile_summaries]))
+    angle_max = float(np.max([row["angle_max"] for row in profile_summaries]))
+    if np.isclose(angle_min, angle_max):
+        # Degenerate range: keep one effective bin and record duplicate edges for transparency.
+        bin_edges = np.asarray([angle_min, angle_max], dtype=float)
+        effective_bins = 1
+        bin_indices = np.zeros(len(profile_summaries), dtype=int)
+    else:
+        bin_edges = np.linspace(angle_min, angle_max, bins + 1, dtype=float)
+        effective_bins = bins
+        # Right edge belongs to the final bin.
+        bin_indices = np.searchsorted(bin_edges, summaries, side="right") - 1
+        bin_indices = np.clip(bin_indices, 0, effective_bins - 1)
+
+    rng = np.random.default_rng(seed)
+    by_bin: dict[int, list[dict[str, Any]]] = {idx: [] for idx in range(effective_bins)}
+    profile_bins: dict[str, dict[str, Any]] = {}
+    for profile_summary, bin_idx in zip(profile_summaries, bin_indices, strict=True):
+        idx = int(bin_idx)
+        profile_name = str(profile_summary["profile_name"])
+        by_bin[idx].append(profile_summary)
+        profile_bins[profile_name] = {
+            "bin_index": idx,
+            "angle_mean": float(profile_summary["angle_mean"]),
+            "angle_min": float(profile_summary["angle_min"]),
+            "angle_max": float(profile_summary["angle_max"]),
+        }
+
+    selected_profiles: list[str] = []
+    bin_metadata: list[dict[str, Any]] = []
+    for bin_idx in range(effective_bins):
+        candidates = sorted(
+            by_bin.get(bin_idx, []),
+            key=lambda item: str(item["profile_name"]),
+        )
+        candidate_names = [str(item["profile_name"]) for item in candidates]
+        if profiles_per_bin >= len(candidate_names):
+            selected_for_bin = candidate_names
+        else:
+            selected_for_bin = sorted(
+                rng.choice(candidate_names, size=profiles_per_bin, replace=False).tolist()
+            )
+        selected_profiles.extend(selected_for_bin)
+        lo = float(bin_edges[bin_idx])
+        hi = float(bin_edges[bin_idx + 1])
+        bin_metadata.append(
+            {
+                "bin_index": bin_idx,
+                "angle_range": [lo, hi],
+                "candidate_count": len(candidate_names),
+                "selected_count": len(selected_for_bin),
+                "selected_profiles": selected_for_bin,
+                "candidate_profiles": candidate_names,
+            }
+        )
+
+    return {
+        "forecast_h5": str(forecast_h5_path),
+        "selection_seed": seed,
+        "angle_summary": "mean_u(t)",
+        "bins_requested": bins,
+        "bins_effective": effective_bins,
+        "profiles_per_bin_requested": profiles_per_bin,
+        "angle_min": angle_min,
+        "angle_max": angle_max,
+        "bin_edges": [float(edge) for edge in bin_edges.tolist()],
+        "selected_profiles": selected_profiles,
+        "profile_bins": {name: profile_bins[name] for name in selected_profiles if name in profile_bins},
+        "bin_metadata": bin_metadata,
+    }
+
+
+def _load_or_create_forecast_plot_selection(
+    *,
+    forecast_h5_path: Path,
+    selection_path: Path,
+    cycle: int,
+    bins: int,
+    profiles_per_bin: int,
+    seed: int | None,
+) -> dict[str, Any]:
+    if cycle == 1:
+        selection = _select_angle_binned_forecast_profiles(
+            forecast_h5_path=forecast_h5_path,
+            bins=bins,
+            profiles_per_bin=profiles_per_bin,
+            seed=seed,
+        )
+        selection_path.parent.mkdir(parents=True, exist_ok=True)
+        selection_path.write_text(json.dumps(selection, indent=2), encoding="utf-8")
+        print(f"[step] Saved forecast plot profile selection: {selection_path}")
+        return selection
+
+    if not selection_path.exists():
+        raise FileNotFoundError(
+            f"Forecast plot profile selection is required after cycle 1 but does not exist: {selection_path}"
+        )
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    if not isinstance(selection, dict):
+        raise ValueError(f"Forecast plot profile selection must be a JSON object: {selection_path}")
+    selected_profiles = selection.get("selected_profiles")
+    if not isinstance(selected_profiles, list):
+        raise ValueError(f"Forecast plot profile selection is missing list field 'selected_profiles': {selection_path}")
+    return selection
+
+
 def _save_forecast_pdf_subset(
     *,
     forecast_h5_path: Path,
     output_pdf_path: Path,
-    max_profiles: int,
-) -> None:
-    with h5py.File(forecast_h5_path, "r") as src:
-        names = sorted(src.keys())[:max(0, int(max_profiles))]
-        if not names:
-            print("[step] No forecast profiles selected for PDF; skipping PDF generation.")
-            return
-        subset_h5 = output_pdf_path.with_suffix(".subset_tmp.h5")
-        with h5py.File(subset_h5, "w") as dst:
-            for name in names:
-                src.copy(name, dst)
-        save_forecast_profiles_pdf(
-            forecast_h5_path=subset_h5,
-            output_pdf_path=output_pdf_path,
-            mode="ensemble",
-        )
-    subset_h5.unlink(missing_ok=True)
+    profile_names: list[str],
+) -> list[str]:
+    subset_h5 = output_pdf_path.with_suffix(".subset_tmp.h5")
+    plotted_names: list[str] = []
+    try:
+        with h5py.File(forecast_h5_path, "r") as src:
+            for name in profile_names:
+                if name in src:
+                    plotted_names.append(str(name))
+                else:
+                    warnings.warn(f"Selected forecast profile {name!r} is missing from {forecast_h5_path}; skipping.")
+            if not plotted_names:
+                print("[step] No selected forecast profiles are present for PDF; skipping PDF generation.")
+                return []
+            with h5py.File(subset_h5, "w") as dst:
+                for name in plotted_names:
+                    src.copy(name, dst)
+            save_forecast_profiles_pdf(
+                forecast_h5_path=subset_h5,
+                output_pdf_path=output_pdf_path,
+                mode="ensemble",
+            )
+    finally:
+        subset_h5.unlink(missing_ok=True)
+    return plotted_names
 
 
 def main() -> None:
@@ -913,14 +1115,24 @@ def main() -> None:
     parser.add_argument(
         "--plot-n-forecasts",
         type=int,
-        default=10,
-        help="Number of forecast profiles to include in the ensemble forecast PDF per cycle.",
+        default=None,
+        help=(
+            "Deprecated compatibility override for forecast_plot_profiles_per_bin; "
+            "prefer forecast_plot_bins and forecast_plot_profiles_per_bin in the config."
+        ),
     )
     args = parser.parse_args()
-    if args.plot_n_forecasts < 0:
-        raise SystemExit("--plot-n-forecasts must be >= 0.")
 
     cfg = _load_cfg(args.config)
+    if args.plot_n_forecasts is not None:
+        if args.plot_n_forecasts < 0:
+            raise SystemExit("--plot-n-forecasts must be >= 0.")
+        object.__setattr__(cfg, "forecast_plot_bins", 1)
+        object.__setattr__(cfg, "forecast_plot_profiles_per_bin", int(args.plot_n_forecasts))
+    if int(cfg.forecast_plot_bins) < 1:
+        raise SystemExit("forecast_plot_bins must be >= 1.")
+    if int(cfg.forecast_plot_profiles_per_bin) < 0:
+        raise SystemExit("forecast_plot_profiles_per_bin must be >= 0.")
     if cfg.strategy not in {"branching", "random"}:
         raise SystemExit("strategy must be branching or random.")
 
@@ -931,6 +1143,7 @@ def main() -> None:
     configured_test_manifest = Path(cfg.test_manifest_path).resolve() if cfg.test_manifest_path else None
     configured_val_manifest = Path(cfg.val_manifest_path).resolve() if cfg.val_manifest_path else None
     generated_test_manifest = run_dir / "test_manifest.json"
+    forecast_plot_selection_path = _forecast_plot_selection_path(cfg=cfg, run_dir=run_dir)
 
     sim_root = Path(cfg.sim_root).resolve() if cfg.sim_root else output_root / "sim_profiles"
     var_root = Path(cfg.variography_root).resolve() if cfg.variography_root else output_root / "variography_profiles"
@@ -1072,10 +1285,23 @@ def main() -> None:
 
         forecast_pdf = cycle_dir / "ensemble" / "ensemble_test_forecasts.pdf"
         t0 = perf_counter()
-        _save_forecast_pdf_subset(
+        forecast_plot_selection = _load_or_create_forecast_plot_selection(
+            forecast_h5_path=forecast_h5,
+            selection_path=forecast_plot_selection_path,
+            cycle=cycle + 1,
+            bins=int(cfg.forecast_plot_bins),
+            profiles_per_bin=int(cfg.forecast_plot_profiles_per_bin),
+            seed=(
+                cfg.forecast_plot_selection_seed
+                if cfg.forecast_plot_selection_seed is not None
+                else base_seed
+            ),
+        )
+        selected_forecast_profiles = [str(name) for name in forecast_plot_selection.get("selected_profiles", [])]
+        plotted_forecast_profiles = _save_forecast_pdf_subset(
             forecast_h5_path=forecast_h5,
             output_pdf_path=forecast_pdf,
-            max_profiles=args.plot_n_forecasts,
+            profile_names=selected_forecast_profiles,
         )
         step_times["forecast_pdf_render_sec"] = perf_counter() - t0
         _print_step_result(cycle + 1, "Ensemble training + evaluation complete", f"Forecast PDF: {forecast_pdf}")
@@ -1178,7 +1404,21 @@ def main() -> None:
                 "model_paths": model_paths,
                 "forecast_h5": str(forecast_h5),
                 "forecast_pdf": str(forecast_pdf),
-                "forecast_profiles_plotted": int(max(args.plot_n_forecasts, 0)),
+                "forecast_profiles_plotted": len(plotted_forecast_profiles),
+                "forecast_plot_selection_path": str(forecast_plot_selection_path),
+                "forecast_plot_selected_profiles": selected_forecast_profiles,
+                "forecast_plot_plotted_profiles": plotted_forecast_profiles,
+                "forecast_plot_bin_metadata": forecast_plot_selection.get("bin_metadata", []),
+                "forecast_plot_selection_metadata": {
+                    "selection_seed": forecast_plot_selection.get("selection_seed"),
+                    "angle_summary": forecast_plot_selection.get("angle_summary"),
+                    "bins_requested": forecast_plot_selection.get("bins_requested"),
+                    "bins_effective": forecast_plot_selection.get("bins_effective"),
+                    "profiles_per_bin_requested": forecast_plot_selection.get("profiles_per_bin_requested"),
+                    "angle_min": forecast_plot_selection.get("angle_min"),
+                    "angle_max": forecast_plot_selection.get("angle_max"),
+                    "bin_edges": forecast_plot_selection.get("bin_edges", []),
+                },
                 "ensemble_test_metrics": metrics,
                 "ensemble_metrics_json": str(metrics_json),
                 "new_variography_batch": None if var_batch is None else str(var_batch),
