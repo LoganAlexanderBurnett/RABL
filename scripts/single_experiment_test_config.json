@@ -4,32 +4,53 @@
   "seed": 789,
   "training_seed": 123,
   "retrain_cycles": 10,
-
-  "initial_sim_batches": ["0001", "0002"],
-
+  "initial_sim_batches": [
+    "0001",
+    "0002"
+  ],
   "lookback": 12,
   "scaling_type": "minmax",
   "split_mode": "profile",
-
   "test_count": 2000,
   "test_manifest_path": "scripts/test_profiles_1001_3000.json",
   "val_manifest_path": "scripts/val_profiles_0001_1000.json",
-
   "n_models": 5,
-  "bag_fraction": 0.70,
+  "bag_fraction": 0.7,
   "bag_split_mode": "sample",
   "prefer_gpu": true,
+  "plot_bag_distributions": true,
+  "save_individual_ensemble_forecasts": true,
+  "plot_individual_ensemble_forecasts": true,
+  "evaluate_test_difficulty": true,
+  "test_difficulty_bins": 10,
+  "test_difficulty_include_per_target": false,
+  "test_difficulty_num_workers": 4,
   "ensemble_forecast_num_workers": 5,
-
+  "forecast_plot_bins": 5,
+  "forecast_plot_profiles_per_bin": 2,
+  "forecast_plot_selection_seed": 789,
+  "forecast_plot_selection_path": null,
   "hp_grid": {
     "method": "grid",
     "lookback": 12,
-    "learning_rates": [3e-4],
-    "batch_sizes": [128],
-    "n_lstm_values": [1],
-    "hidden_lstm_values": [64],
-    "hidden_fc_values": [128],
-    "n_fc_values": [1],
+    "learning_rates": [
+      0.0003
+    ],
+    "batch_sizes": [
+      128
+    ],
+    "n_lstm_values": [
+      1
+    ],
+    "hidden_lstm_values": [
+      64
+    ],
+    "hidden_fc_values": [
+      128
+    ],
+    "n_fc_values": [
+      1
+    ],
     "epochs": 50,
     "min_epochs": 4,
     "max_epochs": 128,
@@ -39,22 +60,43 @@
     "early_stopping_min_delta": 0.0,
     "step_lr_gamma": 0.5,
     "step_lr_step_size": 30,
-    "prefer_gpu": true
+    "prefer_gpu": true,
+    "lstm_dropout": 0.0,
+    "preload_train_to_device": true,
+    "preload_val_to_device": true,
+    "restore_best_weights": true,
+    "use_tqdm": true,
+    "verbose": 1
   },
-
   "branching": {
     "N_r": 12,
     "N_k": 3,
     "N_b": 2,
-    "device": "cpu"
+    "device": "cpu",
+    "finite_difference_order": 4
   },
-
   "dymola": {
     "output_interval": 0.4
   },
-
   "config_py_path": "scripts/config.py",
   "output_root": "rabl_outputs/",
   "sim_root": "rabl_outputs/sim_profiles",
-  "variography_root": "rabl_outputs/variography_profiles"
+  "variography_root": "rabl_outputs/variography_profiles",
+  "branching_target_weights": {
+    "TN2": 0.06666666666666667,
+    "Tm": 0.06666666666666667,
+    "Thp": 0.06666666666666667,
+    "Tf": 0.06666666666666667,
+    "Tsg": 0.06666666666666667,
+    "c[1]": 0.06666666666666667,
+    "c[2]": 0.06666666666666667,
+    "c[3]": 0.06666666666666667,
+    "c[4]": 0.06666666666666667,
+    "c[5]": 0.06666666666666667,
+    "c[6]": 0.06666666666666667,
+    "n": 0.06666666666666667,
+    "rho_dollars": 0.06666666666666667,
+    "T_steam_out": 0.06666666666666667,
+    "x_steam_out": 0.06666666666666667
+  }
 }
