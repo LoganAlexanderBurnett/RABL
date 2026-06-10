@@ -668,6 +668,150 @@ def _plot_cycle_colored_batches(
     print(f"[step] Saved cycle-colored profiles plot: {output_path}")
 
 
+TRAINING_DISTRIBUTION_VARS = {
+    "theta": "drumAngleDeg",
+    "rho": "rho_dollars",
+    "n": "n",
+}
+
+
+def _read_training_distribution_batch(batch_dir: Path) -> dict[str, np.ndarray]:
+    values: dict[str, list[float]] = {key: [] for key in TRAINING_DISTRIBUTION_VARS}
+    csv_paths = sorted(batch_dir.glob("results_drum_profile_*.csv"))
+    if not csv_paths:
+        print(f"[warn] No results_drum_profile_*.csv found for training distribution plot: {batch_dir}")
+        return {key: np.asarray([], dtype=float) for key in TRAINING_DISTRIBUTION_VARS}
+
+    for csv_path in csv_paths:
+        with csv_path.open(newline="") as fp:
+            reader = csv.DictReader(fp)
+            if reader.fieldnames is None:
+                continue
+            normalized_fieldnames = {name.strip(): name for name in reader.fieldnames}
+            missing = [
+                column
+                for column in TRAINING_DISTRIBUTION_VARS.values()
+                if column not in normalized_fieldnames
+            ]
+            if missing:
+                print(f"[warn] Skipping {csv_path}; missing distribution columns: {missing}")
+                continue
+            source_columns = {
+                key: normalized_fieldnames[column]
+                for key, column in TRAINING_DISTRIBUTION_VARS.items()
+            }
+            for row in reader:
+                for key, source_column in source_columns.items():
+                    try:
+                        value = float(row[source_column])
+                    except (TypeError, ValueError):
+                        continue
+                    if np.isfinite(value):
+                        values[key].append(value)
+
+    return {key: np.asarray(raw_values, dtype=float) for key, raw_values in values.items()}
+
+
+def _combine_training_distribution_batches(
+    *,
+    batch_names: list[str],
+    batch_cache: dict[str, dict[str, np.ndarray]],
+) -> dict[str, np.ndarray]:
+    combined: dict[str, np.ndarray] = {}
+    for key in TRAINING_DISTRIBUTION_VARS:
+        arrays = [batch_cache[batch_name][key] for batch_name in batch_names if batch_name in batch_cache]
+        arrays = [array for array in arrays if array.size]
+        combined[key] = np.concatenate(arrays) if arrays else np.asarray([], dtype=float)
+    return combined
+
+
+def _plot_training_distributions_over_cycles(
+    *,
+    sim_root: Path,
+    initial_sim_batches: list[str],
+    cycle_rows: list[dict[str, Any]],
+    output_path: Path,
+) -> Path | None:
+    """Plot compact theta/rho/n distribution summaries for each cumulative training set."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    initial_batches = [_normalize_batch_name(batch) for batch in initial_sim_batches]
+
+    entries: list[tuple[str, list[str]]] = []
+    if cycle_rows:
+        first_cycle_batches = [
+            _normalize_batch_name(batch)
+            for batch in cycle_rows[0].get("input_batches", [])
+        ]
+        for cycle_row in cycle_rows:
+            cycle_num = int(cycle_row.get("cycle", len(entries) + 1))
+            batch_names = [
+                _normalize_batch_name(batch)
+                for batch in cycle_row.get("input_batches", [])
+            ]
+            label = f"cycle {cycle_num}"
+            if cycle_num == 1 and batch_names == initial_batches:
+                label = "cycle 1\n(initial)"
+            entries.append((label, batch_names))
+        if first_cycle_batches != initial_batches:
+            entries.insert(0, ("initial", initial_batches))
+    elif initial_batches:
+        entries.append(("initial", initial_batches))
+
+    if not entries:
+        print("[warn] No training batch entries available for distribution plot; skipping.")
+        return None
+
+    unique_batch_names = sorted({batch_name for _, batch_names in entries for batch_name in batch_names})
+    batch_cache: dict[str, dict[str, np.ndarray]] = {}
+    for batch_name in unique_batch_names:
+        batch_dir = sim_root / batch_name
+        if not batch_dir.exists():
+            print(f"[warn] Missing batch directory for training distribution plot: {batch_dir}")
+            continue
+        batch_cache[batch_name] = _read_training_distribution_batch(batch_dir)
+
+    distributions = [
+        _combine_training_distribution_batches(batch_names=batch_names, batch_cache=batch_cache)
+        for _, batch_names in entries
+    ]
+    if not any(any(values.size for values in distribution.values()) for distribution in distributions):
+        print("[warn] No theta/rho/n values found for training distribution plot; skipping.")
+        return None
+
+    fig, axes = plt.subplots(1, 3, figsize=(max(12, 1.3 * len(entries)), 5), sharex=True)
+    axes = np.atleast_1d(axes)
+    labels = [label for label, _ in entries]
+    positions = np.arange(1, len(entries) + 1)
+    for ax, (summary_name, column_name) in zip(axes, TRAINING_DISTRIBUTION_VARS.items(), strict=True):
+        series = [distribution[summary_name] for distribution in distributions]
+        nonempty_positions = [position for position, values in zip(positions, series, strict=True) if values.size]
+        nonempty_series = [values for values in series if values.size]
+        if nonempty_series:
+            ax.boxplot(
+                nonempty_series,
+                positions=nonempty_positions,
+                widths=0.6,
+                showfliers=False,
+                patch_artist=True,
+                boxprops={"facecolor": "#9ecae1", "alpha": 0.7},
+                medianprops={"color": "#de2d26", "linewidth": 1.5},
+            )
+        ax.set_title(column_name)
+        ax.set_ylabel(column_name)
+        ax.grid(axis="y", alpha=0.3)
+        sample_counts = [int(values.size) for values in series]
+        tick_labels = [f"{label}\nN={count}" for label, count in zip(labels, sample_counts, strict=True)]
+        ax.set_xticks(positions)
+        ax.set_xticklabels(tick_labels, rotation=35, ha="right")
+
+    fig.suptitle("Cumulative training distributions by cycle")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"[step] Saved training distribution plot: {output_path}")
+    return output_path
+
+
 def _extract_root_id_from_results_stem(stem: str) -> str:
     parts = stem.split("__")
     if len(parts) >= 2 and parts[0].startswith("results_"):
@@ -1445,6 +1589,7 @@ def main() -> None:
                 cycle_seed_info["random_profile_generation_seed"] = cycle_seed
         seed_manifest["cycles"].append(cycle_seed_info)
 
+    metrics_plots_dir = run_dir / "metrics_plots"
     _plot_metrics_over_cycles(
         [
             {
@@ -1454,14 +1599,29 @@ def main() -> None:
             }
             for row in metadata["cycles"]
         ],
-        out_dir=run_dir / "metrics_plots",
+        out_dir=metrics_plots_dir,
     )
+    cycle_colored_plot_path = metrics_plots_dir / "profiles_by_cycle_color.png"
     _plot_cycle_colored_batches(
         sim_root=sim_root,
         initial_sim_batches=list(cfg.initial_sim_batches),
         cycle_rows=metadata["cycles"],
-        output_path=run_dir / "metrics_plots" / "profiles_by_cycle_color.png",
+        output_path=cycle_colored_plot_path,
     )
+    training_distribution_plot_path = _plot_training_distributions_over_cycles(
+        sim_root=sim_root,
+        initial_sim_batches=list(cfg.initial_sim_batches),
+        cycle_rows=metadata["cycles"],
+        output_path=metrics_plots_dir / "training_distribution_theta_rho_n_by_cycle.png",
+    )
+    metadata["metrics_plots"] = {
+        "metrics_vs_cycle": str(metrics_plots_dir / "metrics_vs_cycle.png"),
+        "metrics_vs_train_samples": str(metrics_plots_dir / "metrics_vs_train_samples.png"),
+        "profiles_by_cycle_color": str(cycle_colored_plot_path),
+        "training_distribution_theta_rho_n_by_cycle": (
+            None if training_distribution_plot_path is None else str(training_distribution_plot_path)
+        ),
+    }
 
     metadata_path = run_dir / "run_metadata.json"
     seed_manifest_path = run_dir / "seed_manifest.json"
