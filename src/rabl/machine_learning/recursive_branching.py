@@ -103,6 +103,7 @@ class RecursiveBranchingBatchConfig:
     sigma_theta_target: float = 2.5
     nugget_v_deg2_s2: float = 0.0
     finite_difference_order: int = 4
+    target_weights: tuple[float, ...] | None = None
     device: str = "cpu"
 
 
@@ -716,7 +717,20 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
         nugget=float(config.nugget_v_deg2_s2),
         update_instance=True,
     )
-    weights = np.ones((num_targets,), dtype=float)
+    if config.target_weights is None:
+        weights = np.ones((num_targets,), dtype=float) / float(num_targets)
+    else:
+        weights = np.asarray(config.target_weights, dtype=float)
+        if weights.ndim != 1 or weights.shape[0] != num_targets:
+            raise ValueError(
+                "target_weights must be a 1D vector with length equal to target dimension. "
+                f"Got weights={weights.shape}, targets={num_targets}."
+            )
+        if np.any(weights < 0):
+            raise ValueError("target_weights must be non-negative.")
+        weight_sum = float(np.sum(weights))
+        if not np.isclose(weight_sum, 1.0):
+            raise ValueError(f"target_weights must sum to 1.0; got {weight_sum}.")
 
     profiles_h5 = config.output_dir / "profiles.h5"
     manifest_path = config.output_dir / "branched_profiles_manifest.json"

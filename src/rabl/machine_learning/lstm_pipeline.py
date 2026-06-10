@@ -145,8 +145,12 @@ def _reorder_forecast_plot_targets(
     for arr in arrays:
         if arr is None:
             reordered_arrays.append(None)
-        else:
+        elif arr.ndim == 2:
             reordered_arrays.append(arr[:, ordered_indices])
+        elif arr.ndim == 3:
+            reordered_arrays.append(arr[:, :, ordered_indices])
+        else:
+            raise ValueError(f"Cannot reorder forecast plot targets for array with shape {arr.shape}.")
     return ordered_names, reordered_arrays
 
 
@@ -1686,6 +1690,7 @@ def _plot_ensemble_forecast_vs_truth_grid(
     y_mean: np.ndarray,
     y_2sigma: np.ndarray | None,
     y_dsigma_dt: np.ndarray | None,
+    y_members: np.ndarray | None,
     target_names: list[str],
     title: str,
     control_name: str,
@@ -1704,13 +1709,25 @@ def _plot_ensemble_forecast_vs_truth_grid(
         raise ValueError(f"y_2sigma must match y_mean shape. Got {y_2sigma.shape} vs {y_mean.shape}")
     if y_dsigma_dt is not None and y_dsigma_dt.shape != y_mean.shape:
         raise ValueError(f"y_dsigma_dt must match y_mean shape. Got {y_dsigma_dt.shape} vs {y_mean.shape}")
+    if y_members is not None:
+        if y_members.ndim != 3:
+            raise ValueError(f"y_members must be 3D (members,steps,targets). Got {y_members.shape}")
+        if y_members.shape[1:] != y_mean.shape:
+            raise ValueError(f"y_members steps/targets must match y_mean. Got {y_members.shape} vs {y_mean.shape}")
 
     num_steps, num_targets = y_true.shape
     if len(target_names) != num_targets:
         raise ValueError(f"target_names must have length {num_targets}, got {len(target_names)}")
 
-    target_names, reordered = _reorder_forecast_plot_targets(target_names, y_true, y_mean, y_2sigma, y_dsigma_dt)
-    y_true, y_mean, y_2sigma, y_dsigma_dt = reordered
+    target_names, reordered = _reorder_forecast_plot_targets(
+        target_names,
+        y_true,
+        y_mean,
+        y_2sigma,
+        y_dsigma_dt,
+        y_members,
+    )
+    y_true, y_mean, y_2sigma, y_dsigma_dt, y_members = reordered
     num_targets = len(target_names)
 
     if t_series is None:
@@ -1741,7 +1758,17 @@ def _plot_ensemble_forecast_vs_truth_grid(
     for target_idx, target_name in enumerate(target_names):
         ax = axes_flat[target_idx + 1]
         ax.plot(t_series, y_true[:, target_idx], label="Ground truth", linewidth=1.6, color="C0")
-        ax.plot(t_series, y_mean[:, target_idx], label="Mean prediction", linewidth=1.6, color="C3")
+        if y_members is not None:
+            for member_idx in range(y_members.shape[0]):
+                ax.plot(
+                    t_series,
+                    y_members[member_idx, :, target_idx],
+                    linewidth=0.7,
+                    color="0.35",
+                    alpha=0.22,
+                    label="Member forecasts" if member_idx == 0 else "_nolegend_",
+                )
+        ax.plot(t_series, y_mean[:, target_idx], label="Mean prediction", linewidth=1.8, color="C3")
         if y_2sigma is not None:
             y_upper = y_mean[:, target_idx] + y_2sigma[:, target_idx]
             y_lower = y_mean[:, target_idx] - y_2sigma[:, target_idx]
@@ -1776,7 +1803,7 @@ def _plot_ensemble_forecast_vs_truth_grid(
         h2, l2 = derivative_axes[0].get_legend_handles_labels()
         handles = handles + h2
         labels = labels + l2
-    legend_cols = 5 if y_dsigma_dt is not None else (4 if y_2sigma is not None else 2)
+    legend_cols = 5 if (y_dsigma_dt is not None or y_members is not None) else (4 if y_2sigma is not None else 2)
     fig.suptitle(title, y=0.985, fontsize=16)
     fig.legend(
         handles,
@@ -1897,6 +1924,7 @@ def save_forecast_profiles_pdf(
     include_uncertainty_derivative: bool = False,
     derivative_order: int = 4,
     derivative_dt: float = 1.0,
+    include_ensemble_members: bool = True,
 ) -> None:
     """
     Render one 3x5 forecast-vs-truth page per profile from a forecast HDF5 file.
@@ -1911,6 +1939,10 @@ def save_forecast_profiles_pdf(
 
     When ``include_uncertainty_derivative=True``, derivative overlays are interpreted
     as scaled-space uncertainty derivatives (``d(x_sigma_scaled)/dt``).
+
+    When ``include_ensemble_members=True`` and a profile contains a
+    ``member_predictions`` dataset, each ensemble member trajectory is plotted as
+    a thin transparent line behind the ensemble mean.
     """
     if target_names is None:
         target_names = list(TARGET_NAMES)
@@ -1959,6 +1991,35 @@ def save_forecast_profiles_pdf(
             y_true = np.column_stack([table[:, columns.index(col)] for col in truth_cols])
             y_pred_or_mean = np.column_stack([table[:, columns.index(col)] for col in pred_cols])
             y_2sigma = None if not sigma_cols else np.column_stack([table[:, columns.index(col)] for col in sigma_cols])
+            y_members = None
+            if include_ensemble_members and use_mode == "ensemble" and "member_predictions" in group:
+                y_members = group["member_predictions"][...].astype(np.float32)
+                if y_members.ndim != 3:
+                    raise ValueError(
+                        f"Profile '{profile_name}' member_predictions must be 3D "
+                        f"(members,steps,targets); got {y_members.shape}."
+                    )
+                member_target_names = _decode_columns(
+                    group.attrs.get(
+                        "member_target_names",
+                        group["member_predictions"].attrs.get("target_names", []),
+                    )
+                )
+                if member_target_names and member_target_names != target_names:
+                    missing_member_targets = [name for name in target_names if name not in member_target_names]
+                    if missing_member_targets:
+                        raise ValueError(
+                            f"Profile '{profile_name}' member_predictions are missing targets "
+                            f"{missing_member_targets}."
+                        )
+                    member_indices = [member_target_names.index(name) for name in target_names]
+                    y_members = y_members[:, :, member_indices]
+                if y_members.shape[1:] != y_pred_or_mean.shape:
+                    raise ValueError(
+                        f"Profile '{profile_name}' member_predictions shape {y_members.shape} "
+                        f"does not match mean forecast shape {y_pred_or_mean.shape}."
+                    )
+
             y_dsigma_dt = None
             if include_uncertainty_derivative and y_2sigma is not None:
                 dsigma_cols = [f"x_dsigma_dt(t)_{name}" for name in target_names]
@@ -1993,6 +2054,7 @@ def save_forecast_profiles_pdf(
                     y_mean=y_pred_or_mean,
                     y_2sigma=y_2sigma,
                     y_dsigma_dt=y_dsigma_dt,
+                    y_members=y_members,
                     target_names=target_names,
                     title=f"Rolling Forecast - {profile_name}",
                     control_name=control_name,
