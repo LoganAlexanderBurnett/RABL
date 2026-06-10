@@ -19,6 +19,8 @@
   "bag_fraction": 0.70,
   "bag_split_mode": "sample",
   "prefer_gpu": true,
+  "plot_bag_distributions": true,
+  "bag_distribution_max_samples": 200000,
   "ensemble_forecast_num_workers": 5,
   "forecast_plot_bins": 5,
   "forecast_plot_profiles_per_bin": 2,

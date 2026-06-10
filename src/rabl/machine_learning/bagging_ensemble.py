@@ -53,6 +53,8 @@ class BaggingEnsembleConfig:
     fc_hidden: tuple[int, ...] = (64,)
     prefer_gpu: bool = True
     verbose: int = 1
+    plot_bag_distributions: bool = True
+    bag_distribution_max_samples: int | None = 200_000
 
     def validate(self) -> None:
         if self.n_models < 1:
@@ -61,6 +63,8 @@ class BaggingEnsembleConfig:
             raise ValueError("bag_fraction must be in (0.0, 1.0].")
         if self.bag_split_mode not in {"profile", "sample"}:
             raise ValueError("bag_split_mode must be 'profile' or 'sample'.")
+        if self.bag_distribution_max_samples is not None and self.bag_distribution_max_samples < 1:
+            raise ValueError("bag_distribution_max_samples must be >= 1 when provided.")
 
 
 def _copy_group_shallow(src: h5py.Group, dst_parent: h5py.Group, name: str) -> h5py.Group:
@@ -132,6 +136,197 @@ def _plot_and_save_bag_venn_diagram(
     plt.close(fig)
     return save_path
 
+
+
+BAG_DISTRIBUTION_COLUMNS = {
+    "theta": "drumAngleDeg",
+    "rho": "rho_dollars",
+    "n": "n",
+}
+
+
+def _descale_target_channel(stats: dict[str, Any], values: np.ndarray, target_idx: int) -> np.ndarray:
+    scaling_type = stats["type"]
+    y_stats = stats["y"]
+    if scaling_type == "standard":
+        return values * y_stats["std"][target_idx] + y_stats["mean"][target_idx]
+    if scaling_type == "minmax":
+        return values * y_stats["span"][target_idx] + y_stats["min"][target_idx]
+    raise ValueError(f"Unsupported scaling type: {scaling_type}")
+
+
+def _cap_distribution_samples(
+    values: dict[str, np.ndarray],
+    *,
+    max_samples: int | None,
+    seed: int,
+) -> dict[str, np.ndarray]:
+    if max_samples is None:
+        return values
+    rng = np.random.default_rng(seed)
+    capped: dict[str, np.ndarray] = {}
+    for key, array in values.items():
+        if array.size <= max_samples:
+            capped[key] = array
+            continue
+        indices = np.sort(rng.choice(array.size, size=int(max_samples), replace=False))
+        capped[key] = array[indices]
+    return capped
+
+
+def _collect_bag_distribution_values(
+    bag_group: h5py.Group,
+    *,
+    scaling_stats: dict[str, Any],
+    state_dim: int,
+    control_channel: int,
+    target_names: list[str],
+    max_samples: int | None,
+    seed: int,
+) -> dict[str, np.ndarray]:
+    rho_idx = target_names.index("rho_dollars")
+    n_idx = target_names.index("n")
+    files_group = bag_group["files"]
+    raw_values: dict[str, list[np.ndarray]] = {key: [] for key in BAG_DISTRIBUTION_COLUMNS}
+
+    for profile_name in sorted(files_group.keys()):
+        profile_group = files_group[profile_name]
+        x_data = profile_group["X"][...].astype(np.float32)
+        y_data = profile_group["Y"][...].astype(np.float32)
+        if x_data.ndim != 3:
+            raise ValueError(f"Expected 3D X for {bag_group.name}/{profile_name}; got {x_data.shape}.")
+        if y_data.ndim != 2:
+            raise ValueError(f"Expected 2D Y for {bag_group.name}/{profile_name}; got {y_data.shape}.")
+        if y_data.shape[1] <= max(rho_idx, n_idx):
+            raise ValueError(
+                f"Y target dimension for {bag_group.name}/{profile_name} is too small: {y_data.shape}."
+            )
+        if x_data.shape[0] != y_data.shape[0]:
+            raise ValueError(
+                f"Mismatched X/Y sample counts for {bag_group.name}/{profile_name}: "
+                f"X={x_data.shape[0]}, Y={y_data.shape[0]}."
+            )
+        control_dim = x_data.shape[2] - state_dim
+        if control_dim <= 0:
+            raise ValueError(
+                f"control_dim <= 0 for {bag_group.name}/{profile_name} "
+                f"(features={x_data.shape[2]}, state_dim={state_dim})."
+            )
+        if not (0 <= control_channel < control_dim):
+            raise ValueError(f"control_channel={control_channel} out of range [0, {control_dim - 1}].")
+        control_idx = state_dim + control_channel
+        theta = _descale_feature_from_stats(scaling_stats, x_data[:, -1, control_idx], control_idx)
+        rho = _descale_target_channel(scaling_stats, y_data[:, rho_idx], rho_idx)
+        n_values = _descale_target_channel(scaling_stats, y_data[:, n_idx], n_idx)
+        raw_values["theta"].append(theta.astype(np.float32, copy=False))
+        raw_values["rho"].append(rho.astype(np.float32, copy=False))
+        raw_values["n"].append(n_values.astype(np.float32, copy=False))
+
+    concatenated = {
+        key: np.concatenate(arrays) if arrays else np.asarray([], dtype=np.float32)
+        for key, arrays in raw_values.items()
+    }
+    finite_values = {
+        key: array[np.isfinite(array)]
+        for key, array in concatenated.items()
+    }
+    return _cap_distribution_samples(finite_values, max_samples=max_samples, seed=seed)
+
+
+def _plot_bag_distribution_overlap(
+    bagged_h5_path: Path,
+    *,
+    output_path: Path | None = None,
+    state_dim: int = STATE_DIM,
+    control_channel: int = 0,
+    target_names: list[str] | None = None,
+    max_samples: int | None = 200_000,
+    seed: int = 123,
+) -> Path | None:
+    """Plot theta/rho/n density overlap across bagged train splits."""
+    if target_names is None:
+        target_names = list(TARGET_NAMES)
+    if "rho_dollars" not in target_names or "n" not in target_names:
+        raise ValueError("target_names must include 'rho_dollars' and 'n'.")
+    if max_samples is not None and max_samples < 1:
+        raise ValueError("max_samples must be >= 1 when provided.")
+
+    bagged_h5_path = Path(bagged_h5_path)
+    if output_path is None:
+        output_path = bagged_h5_path.with_name(
+            f"{bagged_h5_path.stem}_bag_distribution_overlap_theta_rho_n.png"
+        )
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    scaling_stats = _load_scaling_stats(bagged_h5_path)
+    with h5py.File(bagged_h5_path, "r") as h5f:
+        train_group = h5f["train"]
+        bag_names = sorted(
+            (name for name in train_group.keys() if name.startswith("bag_")),
+            key=lambda name: int(name.split("_", 1)[1]),
+        )
+        if not bag_names:
+            return None
+        bag_values = {
+            bag_name: _collect_bag_distribution_values(
+                train_group[bag_name],
+                scaling_stats=scaling_stats,
+                state_dim=state_dim,
+                control_channel=control_channel,
+                target_names=target_names,
+                max_samples=max_samples,
+                seed=seed + bag_idx,
+            )
+            for bag_idx, bag_name in enumerate(bag_names)
+        }
+
+    if not any(any(values.size for values in bag_data.values()) for bag_data in bag_values.values()):
+        return None
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.8))
+    axes = np.atleast_1d(axes)
+    cmap = plt.get_cmap("tab10")
+    for ax, (summary_name, label) in zip(axes, BAG_DISTRIBUTION_COLUMNS.items(), strict=True):
+        all_values = [bag_data[summary_name] for bag_data in bag_values.values() if bag_data[summary_name].size]
+        if not all_values:
+            ax.set_axis_off()
+            continue
+        combined = np.concatenate(all_values)
+        lo = float(np.min(combined))
+        hi = float(np.max(combined))
+        if np.isclose(lo, hi):
+            pad = max(1.0, abs(lo) * 0.01)
+            lo -= pad
+            hi += pad
+        bins = np.linspace(lo, hi, 80)
+        for bag_idx, (bag_name, bag_data) in enumerate(bag_values.items()):
+            values = bag_data[summary_name]
+            if not values.size:
+                continue
+            ax.hist(
+                values,
+                bins=bins,
+                density=True,
+                histtype="step",
+                linewidth=1.4,
+                alpha=0.9,
+                color=cmap(bag_idx % 10),
+                label=f"{bag_name} (N={values.size:,})",
+            )
+        ax.set_title(label)
+        ax.set_xlabel(label)
+        ax.set_ylabel("Density")
+        ax.grid(alpha=0.3)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="upper center", ncol=min(4, len(handles)), frameon=False)
+    fig.suptitle("Bag training distribution overlap", y=1.03)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
 
 def _venn_region_counts(
     bag_sets: list[set[str]],
@@ -711,6 +906,8 @@ def run_bagging_ensemble(
     preload_val_to_device: bool = True,
     verbose: int = 1,
     forecast_num_workers: int = 4,
+    plot_bag_distributions: bool = True,
+    bag_distribution_max_samples: int | None = 200_000,
 ) -> dict[str, Any]:
     config = BaggingEnsembleConfig(
         n_models=n_models,
@@ -731,6 +928,8 @@ def run_bagging_ensemble(
         fc_hidden=fc_hidden,
         prefer_gpu=prefer_gpu,
         verbose=verbose,
+        plot_bag_distributions=plot_bag_distributions,
+        bag_distribution_max_samples=bag_distribution_max_samples,
     )
     config.validate()
 
@@ -748,6 +947,21 @@ def run_bagging_ensemble(
         seed=config.seed,
         verbose=config.verbose,
     )
+    bag_distribution_overlap_plot: Path | None = None
+    if config.plot_bag_distributions:
+        bag_distribution_overlap_plot = _plot_bag_distribution_overlap(
+            bagged_h5_path,
+            state_dim=STATE_DIM,
+            control_channel=0,
+            target_names=list(TARGET_NAMES),
+            max_samples=config.bag_distribution_max_samples,
+            seed=config.seed,
+        )
+        if config.verbose >= 1:
+            if bag_distribution_overlap_plot is None:
+                print("[bagging] bag distribution overlap plot not created (no bag data found).")
+            else:
+                print(f"[bagging] saved bag distribution overlap plot: {bag_distribution_overlap_plot}")
 
     models: list[torch.nn.Module] = []
     histories: list[dict[str, list[float]]] = []
@@ -812,4 +1026,5 @@ def run_bagging_ensemble(
         "model_dirs": [out_dir / f"model_{idx}" for idx in range(config.n_models)],
         "used_devices": used_devices,
         "histories": histories,
+        "bag_distribution_overlap_plot": bag_distribution_overlap_plot,
     }

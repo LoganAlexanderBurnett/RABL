@@ -108,6 +108,8 @@ class ExperimentConfig:
     branching: dict[str, Any]
     dymola: dict[str, Any]
     training_seed: int | None = None
+    plot_bag_distributions: bool = True
+    bag_distribution_max_samples: int | None = 200_000
     bag_split_mode: str = "profile"
     ensemble_forecast_num_workers: int = 4
     forecast_plot_bins: int = 5
@@ -1407,11 +1409,14 @@ def main() -> None:
             prefer_gpu=cfg.prefer_gpu,
             preload_val_to_device=True,
             forecast_num_workers=int(cfg.ensemble_forecast_num_workers),
+            plot_bag_distributions=bool(cfg.plot_bag_distributions),
+            bag_distribution_max_samples=cfg.bag_distribution_max_samples,
         )
         step_times["ensemble_training_sec"] = perf_counter() - t0
         model_paths = [str(Path(d) / "model.pt") for d in ensemble["model_dirs"]]
         bagged_h5_path = Path(ensemble["bagged_h5_path"])
         forecast_h5 = Path(ensemble["forecast_output_path"])
+        bag_distribution_overlap_plot = ensemble.get("bag_distribution_overlap_plot")
         t0 = perf_counter()
         point_metrics = _summarize_forecasts(forecast_h5)
         unc_metrics = _compute_uncertainty_metrics(forecast_h5)
@@ -1545,6 +1550,9 @@ def main() -> None:
                 **split_budget,
                 **new_batch_budget,
                 "bagged_h5_path": str(bagged_h5_path),
+                "bag_distribution_overlap_plot": (
+                    None if bag_distribution_overlap_plot is None else str(bag_distribution_overlap_plot)
+                ),
                 "model_paths": model_paths,
                 "forecast_h5": str(forecast_h5),
                 "forecast_pdf": str(forecast_pdf),
