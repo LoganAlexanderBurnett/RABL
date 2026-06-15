@@ -331,38 +331,52 @@ def _plot_summary_grid(
     plt.close(fig)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate test-set forecast errors by transient difficulty bins.")
-    parser.add_argument("--scaled-h5", type=Path, required=True, help="Scaled/split dataset path containing test split.")
-    parser.add_argument("--model-path", type=Path, default=None, help="Single model checkpoint (.pt).")
-    parser.add_argument("--ensemble-dir", type=Path, default=None, help="Directory containing ensemble checkpoints (.pt).")
-    parser.add_argument("--out-dir", type=Path, required=True, help="Output directory for CSV/plots/manifest.")
-    parser.add_argument("--n-bins", type=int, default=10, help="Number of equal-width bins per descriptor.")
-    parser.add_argument("--dt", type=float, default=1.0, help="Timestep size for velocity estimate.")
-    parser.add_argument("--config-path", type=Path, default=REPO_ROOT / "scripts" / "config.py")
-    parser.add_argument("--include-per-target", action="store_true", help="Include per-target MAE/MSE columns.")
-    parser.add_argument("--num-workers", type=int, default=4, help="Number of worker threads for profile evaluation.")
-    args = parser.parse_args()
 
-    out_dir = args.out_dir
+def evaluate_testset_difficulty(
+    *,
+    scaled_h5: Path,
+    out_dir: Path,
+    model_paths: list[Path] | None = None,
+    model_path: Path | None = None,
+    ensemble_dir: Path | None = None,
+    n_bins: int = 10,
+    dt: float = 1.0,
+    config_path: Path = REPO_ROOT / "scripts" / "config.py",
+    include_per_target: bool = False,
+    num_workers: int = 4,
+) -> dict[str, Any]:
+    """Evaluate test-set forecast errors by transient difficulty bins."""
+    scaled_h5 = Path(scaled_h5)
+    out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if not args.scaled_h5.exists():
-        raise SystemExit(f"Scaled dataset not found: {args.scaled_h5}")
+    if not scaled_h5.exists():
+        raise FileNotFoundError(f"Scaled dataset not found: {scaled_h5}")
 
-    model_paths = _resolve_model_paths(args.model_path, args.ensemble_dir)
-    test_profile_names = _read_test_profile_names(args.scaled_h5)
+    if model_paths is None:
+        model_paths = _resolve_model_paths(model_path, ensemble_dir)
+    else:
+        if model_path is not None or ensemble_dir is not None:
+            raise ValueError("Specify either model_paths or model_path/ensemble_dir, not both.")
+        model_paths = [Path(path) for path in model_paths]
+        if not model_paths:
+            raise ValueError("model_paths must be non-empty.")
+        missing_model_paths = [path for path in model_paths if not path.exists()]
+        if missing_model_paths:
+            raise FileNotFoundError(f"Model path(s) not found: {missing_model_paths[:5]}")
+
+    test_profile_names = _read_test_profile_names(scaled_h5)
     if not test_profile_names:
-        raise SystemExit("No test profiles found in scaled dataset.")
+        raise ValueError("No test profiles found in scaled dataset.")
 
-    profile_ds = ProfileDataset(args.scaled_h5, test_profile_names, "test")
+    profile_ds = ProfileDataset(scaled_h5, test_profile_names, "test")
     first_profile_name, first_x, _first_y = next(iter(profile_ds))
     timesteps = int(first_x.numpy().shape[1])
     print(f"Loaded first test profile: {first_profile_name} (timesteps={timesteps})")
 
     models = [_load_single_model(path, timesteps=timesteps) for path in model_paths]
-    scaling_stats = _load_scaling_stats(args.scaled_h5)
-    steady_state = _load_steady_state(args.config_path)
+    scaling_stats = _load_scaling_stats(scaled_h5)
+    steady_state = _load_steady_state(Path(config_path))
 
     state_dim = len(STATE_COLUMNS)
     rho_idx = TARGET_NAMES.index("rho_dollars")
@@ -378,14 +392,13 @@ def main() -> None:
         y_pred_scaled = np.mean(np.stack(pred_stack, axis=0), axis=0)
 
         y_true = _descale_targets_from_stats(scaling_stats, y_scaled)
-        y_pred = _descale_targets_from_stats(scaling_stats, y_pred_scaled)
 
         drum_scaled = x_scaled[:, -1, control_idx]
         drum = _descale_feature_from_stats(scaling_stats, drum_scaled, control_idx)
         rho = y_true[:, rho_idx]
 
-        v_theta = np.gradient(drum, float(args.dt))
-        drho_dt = np.gradient(rho, float(args.dt))
+        v_theta = np.gradient(drum, float(dt))
+        drho_dt = np.gradient(rho, float(dt))
         descriptors = {
             "theta_peak": _signed_peak(drum, float(steady_state[CONTROL_COLUMN])),
             "rho_peak": _signed_peak(rho, float(steady_state["rho_dollars"])),
@@ -402,7 +415,7 @@ def main() -> None:
             **descriptors,
         }
 
-        if args.include_per_target:
+        if include_per_target:
             for idx, tgt in enumerate(TARGET_NAMES):
                 row[f"MAE_{tgt}"] = float(np.mean(abs_err[:, idx]))
                 row[f"MSE_{tgt}"] = float(np.mean(sq_err[:, idx]))
@@ -410,12 +423,12 @@ def main() -> None:
         return row
 
     per_profile_rows: list[dict[str, Any]] = []
-    entries = list(ProfileDataset(args.scaled_h5, test_profile_names, "test"))
-    if int(args.num_workers) <= 1:
+    entries = list(ProfileDataset(scaled_h5, test_profile_names, "test"))
+    if int(num_workers) <= 1:
         for profile_name, x_tensor, y_tensor in entries:
             per_profile_rows.append(_evaluate_one(profile_name, x_tensor, y_tensor))
     else:
-        with ThreadPoolExecutor(max_workers=int(args.num_workers)) as executor:
+        with ThreadPoolExecutor(max_workers=int(num_workers)) as executor:
             futures = [
                 executor.submit(_evaluate_one, profile_name, x_tensor, y_tensor)
                 for profile_name, x_tensor, y_tensor in entries
@@ -435,8 +448,8 @@ def main() -> None:
     target_overlay: dict[str, dict[str, dict[str, list[float]]]] = {}
     for descriptor in descriptor_specs:
         values = np.asarray([float(row[descriptor]) for row in per_profile_rows], dtype=float)
-        resolved_edges = _equal_width_edges(values, n_bins=int(args.n_bins))
-        binned = bin_series(values, mode="fixed", n_bins=int(args.n_bins), edges=resolved_edges)
+        resolved_edges = _equal_width_edges(values, n_bins=int(n_bins))
+        binned = bin_series(values, mode="fixed", n_bins=int(n_bins), edges=resolved_edges)
         label_to_idx = {label: idx for idx, label in enumerate(binned.label_names)}
 
         bin_col = f"{descriptor}_bin"
@@ -461,7 +474,7 @@ def main() -> None:
             stats_rows = sorted(stats_rows, key=lambda row: int(row["bin_idx"]))
             agg_rows.extend(stats_rows)
             descriptor_metric_rows[descriptor][metric] = [r for r in stats_rows]
-            if args.include_per_target:
+            if include_per_target:
                 target_overlay[descriptor][metric] = {}
                 for tgt in TARGET_NAMES:
                     per_tgt_metric_col = f"{metric}_{tgt}"
@@ -488,7 +501,7 @@ def main() -> None:
         edges_payload = {
             "descriptor": descriptor,
             "binning_mode": "fixed_equal_width",
-            "n_bins": int(args.n_bins),
+            "n_bins": int(n_bins),
             "edges": binned.edges.tolist(),
             "labels": binned.label_names,
         }
@@ -500,7 +513,7 @@ def main() -> None:
         per_profile_rows=per_profile_rows,
         descriptor_metrics=descriptor_metric_rows,
         target_overlay=target_overlay,
-        include_per_target=bool(args.include_per_target),
+        include_per_target=bool(include_per_target),
         output_path=combined_plot,
     )
     generated_paths.append(str(combined_plot))
@@ -509,12 +522,12 @@ def main() -> None:
     _write_csv(per_profile_csv, list(per_profile_rows[0].keys()), per_profile_rows)
 
     manifest = {
-        "dataset_path": str(args.scaled_h5),
-        "model_id": "ensemble" if args.ensemble_dir is not None else Path(model_paths[0]).stem,
+        "dataset_path": str(scaled_h5),
+        "model_id": "ensemble" if len(model_paths) > 1 else Path(model_paths[0]).stem,
         "checkpoint_paths": [str(path) for path in model_paths],
         "binning": {
             "mode": "fixed_equal_width",
-            "n_bins": int(args.n_bins),
+            "n_bins": int(n_bins),
         },
         "artifacts": generated_paths,
     }
@@ -523,6 +536,38 @@ def main() -> None:
 
     print(f"Saved per-profile table: {per_profile_csv}")
     print(f"Saved manifest: {manifest_path}")
+    return {
+        "out_dir": str(out_dir),
+        "manifest": str(manifest_path),
+        "per_profile_csv": str(per_profile_csv),
+        "summary_plot": str(combined_plot),
+        "artifacts": generated_paths,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Evaluate test-set forecast errors by transient difficulty bins.")
+    parser.add_argument("--scaled-h5", type=Path, required=True, help="Scaled/split dataset path containing test split.")
+    parser.add_argument("--model-path", type=Path, default=None, help="Single model checkpoint (.pt).")
+    parser.add_argument("--ensemble-dir", type=Path, default=None, help="Directory containing ensemble checkpoints (.pt).")
+    parser.add_argument("--out-dir", type=Path, required=True, help="Output directory for CSV/plots/manifest.")
+    parser.add_argument("--n-bins", type=int, default=10, help="Number of equal-width bins per descriptor.")
+    parser.add_argument("--dt", type=float, default=1.0, help="Timestep size for velocity estimate.")
+    parser.add_argument("--config-path", type=Path, default=REPO_ROOT / "scripts" / "config.py")
+    parser.add_argument("--include-per-target", action="store_true", help="Include per-target MAE/MSE columns.")
+    parser.add_argument("--num-workers", type=int, default=4, help="Number of worker threads for profile evaluation.")
+    args = parser.parse_args()
+    evaluate_testset_difficulty(
+        scaled_h5=args.scaled_h5,
+        model_path=args.model_path,
+        ensemble_dir=args.ensemble_dir,
+        out_dir=args.out_dir,
+        n_bins=args.n_bins,
+        dt=args.dt,
+        config_path=args.config_path,
+        include_per_target=bool(args.include_per_target),
+        num_workers=int(args.num_workers),
+    )
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ import json
 import re
 import shutil
 import sys
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,19 +32,27 @@ from matplotlib.lines import Line2D
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = REPO_ROOT / "src"
+SCRIPTS_PATH = REPO_ROOT / "scripts"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
+if str(SCRIPTS_PATH) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_PATH))
 
 from rabl.paths import resolve_output_root
 from rabl.machine_learning import build_lstm_dataset
 from rabl.machine_learning.dataset_scaling import LSTMDatasetScalerSplitter
 from rabl.machine_learning.tuner import GridSearchConfig, run_grid_search, run_hyperband_search
 from rabl.machine_learning.bagging_ensemble import run_bagging_ensemble
-from rabl.machine_learning.lstm_pipeline import save_forecast_profiles_pdf
+from rabl.machine_learning.lstm_pipeline import (
+    TARGET_NAMES,
+    compute_and_save_rolling_forecast_metrics,
+    save_forecast_profiles_pdf,
+)
 from rabl.machine_learning.recursive_branching import (
     RecursiveBranchingBatchConfig,
     run_recursive_branching_batch,
 )
+from evaluate_testset_difficulty import evaluate_testset_difficulty
 from rabl.interface.pymola import BatchConfig, DymolaBatchRunner
 from rabl.variography.DrumVariography import DrumProfileGenerator
 
@@ -107,14 +116,54 @@ class ExperimentConfig:
     branching: dict[str, Any]
     dymola: dict[str, Any]
     training_seed: int | None = None
+    plot_bag_distributions: bool = True
+    save_individual_ensemble_forecasts: bool = True
+    plot_individual_ensemble_forecasts: bool = True
+    evaluate_test_difficulty: bool = True
+    test_difficulty_bins: int = 10
+    test_difficulty_include_per_target: bool = False
+    test_difficulty_num_workers: int = 4
+    branching_target_weights: dict[str, float] | None = None
     bag_split_mode: str = "profile"
     ensemble_forecast_num_workers: int = 4
+    forecast_plot_bins: int = 5
+    forecast_plot_profiles_per_bin: int = 2
+    forecast_plot_selection_seed: int | None = None
+    forecast_plot_selection_path: str | None = None
     test_manifest_path: str | None = None
     val_manifest_path: str | None = None
     config_py_path: str = str(REPO_ROOT / "scripts" / "config.py")
     output_root: str | None = None
     sim_root: str | None = None
     variography_root: str | None = None
+
+
+
+def _resolve_branching_target_weights(weights_by_target: dict[str, float] | None) -> tuple[float, ...] | None:
+    if weights_by_target is None:
+        return None
+    if not isinstance(weights_by_target, dict):
+        raise ValueError("branching_target_weights must be a JSON object keyed by target name.")
+
+    expected_targets = set(TARGET_NAMES)
+    provided_targets = set(str(key) for key in weights_by_target)
+    missing = sorted(expected_targets - provided_targets)
+    extra = sorted(provided_targets - expected_targets)
+    if missing or extra:
+        raise ValueError(
+            "branching_target_weights must contain exactly the TARGET_NAMES keys. "
+            f"missing={missing}, extra={extra}."
+        )
+
+    weights = np.asarray([float(weights_by_target[name]) for name in TARGET_NAMES], dtype=float)
+    if np.any(~np.isfinite(weights)):
+        raise ValueError("branching_target_weights must contain only finite numeric weights.")
+    if np.any(weights < 0.0):
+        raise ValueError("branching_target_weights must be non-negative.")
+    weight_sum = float(np.sum(weights))
+    if not np.isclose(weight_sum, 1.0):
+        raise ValueError(f"branching_target_weights must sum to 1.0; got {weight_sum}.")
+    return tuple(float(value) for value in weights.tolist())
 
 
 def _load_cfg(path: Path) -> ExperimentConfig:
@@ -365,7 +414,39 @@ def _find_latest_global_result_index(sim_root: Path) -> int:
     return max_idx
 
 
-def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, sim_root: Path) -> int:
+def _load_branched_profile_manifest(profiles_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
+    manifest_path = profiles_dir / "branched_profiles_manifest.json"
+    if not manifest_path.exists():
+        raise RuntimeError(f"Missing branched profile manifest: {manifest_path}")
+    entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(entries, list):
+        raise RuntimeError(f"Invalid branched profile manifest: {manifest_path}")
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in entries:
+        root_id = str(entry.get("root_group_name", "")).strip()
+        profile_id = str(entry.get("profile_id", "")).strip()
+        if not root_id or not profile_id:
+            raise RuntimeError(f"Invalid branched profile manifest entry: {entry}")
+        out[(root_id, profile_id)] = entry
+    return out
+
+
+def _parse_branched_result_stem(stem: str) -> tuple[str, str]:
+    # results_root_001__profile_00012 -> (root_001, profile_00012)
+    if not stem.startswith("results_") or "__" not in stem:
+        raise RuntimeError(f"Unexpected branched result stem: {stem}")
+    root_part, profile_id = stem[len("results_") :].split("__", 1)
+    if not root_part or not profile_id:
+        raise RuntimeError(f"Unexpected branched result stem: {stem}")
+    return root_part, profile_id
+
+
+def _copy_branched_results_to_batch_root_with_global_numbering(
+    out_dir: Path,
+    sim_root: Path,
+    *,
+    profiles_dir: Path | None = None,
+) -> int:
     branched_results_dir = out_dir / "branched_results"
     if not branched_results_dir.exists():
         raise RuntimeError(f"No branched_results directory found after branched simulation: {branched_results_dir}")
@@ -374,6 +455,8 @@ def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, si
     if not sources:
         raise RuntimeError(f"No branched CSV results found after branched simulation: {branched_results_dir}")
 
+    manifest_index = _load_branched_profile_manifest(profiles_dir) if profiles_dir is not None else {}
+    lineage_entries: list[dict[str, Any]] = []
     next_idx = _find_latest_global_result_index(sim_root) + 1
     copied = 0
     for csv_src in sources:
@@ -384,8 +467,27 @@ def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, si
         shutil.copy2(csv_src, csv_dst)
         if mat_src.exists():
             shutil.copy2(mat_src, mat_dst)
+
+        root_id, profile_id = _parse_branched_result_stem(csv_src.stem)
+        manifest_entry = manifest_index.get((root_id, profile_id))
+        if manifest_entry is None:
+            raise RuntimeError(
+                f"Missing branched manifest entry for simulated result {csv_src.name}: "
+                f"root_id={root_id}, profile_id={profile_id}"
+            )
+        lineage_entries.append(
+            {
+                "result_stem": stem,
+                "source_stem": csv_src.stem,
+                "root_id": root_id,
+                "profile_id": profile_id,
+                "parent_profile_id": str(manifest_entry.get("parent_profile_id", "")).strip(),
+                "branch_time": manifest_entry.get("branch_time"),
+            }
+        )
         copied += 1
         next_idx += 1
+    (out_dir / "branched_results_lineage.json").write_text(json.dumps(lineage_entries, indent=2), encoding="utf-8")
     print(f"[step] Copied {copied} branched result profiles into batch root: {out_dir}")
     return copied
 
@@ -440,6 +542,8 @@ def _run_recursive_branching_internal(
         ell=float(variography_params["ELL"]),
         sigma_theta_target=float(variography_params["SIGMA_THETA_TARGET"]),
         nugget_v_deg2_s2=float(variography_params["NUGGET_V_DEG2_S2"]),
+        finite_difference_order=int(cfg.branching.get("finite_difference_order", 4)),
+        target_weights=_resolve_branching_target_weights(cfg.branching_target_weights),
         device=str(cfg.branching.get("device", "cpu")),
         config_path=Path(cfg.config_py_path),
     )
@@ -476,7 +580,7 @@ def _run_dymola_internal(
         runner.close()
     if mode == "branched_mat":
         _plot_stitched_results(out_dir / "branched_results")
-        copied_count = _copy_branched_results_to_batch_root_with_global_numbering(out_dir, sim_root)
+        copied_count = _copy_branched_results_to_batch_root_with_global_numbering(out_dir, sim_root, profiles_dir=profiles_dir)
         if copied_count < 1:
             raise RuntimeError(f"No branched result CSVs were copied into batch root: {out_dir}")
         _cleanup_production_artifacts(out_dir)
@@ -663,6 +767,150 @@ def _plot_cycle_colored_batches(
     print(f"[step] Saved cycle-colored profiles plot: {output_path}")
 
 
+TRAINING_DISTRIBUTION_VARS = {
+    "theta": "drumAngleDeg",
+    "rho": "rho_dollars",
+    "n": "n",
+}
+
+
+def _read_training_distribution_batch(batch_dir: Path) -> dict[str, np.ndarray]:
+    values: dict[str, list[float]] = {key: [] for key in TRAINING_DISTRIBUTION_VARS}
+    csv_paths = sorted(batch_dir.glob("results_drum_profile_*.csv"))
+    if not csv_paths:
+        print(f"[warn] No results_drum_profile_*.csv found for training distribution plot: {batch_dir}")
+        return {key: np.asarray([], dtype=float) for key in TRAINING_DISTRIBUTION_VARS}
+
+    for csv_path in csv_paths:
+        with csv_path.open(newline="") as fp:
+            reader = csv.DictReader(fp)
+            if reader.fieldnames is None:
+                continue
+            normalized_fieldnames = {name.strip(): name for name in reader.fieldnames}
+            missing = [
+                column
+                for column in TRAINING_DISTRIBUTION_VARS.values()
+                if column not in normalized_fieldnames
+            ]
+            if missing:
+                print(f"[warn] Skipping {csv_path}; missing distribution columns: {missing}")
+                continue
+            source_columns = {
+                key: normalized_fieldnames[column]
+                for key, column in TRAINING_DISTRIBUTION_VARS.items()
+            }
+            for row in reader:
+                for key, source_column in source_columns.items():
+                    try:
+                        value = float(row[source_column])
+                    except (TypeError, ValueError):
+                        continue
+                    if np.isfinite(value):
+                        values[key].append(value)
+
+    return {key: np.asarray(raw_values, dtype=float) for key, raw_values in values.items()}
+
+
+def _combine_training_distribution_batches(
+    *,
+    batch_names: list[str],
+    batch_cache: dict[str, dict[str, np.ndarray]],
+) -> dict[str, np.ndarray]:
+    combined: dict[str, np.ndarray] = {}
+    for key in TRAINING_DISTRIBUTION_VARS:
+        arrays = [batch_cache[batch_name][key] for batch_name in batch_names if batch_name in batch_cache]
+        arrays = [array for array in arrays if array.size]
+        combined[key] = np.concatenate(arrays) if arrays else np.asarray([], dtype=float)
+    return combined
+
+
+def _plot_training_distributions_over_cycles(
+    *,
+    sim_root: Path,
+    initial_sim_batches: list[str],
+    cycle_rows: list[dict[str, Any]],
+    output_path: Path,
+) -> Path | None:
+    """Plot compact theta/rho/n distribution summaries for each cumulative training set."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    initial_batches = [_normalize_batch_name(batch) for batch in initial_sim_batches]
+
+    entries: list[tuple[str, list[str]]] = []
+    if cycle_rows:
+        first_cycle_batches = [
+            _normalize_batch_name(batch)
+            for batch in cycle_rows[0].get("input_batches", [])
+        ]
+        for cycle_row in cycle_rows:
+            cycle_num = int(cycle_row.get("cycle", len(entries) + 1))
+            batch_names = [
+                _normalize_batch_name(batch)
+                for batch in cycle_row.get("input_batches", [])
+            ]
+            label = f"cycle {cycle_num}"
+            if cycle_num == 1 and batch_names == initial_batches:
+                label = "cycle 1\n(initial)"
+            entries.append((label, batch_names))
+        if first_cycle_batches != initial_batches:
+            entries.insert(0, ("initial", initial_batches))
+    elif initial_batches:
+        entries.append(("initial", initial_batches))
+
+    if not entries:
+        print("[warn] No training batch entries available for distribution plot; skipping.")
+        return None
+
+    unique_batch_names = sorted({batch_name for _, batch_names in entries for batch_name in batch_names})
+    batch_cache: dict[str, dict[str, np.ndarray]] = {}
+    for batch_name in unique_batch_names:
+        batch_dir = sim_root / batch_name
+        if not batch_dir.exists():
+            print(f"[warn] Missing batch directory for training distribution plot: {batch_dir}")
+            continue
+        batch_cache[batch_name] = _read_training_distribution_batch(batch_dir)
+
+    distributions = [
+        _combine_training_distribution_batches(batch_names=batch_names, batch_cache=batch_cache)
+        for _, batch_names in entries
+    ]
+    if not any(any(values.size for values in distribution.values()) for distribution in distributions):
+        print("[warn] No theta/rho/n values found for training distribution plot; skipping.")
+        return None
+
+    fig, axes = plt.subplots(1, 3, figsize=(max(12, 1.3 * len(entries)), 5), sharex=True)
+    axes = np.atleast_1d(axes)
+    labels = [label for label, _ in entries]
+    positions = np.arange(1, len(entries) + 1)
+    for ax, (summary_name, column_name) in zip(axes, TRAINING_DISTRIBUTION_VARS.items(), strict=True):
+        series = [distribution[summary_name] for distribution in distributions]
+        nonempty_positions = [position for position, values in zip(positions, series, strict=True) if values.size]
+        nonempty_series = [values for values in series if values.size]
+        if nonempty_series:
+            ax.boxplot(
+                nonempty_series,
+                positions=nonempty_positions,
+                widths=0.6,
+                showfliers=False,
+                patch_artist=True,
+                boxprops={"facecolor": "#9ecae1", "alpha": 0.7},
+                medianprops={"color": "#de2d26", "linewidth": 1.5},
+            )
+        ax.set_title(column_name)
+        ax.set_ylabel(column_name)
+        ax.grid(axis="y", alpha=0.3)
+        sample_counts = [int(values.size) for values in series]
+        tick_labels = [f"{label}\nN={count}" for label, count in zip(labels, sample_counts, strict=True)]
+        ax.set_xticks(positions)
+        ax.set_xticklabels(tick_labels, rotation=35, ha="right")
+
+    fig.suptitle("Cumulative training distributions by cycle")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"[step] Saved training distribution plot: {output_path}")
+    return output_path
+
+
 def _extract_root_id_from_results_stem(stem: str) -> str:
     parts = stem.split("__")
     if len(parts) >= 2 and parts[0].startswith("results_"):
@@ -815,6 +1063,120 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     plt.close(fig)
 
 
+
+def _metric_float(data: dict[str, Any], key: str) -> float:
+    try:
+        return float(data.get(key, float("nan")))
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _plot_rolling_forecast_metrics_comparison(
+    *,
+    cycle_rows: list[dict[str, Any]],
+    output_path: Path,
+) -> Path | None:
+    """Plot compare_rolling_forecast_metrics-style summaries for experiment cycles."""
+    rows_with_metrics = [
+        row
+        for row in cycle_rows
+        if row.get("rolling_forecast_metrics_json") not in (None, "")
+    ]
+    if not rows_with_metrics:
+        print("[warn] No rolling forecast metrics JSON paths found for comparison plot; skipping.")
+        return None
+
+    datasets: list[dict[str, Any]] = []
+    labels: list[str] = []
+    train_profile_counts: list[int] = []
+    for row in rows_with_metrics:
+        metrics_path = Path(str(row["rolling_forecast_metrics_json"]))
+        if not metrics_path.exists():
+            print(f"[warn] Missing rolling forecast metrics JSON for comparison plot: {metrics_path}")
+            continue
+        data = json.loads(metrics_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            print(f"[warn] Rolling forecast metrics JSON is not an object; skipping: {metrics_path}")
+            continue
+        datasets.append(data)
+        labels.append(f"cycle_{int(row['cycle']):02d}")
+        train_profile_counts.append(int(row.get("train_profile_count", row.get("train_sample_count", 0))))
+
+    if not datasets:
+        print("[warn] No readable rolling forecast metrics JSON files found for comparison plot; skipping.")
+        return None
+
+    smape = [_metric_float(data, "smape") for data in datasets]
+    nrmse = [_metric_float(data, "nrmse") for data in datasets]
+    cov95 = [_metric_float(data, "empirical_coverage_95") for data in datasets]
+    cal95 = [_metric_float(data, "calibration_error_95") for data in datasets]
+    w95 = [_metric_float(data, "interval_width_95_mean") for data in datasets]
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharex=False)
+    x = np.arange(len(labels))
+
+    axes[0, 0].bar(x, smape, color="C0")
+    axes[0, 0].set_title("sMAPE")
+    axes[0, 0].set_xticks(x, labels, rotation=20, ha="right")
+    axes[0, 0].grid(alpha=0.3)
+
+    axes[0, 1].bar(x, nrmse, color="C1")
+    axes[0, 1].set_title("NRMSE")
+    axes[0, 1].set_xticks(x, labels, rotation=20, ha="right")
+    axes[0, 1].grid(alpha=0.3)
+
+    axes[0, 2].bar(x, cal95, color="C3")
+    axes[0, 2].set_title("Calibration Error (95%)")
+    axes[0, 2].set_xticks(x, labels, rotation=20, ha="right")
+    axes[0, 2].grid(alpha=0.3)
+
+    axes[1, 0].bar(x, cov95, color="C2")
+    axes[1, 0].axhline(0.95, linestyle="--", linewidth=1.0, color="0.4", label="ideal 0.95")
+    axes[1, 0].set_ylim(0.0, 1.05)
+    axes[1, 0].set_title("Empirical Coverage (95%)")
+    axes[1, 0].set_xticks(x, labels, rotation=20, ha="right")
+    axes[1, 0].grid(alpha=0.3)
+    axes[1, 0].legend(loc="best", fontsize=8)
+
+    axes[1, 1].bar(x, w95, color="C4")
+    axes[1, 1].set_title("Mean 95% Interval Width")
+    axes[1, 1].set_xticks(x, labels, rotation=20, ha="right")
+    axes[1, 1].grid(alpha=0.3)
+
+    ax = axes[1, 2]
+    if len(set(train_profile_counts)) > 1:
+        color_norm = plt.Normalize(vmin=min(train_profile_counts), vmax=max(train_profile_counts))
+    else:
+        color_norm = plt.Normalize(vmin=0, vmax=max(1, train_profile_counts[0]))
+    cmap = plt.colormaps.get_cmap("plasma")
+    for label, data, train_count in zip(labels, datasets, train_profile_counts, strict=True):
+        mae_h = np.asarray(data.get("horizon_mean_mae", []), dtype=float)
+        if mae_h.size:
+            ax.plot(
+                np.arange(mae_h.size),
+                mae_h,
+                label=label,
+                linewidth=1.6,
+                color=cmap(color_norm(train_count)),
+            )
+    ax.set_title("Horizon-wise MAE")
+    ax.set_xlabel("Horizon step")
+    ax.set_ylabel("Mean Absolute Error")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+    sm = plt.cm.ScalarMappable(norm=color_norm, cmap=cmap)
+    sm.set_array([])
+    fig.colorbar(sm, ax=ax, label="Training profiles used")
+
+    fig.suptitle("Rolling Forecast Metrics Comparison", fontsize=15)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"[step] Saved rolling forecast metrics comparison plot: {output_path}")
+    return output_path
+
+
 def _summarize_split_h5(scaled_h5: Path) -> dict[str, Any]:
     summary: dict[str, Any] = {}
     with h5py.File(scaled_h5, "r") as h5f:
@@ -883,27 +1245,226 @@ def _summarize_sim_batch(batch_dir: Path | None) -> dict[str, Any]:
     }
 
 
+def _forecast_plot_selection_path(*, cfg: ExperimentConfig, run_dir: Path) -> Path:
+    if cfg.forecast_plot_selection_path:
+        return Path(cfg.forecast_plot_selection_path).expanduser().resolve()
+    return run_dir / "forecast_plot_profile_selection.json"
+
+
+def _read_forecast_profile_angle_summary(group: h5py.Group, *, profile_name: str) -> dict[str, float] | None:
+    if "data" not in group:
+        warnings.warn(f"Forecast profile {profile_name!r} is missing dataset 'data'; skipping angle-bin selection.")
+        return None
+    table = np.asarray(group["data"][()], dtype=float)
+    if table.ndim != 2:
+        warnings.warn(f"Forecast profile {profile_name!r} has non-2D data shape {table.shape}; skipping.")
+        return None
+    columns = _decode_h5_strings(group.attrs.get("columns", []))
+    if len(columns) != table.shape[1]:
+        warnings.warn(
+            f"Forecast profile {profile_name!r} has {table.shape[1]} data columns but "
+            f"{len(columns)} metadata columns; skipping angle-bin selection."
+        )
+        return None
+    if "u(t)" not in columns:
+        warnings.warn(
+            f"Forecast profile {profile_name!r} is missing required column 'u(t)'; "
+            "skipping angle-bin selection."
+        )
+        return None
+    u_series = table[:, columns.index("u(t)")]
+    finite = u_series[np.isfinite(u_series)]
+    if finite.size == 0:
+        warnings.warn(
+            f"Forecast profile {profile_name!r} has no finite 'u(t)' values; skipping angle-bin selection."
+        )
+        return None
+    return {
+        "angle_mean": float(np.mean(finite)),
+        "angle_min": float(np.min(finite)),
+        "angle_max": float(np.max(finite)),
+    }
+
+
+def _select_angle_binned_forecast_profiles(
+    *,
+    forecast_h5_path: Path,
+    bins: int,
+    profiles_per_bin: int,
+    seed: int | None,
+) -> dict[str, Any]:
+    """Select forecast profiles by binning profiles on mean drum angle/control angle."""
+    bins = int(bins)
+    profiles_per_bin = int(profiles_per_bin)
+    if bins < 1:
+        raise ValueError("forecast_plot_bins must be >= 1.")
+    if profiles_per_bin < 0:
+        raise ValueError("forecast_plot_profiles_per_bin must be >= 0.")
+
+    profile_summaries: list[dict[str, Any]] = []
+    with h5py.File(forecast_h5_path, "r") as h5f:
+        for profile_name in sorted(h5f.keys()):
+            summary = _read_forecast_profile_angle_summary(
+                h5f[profile_name],
+                profile_name=profile_name,
+            )
+            if summary is not None:
+                profile_summaries.append({"profile_name": profile_name, **summary})
+
+    if not profile_summaries or profiles_per_bin == 0:
+        return {
+            "forecast_h5": str(forecast_h5_path),
+            "selection_seed": seed,
+            "angle_summary": "mean_u(t)",
+            "bins_requested": bins,
+            "bins_effective": 0,
+            "profiles_per_bin_requested": profiles_per_bin,
+            "angle_min": None,
+            "angle_max": None,
+            "bin_edges": [],
+            "selected_profiles": [],
+            "profile_bins": {},
+            "bin_metadata": [],
+        }
+
+    summaries = np.asarray([row["angle_mean"] for row in profile_summaries], dtype=float)
+    angle_min = float(np.min([row["angle_min"] for row in profile_summaries]))
+    angle_max = float(np.max([row["angle_max"] for row in profile_summaries]))
+    if np.isclose(angle_min, angle_max):
+        # Degenerate range: keep one effective bin and record duplicate edges for transparency.
+        bin_edges = np.asarray([angle_min, angle_max], dtype=float)
+        effective_bins = 1
+        bin_indices = np.zeros(len(profile_summaries), dtype=int)
+    else:
+        bin_edges = np.linspace(angle_min, angle_max, bins + 1, dtype=float)
+        effective_bins = bins
+        # Right edge belongs to the final bin.
+        bin_indices = np.searchsorted(bin_edges, summaries, side="right") - 1
+        bin_indices = np.clip(bin_indices, 0, effective_bins - 1)
+
+    rng = np.random.default_rng(seed)
+    by_bin: dict[int, list[dict[str, Any]]] = {idx: [] for idx in range(effective_bins)}
+    profile_bins: dict[str, dict[str, Any]] = {}
+    for profile_summary, bin_idx in zip(profile_summaries, bin_indices, strict=True):
+        idx = int(bin_idx)
+        profile_name = str(profile_summary["profile_name"])
+        by_bin[idx].append(profile_summary)
+        profile_bins[profile_name] = {
+            "bin_index": idx,
+            "angle_mean": float(profile_summary["angle_mean"]),
+            "angle_min": float(profile_summary["angle_min"]),
+            "angle_max": float(profile_summary["angle_max"]),
+        }
+
+    selected_profiles: list[str] = []
+    bin_metadata: list[dict[str, Any]] = []
+    for bin_idx in range(effective_bins):
+        candidates = sorted(
+            by_bin.get(bin_idx, []),
+            key=lambda item: str(item["profile_name"]),
+        )
+        candidate_names = [str(item["profile_name"]) for item in candidates]
+        if profiles_per_bin >= len(candidate_names):
+            selected_for_bin = candidate_names
+        else:
+            selected_for_bin = sorted(
+                rng.choice(candidate_names, size=profiles_per_bin, replace=False).tolist()
+            )
+        selected_profiles.extend(selected_for_bin)
+        lo = float(bin_edges[bin_idx])
+        hi = float(bin_edges[bin_idx + 1])
+        bin_metadata.append(
+            {
+                "bin_index": bin_idx,
+                "angle_range": [lo, hi],
+                "candidate_count": len(candidate_names),
+                "selected_count": len(selected_for_bin),
+                "selected_profiles": selected_for_bin,
+                "candidate_profiles": candidate_names,
+            }
+        )
+
+    return {
+        "forecast_h5": str(forecast_h5_path),
+        "selection_seed": seed,
+        "angle_summary": "mean_u(t)",
+        "bins_requested": bins,
+        "bins_effective": effective_bins,
+        "profiles_per_bin_requested": profiles_per_bin,
+        "angle_min": angle_min,
+        "angle_max": angle_max,
+        "bin_edges": [float(edge) for edge in bin_edges.tolist()],
+        "selected_profiles": selected_profiles,
+        "profile_bins": {name: profile_bins[name] for name in selected_profiles if name in profile_bins},
+        "bin_metadata": bin_metadata,
+    }
+
+
+def _load_or_create_forecast_plot_selection(
+    *,
+    forecast_h5_path: Path,
+    selection_path: Path,
+    cycle: int,
+    bins: int,
+    profiles_per_bin: int,
+    seed: int | None,
+) -> dict[str, Any]:
+    if cycle == 1:
+        selection = _select_angle_binned_forecast_profiles(
+            forecast_h5_path=forecast_h5_path,
+            bins=bins,
+            profiles_per_bin=profiles_per_bin,
+            seed=seed,
+        )
+        selection_path.parent.mkdir(parents=True, exist_ok=True)
+        selection_path.write_text(json.dumps(selection, indent=2), encoding="utf-8")
+        print(f"[step] Saved forecast plot profile selection: {selection_path}")
+        return selection
+
+    if not selection_path.exists():
+        raise FileNotFoundError(
+            f"Forecast plot profile selection is required after cycle 1 but does not exist: {selection_path}"
+        )
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    if not isinstance(selection, dict):
+        raise ValueError(f"Forecast plot profile selection must be a JSON object: {selection_path}")
+    selected_profiles = selection.get("selected_profiles")
+    if not isinstance(selected_profiles, list):
+        raise ValueError(f"Forecast plot profile selection is missing list field 'selected_profiles': {selection_path}")
+    return selection
+
+
 def _save_forecast_pdf_subset(
     *,
     forecast_h5_path: Path,
     output_pdf_path: Path,
-    max_profiles: int,
-) -> None:
-    with h5py.File(forecast_h5_path, "r") as src:
-        names = sorted(src.keys())[:max(0, int(max_profiles))]
-        if not names:
-            print("[step] No forecast profiles selected for PDF; skipping PDF generation.")
-            return
-        subset_h5 = output_pdf_path.with_suffix(".subset_tmp.h5")
-        with h5py.File(subset_h5, "w") as dst:
-            for name in names:
-                src.copy(name, dst)
-        save_forecast_profiles_pdf(
-            forecast_h5_path=subset_h5,
-            output_pdf_path=output_pdf_path,
-            mode="ensemble",
-        )
-    subset_h5.unlink(missing_ok=True)
+    profile_names: list[str],
+    include_ensemble_members: bool = True,
+) -> list[str]:
+    subset_h5 = output_pdf_path.with_suffix(".subset_tmp.h5")
+    plotted_names: list[str] = []
+    try:
+        with h5py.File(forecast_h5_path, "r") as src:
+            for name in profile_names:
+                if name in src:
+                    plotted_names.append(str(name))
+                else:
+                    warnings.warn(f"Selected forecast profile {name!r} is missing from {forecast_h5_path}; skipping.")
+            if not plotted_names:
+                print("[step] No selected forecast profiles are present for PDF; skipping PDF generation.")
+                return []
+            with h5py.File(subset_h5, "w") as dst:
+                for name in plotted_names:
+                    src.copy(name, dst)
+            save_forecast_profiles_pdf(
+                forecast_h5_path=subset_h5,
+                output_pdf_path=output_pdf_path,
+                mode="ensemble",
+                include_ensemble_members=include_ensemble_members,
+            )
+    finally:
+        subset_h5.unlink(missing_ok=True)
+    return plotted_names
 
 
 def main() -> None:
@@ -913,14 +1474,29 @@ def main() -> None:
     parser.add_argument(
         "--plot-n-forecasts",
         type=int,
-        default=10,
-        help="Number of forecast profiles to include in the ensemble forecast PDF per cycle.",
+        default=None,
+        help=(
+            "Deprecated compatibility override for forecast_plot_profiles_per_bin; "
+            "prefer forecast_plot_bins and forecast_plot_profiles_per_bin in the config."
+        ),
     )
     args = parser.parse_args()
-    if args.plot_n_forecasts < 0:
-        raise SystemExit("--plot-n-forecasts must be >= 0.")
 
     cfg = _load_cfg(args.config)
+    if args.plot_n_forecasts is not None:
+        if args.plot_n_forecasts < 0:
+            raise SystemExit("--plot-n-forecasts must be >= 0.")
+        object.__setattr__(cfg, "forecast_plot_bins", 1)
+        object.__setattr__(cfg, "forecast_plot_profiles_per_bin", int(args.plot_n_forecasts))
+    if int(cfg.forecast_plot_bins) < 1:
+        raise SystemExit("forecast_plot_bins must be >= 1.")
+    if int(cfg.forecast_plot_profiles_per_bin) < 0:
+        raise SystemExit("forecast_plot_profiles_per_bin must be >= 0.")
+    if int(cfg.test_difficulty_bins) < 1:
+        raise SystemExit("test_difficulty_bins must be >= 1.")
+    if int(cfg.test_difficulty_num_workers) < 1:
+        raise SystemExit("test_difficulty_num_workers must be >= 1.")
+    _resolve_branching_target_weights(cfg.branching_target_weights)
     if cfg.strategy not in {"branching", "random"}:
         raise SystemExit("strategy must be branching or random.")
 
@@ -931,6 +1507,7 @@ def main() -> None:
     configured_test_manifest = Path(cfg.test_manifest_path).resolve() if cfg.test_manifest_path else None
     configured_val_manifest = Path(cfg.val_manifest_path).resolve() if cfg.val_manifest_path else None
     generated_test_manifest = run_dir / "test_manifest.json"
+    forecast_plot_selection_path = _forecast_plot_selection_path(cfg=cfg, run_dir=run_dir)
 
     sim_root = Path(cfg.sim_root).resolve() if cfg.sim_root else output_root / "sim_profiles"
     var_root = Path(cfg.variography_root).resolve() if cfg.variography_root else output_root / "variography_profiles"
@@ -1032,6 +1609,9 @@ def main() -> None:
         )
 
         _print_step_banner(cycle + 1, "Train bagged ensemble")
+        save_member_forecasts_for_cycle = bool(
+            cfg.save_individual_ensemble_forecasts or cfg.plot_individual_ensemble_forecasts
+        )
         t0 = perf_counter()
         ensemble = run_bagging_ensemble(
             scaled_h5,
@@ -1047,14 +1627,23 @@ def main() -> None:
             lstm_hidden=best.hidden_lstm,
             n_fc=best.n_fc,
             fc_hidden=tuple([best.hidden_fc] * int(best.n_fc)),
+            lstm_dropout=float(cfg.hp_grid.get("lstm_dropout", 0.0)),
+            early_stopping_patience=_optional_int(cfg.hp_grid, "early_stopping_patience"),
+            early_stopping_min_delta=float(cfg.hp_grid.get("early_stopping_min_delta", 0.0)),
+            step_lr_step_size=int(cfg.hp_grid.get("step_lr_step_size", 30)),
+            step_lr_gamma=float(cfg.hp_grid.get("step_lr_gamma", 0.5)),
             prefer_gpu=cfg.prefer_gpu,
-            preload_val_to_device=True,
+            preload_val_to_device=bool(cfg.hp_grid.get("preload_val_to_device", True)),
+            verbose=int(cfg.hp_grid.get("verbose", 1)),
             forecast_num_workers=int(cfg.ensemble_forecast_num_workers),
+            plot_bag_distributions=bool(cfg.plot_bag_distributions),
+            save_member_forecasts=save_member_forecasts_for_cycle,
         )
         step_times["ensemble_training_sec"] = perf_counter() - t0
         model_paths = [str(Path(d) / "model.pt") for d in ensemble["model_dirs"]]
         bagged_h5_path = Path(ensemble["bagged_h5_path"])
         forecast_h5 = Path(ensemble["forecast_output_path"])
+        bag_distribution_overlap_plot = ensemble.get("bag_distribution_overlap_plot")
         t0 = perf_counter()
         point_metrics = _summarize_forecasts(forecast_h5)
         unc_metrics = _compute_uncertainty_metrics(forecast_h5)
@@ -1063,6 +1652,11 @@ def main() -> None:
             "forecast_quality": point_metrics,
             "uncertainty_quality": unc_metrics,
         }
+        t0 = perf_counter()
+        rolling_forecast_metrics_json = cycle_dir / "ensemble" / "rolling_forecast_metrics.json"
+        compute_and_save_rolling_forecast_metrics(forecast_h5, rolling_forecast_metrics_json)
+        step_times["rolling_forecast_metrics_compute_sec"] = perf_counter() - t0
+        print(f"[cycle {cycle + 1}] Saved rolling forecast metrics JSON: {rolling_forecast_metrics_json}")
         print(
             f"[cycle {cycle + 1}] Ensemble test summary: "
             f"RMSE={point_metrics['rmse']:.6f}, MAE={point_metrics['mae']:.6f}, MAX_ABS={point_metrics['max_abs']:.6f}, "
@@ -1072,16 +1666,52 @@ def main() -> None:
 
         forecast_pdf = cycle_dir / "ensemble" / "ensemble_test_forecasts.pdf"
         t0 = perf_counter()
-        _save_forecast_pdf_subset(
+        forecast_plot_selection = _load_or_create_forecast_plot_selection(
+            forecast_h5_path=forecast_h5,
+            selection_path=forecast_plot_selection_path,
+            cycle=cycle + 1,
+            bins=int(cfg.forecast_plot_bins),
+            profiles_per_bin=int(cfg.forecast_plot_profiles_per_bin),
+            seed=(
+                cfg.forecast_plot_selection_seed
+                if cfg.forecast_plot_selection_seed is not None
+                else base_seed
+            ),
+        )
+        selected_forecast_profiles = [str(name) for name in forecast_plot_selection.get("selected_profiles", [])]
+        plotted_forecast_profiles = _save_forecast_pdf_subset(
             forecast_h5_path=forecast_h5,
             output_pdf_path=forecast_pdf,
-            max_profiles=args.plot_n_forecasts,
+            profile_names=selected_forecast_profiles,
+            include_ensemble_members=bool(cfg.plot_individual_ensemble_forecasts),
         )
         step_times["forecast_pdf_render_sec"] = perf_counter() - t0
         _print_step_result(cycle + 1, "Ensemble training + evaluation complete", f"Forecast PDF: {forecast_pdf}")
         metrics_json = cycle_dir / "ensemble" / "ensemble_metrics.json"
         metrics_json.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         print(f"[cycle {cycle + 1}] Saved ensemble metrics JSON: {metrics_json}")
+
+        test_difficulty_result: dict[str, Any] | None = None
+        if cfg.evaluate_test_difficulty:
+            _print_step_banner(cycle + 1, "Evaluate test-set difficulty")
+            t0 = perf_counter()
+            test_difficulty_result = evaluate_testset_difficulty(
+                scaled_h5=scaled_h5,
+                model_paths=[Path(path) for path in model_paths],
+                out_dir=cycle_dir / "ensemble" / "test_difficulty",
+                n_bins=int(cfg.test_difficulty_bins),
+                config_path=cfg_py,
+                include_per_target=bool(cfg.test_difficulty_include_per_target),
+                num_workers=int(cfg.test_difficulty_num_workers),
+            )
+            step_times["test_difficulty_eval_sec"] = perf_counter() - t0
+            _print_step_result(
+                cycle + 1,
+                "Test-set difficulty evaluation complete",
+                f"Manifest: {test_difficulty_result['manifest']}",
+            )
+        else:
+            step_times["test_difficulty_eval_sec"] = 0.0
 
         # No need to generate/simulate new data after last training cycle.
         if cycle < cfg.retrain_cycles - 1:
@@ -1149,7 +1779,9 @@ def main() -> None:
             "hyperparameter_tuning_sec",
             "ensemble_training_sec",
             "ensemble_metrics_compute_sec",
+            "rolling_forecast_metrics_compute_sec",
             "forecast_pdf_render_sec",
+            "test_difficulty_eval_sec",
             "profile_generation_sec",
             "dymola_simulation_sec",
         ):
@@ -1162,6 +1794,8 @@ def main() -> None:
                 "unscaled_h5": str(unscaled_h5),
                 "scaled_h5": str(scaled_h5),
                 "bag_split_mode": cfg.bag_split_mode,
+                "branching_target_weights": cfg.branching_target_weights,
+                "branching_target_weight_order": list(TARGET_NAMES),
                 "tuning_method": tuning_method,
                 "best_trial": {
                     "learning_rate": best.learning_rate,
@@ -1175,12 +1809,48 @@ def main() -> None:
                 **split_budget,
                 **new_batch_budget,
                 "bagged_h5_path": str(bagged_h5_path),
+                "bag_distribution_overlap_plot": (
+                    None if bag_distribution_overlap_plot is None else str(bag_distribution_overlap_plot)
+                ),
                 "model_paths": model_paths,
                 "forecast_h5": str(forecast_h5),
                 "forecast_pdf": str(forecast_pdf),
-                "forecast_profiles_plotted": int(max(args.plot_n_forecasts, 0)),
+                "forecast_profiles_plotted": len(plotted_forecast_profiles),
+                "save_individual_ensemble_forecasts": save_member_forecasts_for_cycle,
+                "save_individual_ensemble_forecasts_requested": bool(cfg.save_individual_ensemble_forecasts),
+                "plot_individual_ensemble_forecasts": bool(cfg.plot_individual_ensemble_forecasts),
+                "forecast_plot_selection_path": str(forecast_plot_selection_path),
+                "forecast_plot_selected_profiles": selected_forecast_profiles,
+                "forecast_plot_plotted_profiles": plotted_forecast_profiles,
+                "forecast_plot_bin_metadata": forecast_plot_selection.get("bin_metadata", []),
+                "forecast_plot_selection_metadata": {
+                    "selection_seed": forecast_plot_selection.get("selection_seed"),
+                    "angle_summary": forecast_plot_selection.get("angle_summary"),
+                    "bins_requested": forecast_plot_selection.get("bins_requested"),
+                    "bins_effective": forecast_plot_selection.get("bins_effective"),
+                    "profiles_per_bin_requested": forecast_plot_selection.get("profiles_per_bin_requested"),
+                    "angle_min": forecast_plot_selection.get("angle_min"),
+                    "angle_max": forecast_plot_selection.get("angle_max"),
+                    "bin_edges": forecast_plot_selection.get("bin_edges", []),
+                },
                 "ensemble_test_metrics": metrics,
                 "ensemble_metrics_json": str(metrics_json),
+                "rolling_forecast_metrics_json": str(rolling_forecast_metrics_json),
+                "test_difficulty_dir": (
+                    None if test_difficulty_result is None else test_difficulty_result.get("out_dir")
+                ),
+                "test_difficulty_manifest": (
+                    None if test_difficulty_result is None else test_difficulty_result.get("manifest")
+                ),
+                "test_difficulty_per_profile_csv": (
+                    None if test_difficulty_result is None else test_difficulty_result.get("per_profile_csv")
+                ),
+                "test_difficulty_summary_plot": (
+                    None if test_difficulty_result is None else test_difficulty_result.get("summary_plot")
+                ),
+                "test_difficulty_artifacts": (
+                    [] if test_difficulty_result is None else test_difficulty_result.get("artifacts", [])
+                ),
                 "new_variography_batch": None if var_batch is None else str(var_batch),
                 "new_sim_batch": sim_batch,
                 "timing": step_times,
@@ -1205,6 +1875,7 @@ def main() -> None:
                 cycle_seed_info["random_profile_generation_seed"] = cycle_seed
         seed_manifest["cycles"].append(cycle_seed_info)
 
+    metrics_plots_dir = run_dir / "metrics_plots"
     _plot_metrics_over_cycles(
         [
             {
@@ -1214,14 +1885,42 @@ def main() -> None:
             }
             for row in metadata["cycles"]
         ],
-        out_dir=run_dir / "metrics_plots",
+        out_dir=metrics_plots_dir,
     )
+    cycle_colored_plot_path = metrics_plots_dir / "profiles_by_cycle_color.png"
     _plot_cycle_colored_batches(
         sim_root=sim_root,
         initial_sim_batches=list(cfg.initial_sim_batches),
         cycle_rows=metadata["cycles"],
-        output_path=run_dir / "metrics_plots" / "profiles_by_cycle_color.png",
+        output_path=cycle_colored_plot_path,
     )
+    training_distribution_plot_path = _plot_training_distributions_over_cycles(
+        sim_root=sim_root,
+        initial_sim_batches=list(cfg.initial_sim_batches),
+        cycle_rows=metadata["cycles"],
+        output_path=metrics_plots_dir / "training_distribution_theta_rho_n_by_cycle.png",
+    )
+    t0 = perf_counter()
+    rolling_forecast_metrics_comparison_path = _plot_rolling_forecast_metrics_comparison(
+        cycle_rows=metadata["cycles"],
+        output_path=metrics_plots_dir / "rolling_forecast_metrics_comparison.png",
+    )
+    metadata["postprocess_timing"] = {
+        "rolling_forecast_metrics_compare_sec": perf_counter() - t0,
+    }
+    metadata["metrics_plots"] = {
+        "metrics_vs_cycle": str(metrics_plots_dir / "metrics_vs_cycle.png"),
+        "metrics_vs_train_samples": str(metrics_plots_dir / "metrics_vs_train_samples.png"),
+        "profiles_by_cycle_color": str(cycle_colored_plot_path),
+        "training_distribution_theta_rho_n_by_cycle": (
+            None if training_distribution_plot_path is None else str(training_distribution_plot_path)
+        ),
+        "rolling_forecast_metrics_comparison": (
+            None
+            if rolling_forecast_metrics_comparison_path is None
+            else str(rolling_forecast_metrics_comparison_path)
+        ),
+    }
 
     metadata_path = run_dir / "run_metadata.json"
     seed_manifest_path = run_dir / "seed_manifest.json"

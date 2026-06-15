@@ -53,6 +53,7 @@ class BaggingEnsembleConfig:
     fc_hidden: tuple[int, ...] = (64,)
     prefer_gpu: bool = True
     verbose: int = 1
+    plot_bag_distributions: bool = True
 
     def validate(self) -> None:
         if self.n_models < 1:
@@ -132,6 +133,169 @@ def _plot_and_save_bag_venn_diagram(
     plt.close(fig)
     return save_path
 
+
+
+BAG_DISTRIBUTION_COLUMNS = {
+    "theta": "drumAngleDeg",
+    "rho": "rho_dollars",
+    "n": "n",
+}
+
+
+def _descale_target_channel(stats: dict[str, Any], values: np.ndarray, target_idx: int) -> np.ndarray:
+    scaling_type = stats["type"]
+    y_stats = stats["y"]
+    if scaling_type == "standard":
+        return values * y_stats["std"][target_idx] + y_stats["mean"][target_idx]
+    if scaling_type == "minmax":
+        return values * y_stats["span"][target_idx] + y_stats["min"][target_idx]
+    raise ValueError(f"Unsupported scaling type: {scaling_type}")
+
+
+def _collect_bag_distribution_values(
+    bag_group: h5py.Group,
+    *,
+    scaling_stats: dict[str, Any],
+    state_dim: int,
+    control_channel: int,
+    target_names: list[str],
+) -> dict[str, np.ndarray]:
+    rho_idx = target_names.index("rho_dollars")
+    n_idx = target_names.index("n")
+    files_group = bag_group["files"]
+    raw_values: dict[str, list[np.ndarray]] = {key: [] for key in BAG_DISTRIBUTION_COLUMNS}
+
+    for profile_name in sorted(files_group.keys()):
+        profile_group = files_group[profile_name]
+        x_data = profile_group["X"][...].astype(np.float32)
+        y_data = profile_group["Y"][...].astype(np.float32)
+        if x_data.ndim != 3:
+            raise ValueError(f"Expected 3D X for {bag_group.name}/{profile_name}; got {x_data.shape}.")
+        if y_data.ndim != 2:
+            raise ValueError(f"Expected 2D Y for {bag_group.name}/{profile_name}; got {y_data.shape}.")
+        if y_data.shape[1] <= max(rho_idx, n_idx):
+            raise ValueError(
+                f"Y target dimension for {bag_group.name}/{profile_name} is too small: {y_data.shape}."
+            )
+        if x_data.shape[0] != y_data.shape[0]:
+            raise ValueError(
+                f"Mismatched X/Y sample counts for {bag_group.name}/{profile_name}: "
+                f"X={x_data.shape[0]}, Y={y_data.shape[0]}."
+            )
+        control_dim = x_data.shape[2] - state_dim
+        if control_dim <= 0:
+            raise ValueError(
+                f"control_dim <= 0 for {bag_group.name}/{profile_name} "
+                f"(features={x_data.shape[2]}, state_dim={state_dim})."
+            )
+        if not (0 <= control_channel < control_dim):
+            raise ValueError(f"control_channel={control_channel} out of range [0, {control_dim - 1}].")
+        control_idx = state_dim + control_channel
+        theta = _descale_feature_from_stats(scaling_stats, x_data[:, -1, control_idx], control_idx)
+        rho = _descale_target_channel(scaling_stats, y_data[:, rho_idx], rho_idx)
+        n_values = _descale_target_channel(scaling_stats, y_data[:, n_idx], n_idx)
+        raw_values["theta"].append(theta.astype(np.float32, copy=False))
+        raw_values["rho"].append(rho.astype(np.float32, copy=False))
+        raw_values["n"].append(n_values.astype(np.float32, copy=False))
+
+    concatenated = {
+        key: np.concatenate(arrays) if arrays else np.asarray([], dtype=np.float32)
+        for key, arrays in raw_values.items()
+    }
+    finite_values = {
+        key: array[np.isfinite(array)]
+        for key, array in concatenated.items()
+    }
+    return finite_values
+
+
+def _plot_bag_distribution_overlap(
+    bagged_h5_path: Path,
+    *,
+    output_path: Path | None = None,
+    state_dim: int = STATE_DIM,
+    control_channel: int = 0,
+    target_names: list[str] | None = None,
+) -> Path | None:
+    """Plot theta/rho/n density overlap across bagged train splits."""
+    if target_names is None:
+        target_names = list(TARGET_NAMES)
+    if "rho_dollars" not in target_names or "n" not in target_names:
+        raise ValueError("target_names must include 'rho_dollars' and 'n'.")
+    bagged_h5_path = Path(bagged_h5_path)
+    if output_path is None:
+        output_path = bagged_h5_path.with_name(
+            f"{bagged_h5_path.stem}_bag_distribution_overlap_theta_rho_n.png"
+        )
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    scaling_stats = _load_scaling_stats(bagged_h5_path)
+    with h5py.File(bagged_h5_path, "r") as h5f:
+        train_group = h5f["train"]
+        bag_names = sorted(
+            (name for name in train_group.keys() if name.startswith("bag_")),
+            key=lambda name: int(name.split("_", 1)[1]),
+        )
+        if not bag_names:
+            return None
+        bag_values = {
+            bag_name: _collect_bag_distribution_values(
+                train_group[bag_name],
+                scaling_stats=scaling_stats,
+                state_dim=state_dim,
+                control_channel=control_channel,
+                target_names=target_names,
+            )
+            for bag_name in bag_names
+        }
+
+    if not any(any(values.size for values in bag_data.values()) for bag_data in bag_values.values()):
+        return None
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.8))
+    axes = np.atleast_1d(axes)
+    cmap = plt.get_cmap("tab10")
+    for ax, (summary_name, label) in zip(axes, BAG_DISTRIBUTION_COLUMNS.items(), strict=True):
+        all_values = [bag_data[summary_name] for bag_data in bag_values.values() if bag_data[summary_name].size]
+        if not all_values:
+            ax.set_axis_off()
+            continue
+        combined = np.concatenate(all_values)
+        lo = float(np.min(combined))
+        hi = float(np.max(combined))
+        if np.isclose(lo, hi):
+            pad = max(1.0, abs(lo) * 0.01)
+            lo -= pad
+            hi += pad
+        bins = np.linspace(lo, hi, 80)
+        for bag_idx, (bag_name, bag_data) in enumerate(bag_values.items()):
+            values = bag_data[summary_name]
+            if not values.size:
+                continue
+            ax.hist(
+                values,
+                bins=bins,
+                density=True,
+                histtype="step",
+                linewidth=1.4,
+                alpha=0.9,
+                color=cmap(bag_idx % 10),
+                label=f"{bag_name} (N={values.size:,})",
+            )
+        ax.set_title(label)
+        ax.set_xlabel(label)
+        ax.set_ylabel("Density")
+        ax.grid(alpha=0.3)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="upper center", ncol=min(4, len(handles)), frameon=False)
+    fig.suptitle("Bag training distribution overlap", y=1.03)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
 
 def _venn_region_counts(
     bag_sets: list[set[str]],
@@ -414,6 +578,7 @@ def _save_ensemble_rolling_forecasts_hdf5(
     *,
     output_path: Path,
     target_names: list[str],
+    save_member_forecasts: bool = True,
 ) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -435,6 +600,15 @@ def _save_ensemble_rolling_forecasts_hdf5(
                 table = np.column_stack([table, entry["dx_sigma_dt"].astype(np.float32)]).astype(np.float32)
             group.create_dataset("data", data=table)
             group.attrs["columns"] = column_attr
+            if save_member_forecasts and "member_predictions" in entry:
+                member_predictions = entry["member_predictions"].astype(np.float32)
+                member_ds = group.create_dataset("member_predictions", data=member_predictions, compression="gzip")
+                member_target_attr = np.array(target_names, dtype="S")
+                member_count = int(member_predictions.shape[0])
+                member_ds.attrs["target_names"] = member_target_attr
+                member_ds.attrs["member_model_count"] = member_count
+                group.attrs["member_target_names"] = member_target_attr
+                group.attrs["member_model_count"] = member_count
 
 
 def _forecast_ensemble_profile(
@@ -448,6 +622,7 @@ def _forecast_ensemble_profile(
     control_channel: int,
     derivative_order: int | None,
     derivative_dt: float,
+    save_member_forecasts: bool = True,
 ) -> dict[str, Any]:
     x_np = x_profile.numpy()
     y_true = _descale_targets_from_stats(scaling_stats, y_profile.numpy())
@@ -469,6 +644,8 @@ def _forecast_ensemble_profile(
 
     table = np.column_stack([t_series, u_series, y_true, y_mean, y_two_sigma]).astype(np.float32)
     entry: dict[str, Any] = {"profile": str(profile_name), "table": table}
+    if save_member_forecasts:
+        entry["member_predictions"] = pred_stack.astype(np.float32)
     if derivative_order is not None:
         entry["dx_sigma_dt"] = finite_difference(y_two_sigma, order=derivative_order, dt=derivative_dt)
     return entry
@@ -486,6 +663,7 @@ def ensemble_rolling_forecast_and_save(
     derivative_order: int | None = None,
     derivative_dt: float = 1.0,
     num_workers: int = 4,
+    save_member_forecasts: bool = True,
 ) -> None:
     if target_names is None:
         target_names = list(TARGET_NAMES)
@@ -510,6 +688,7 @@ def ensemble_rolling_forecast_and_save(
             control_channel=control_channel,
             derivative_order=derivative_order,
             derivative_dt=derivative_dt,
+            save_member_forecasts=save_member_forecasts,
         )
 
     if workers <= 1:
@@ -529,6 +708,7 @@ def ensemble_rolling_forecast_and_save(
         forecasts,
         output_path=output_path,
         target_names=target_names,
+        save_member_forecasts=save_member_forecasts,
     )
 
 
@@ -711,6 +891,8 @@ def run_bagging_ensemble(
     preload_val_to_device: bool = True,
     verbose: int = 1,
     forecast_num_workers: int = 4,
+    plot_bag_distributions: bool = True,
+    save_member_forecasts: bool = True,
 ) -> dict[str, Any]:
     config = BaggingEnsembleConfig(
         n_models=n_models,
@@ -731,6 +913,7 @@ def run_bagging_ensemble(
         fc_hidden=fc_hidden,
         prefer_gpu=prefer_gpu,
         verbose=verbose,
+        plot_bag_distributions=plot_bag_distributions,
     )
     config.validate()
 
@@ -748,6 +931,19 @@ def run_bagging_ensemble(
         seed=config.seed,
         verbose=config.verbose,
     )
+    bag_distribution_overlap_plot: Path | None = None
+    if config.plot_bag_distributions:
+        bag_distribution_overlap_plot = _plot_bag_distribution_overlap(
+            bagged_h5_path,
+            state_dim=STATE_DIM,
+            control_channel=0,
+            target_names=list(TARGET_NAMES),
+        )
+        if config.verbose >= 1:
+            if bag_distribution_overlap_plot is None:
+                print("[bagging] bag distribution overlap plot not created (no bag data found).")
+            else:
+                print(f"[bagging] saved bag distribution overlap plot: {bag_distribution_overlap_plot}")
 
     models: list[torch.nn.Module] = []
     histories: list[dict[str, list[float]]] = []
@@ -804,6 +1000,7 @@ def run_bagging_ensemble(
         control_channel=0,
         target_names=list(TARGET_NAMES),
         num_workers=forecast_num_workers,
+        save_member_forecasts=save_member_forecasts,
     )
 
     return {
@@ -812,4 +1009,6 @@ def run_bagging_ensemble(
         "model_dirs": [out_dir / f"model_{idx}" for idx in range(config.n_models)],
         "used_devices": used_devices,
         "histories": histories,
+        "bag_distribution_overlap_plot": bag_distribution_overlap_plot,
+        "save_member_forecasts": bool(save_member_forecasts),
     }

@@ -116,7 +116,16 @@ def _find_latest_global_result_index(sim_root: Path) -> int:
     return max_idx
 
 
-def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, sim_root: Path) -> None:
+def _parse_branched_result_stem(stem: str) -> tuple[str, str]:
+    if not stem.startswith("results_") or "__" not in stem:
+        raise RuntimeError(f"Unexpected branched result stem: {stem}")
+    root_id, profile_id = stem[len("results_") :].split("__", 1)
+    if not root_id or not profile_id:
+        raise RuntimeError(f"Unexpected branched result stem: {stem}")
+    return root_id, profile_id
+
+
+def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, sim_root: Path, profiles_dir: Path | None = None) -> None:
     branched_results_dir = out_dir / "branched_results"
     if not branched_results_dir.exists():
         print("[run-mode=production] No branched_results directory found; skipping copy.")
@@ -127,8 +136,13 @@ def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, si
         print("[run-mode=production] No branched CSV results found; skipping copy.")
         return
 
+    manifest_index: dict[tuple[str, str], tuple[str | None, float | None]] = {}
+    if profiles_dir is not None:
+        manifest_index = _load_branch_manifest_index(profiles_dir)
+
     next_idx = _find_latest_global_result_index(sim_root) + 1
     copied = 0
+    lineage_entries = []
     for csv_src in sources:
         mat_src = csv_src.with_suffix(".mat")
         dst_stem = f"results_drum_profile_{next_idx:05d}"
@@ -137,8 +151,24 @@ def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, si
         shutil.copy2(csv_src, csv_dst)
         if mat_src.exists():
             shutil.copy2(mat_src, mat_dst)
+        root_id, profile_id = _parse_branched_result_stem(csv_src.stem)
+        if (root_id, profile_id) not in manifest_index:
+            raise RuntimeError(
+                f"Missing branched manifest entry for simulated result {csv_src.name}: "
+                f"root_id={root_id}, profile_id={profile_id}"
+            )
+        parent_id, branch_time = manifest_index[(root_id, profile_id)]
+        lineage_entries.append({
+            "result_stem": dst_stem,
+            "source_stem": csv_src.stem,
+            "root_id": root_id,
+            "profile_id": profile_id,
+            "parent_profile_id": "" if parent_id is None else parent_id,
+            "branch_time": branch_time,
+        })
         copied += 1
         next_idx += 1
+    (out_dir / "branched_results_lineage.json").write_text(json.dumps(lineage_entries, indent=2), encoding="utf-8")
     print(f"[run-mode=production] Copied {copied} branched result pairs to batch root with global profile numbering.")
 
 
@@ -367,7 +397,7 @@ def main() -> None:
         _cleanup_production_artifacts(out_dir_path)
         if args.mode == "branched_mat":
             sim_root = (output_root / "sim_profiles").resolve()
-            _copy_branched_results_to_batch_root_with_global_numbering(out_dir_path, sim_root)
+            _copy_branched_results_to_batch_root_with_global_numbering(out_dir_path, sim_root, profiles_dir=profiles_dir)
 
 
 if __name__ == "__main__":

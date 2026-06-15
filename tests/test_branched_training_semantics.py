@@ -5,10 +5,16 @@ import types
 from pathlib import Path
 
 sys.modules.setdefault("h5py", types.ModuleType("h5py"))
-MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "rabl" / "machine_learning" / "build_lstm_dataset.py"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "src"))
+if "rabl" in sys.modules and not hasattr(sys.modules["rabl"], "__path__"):
+    sys.modules.pop("rabl", None)
+    sys.modules.pop("rabl.machine_learning", None)
+MODULE_PATH = REPO_ROOT / "src" / "rabl" / "machine_learning" / "build_lstm_dataset.py"
 spec = importlib.util.spec_from_file_location("build_lstm_dataset_module", MODULE_PATH)
 assert spec is not None and spec.loader is not None
 build_lstm_dataset_module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = build_lstm_dataset_module
 spec.loader.exec_module(build_lstm_dataset_module)
 _collect_csv_files = build_lstm_dataset_module._collect_csv_files
 
@@ -138,3 +144,127 @@ def test_collect_csv_files_uses_batch_root_only_and_warns_on_duplicate_stems(tmp
 
     output = capsys.readouterr().out
     assert "Warning: duplicate result stems detected across batches" in output
+
+np = build_lstm_dataset_module.np
+STATE_COLUMNS = build_lstm_dataset_module.STATE_COLUMNS
+CONTROL_COLUMN = build_lstm_dataset_module.CONTROL_COLUMN
+BranchLineageEntry = build_lstm_dataset_module.BranchLineageEntry
+_build_branch_sequences = build_lstm_dataset_module._build_branch_sequences
+_build_sequences = build_lstm_dataset_module._build_sequences
+_read_profile_data = build_lstm_dataset_module._read_profile_data
+_steady_state_rows = build_lstm_dataset_module._steady_state_rows
+
+
+def _steady_state(value: float = 0.0) -> dict[str, float]:
+    out = {col: value for col in STATE_COLUMNS}
+    out[CONTROL_COLUMN] = value
+    return out
+
+
+def _write_full_results_csv(path: Path, times: list[float], state_base: float, control_base: float | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    control_base = state_base if control_base is None else control_base
+    with path.open("w", newline="") as fp:
+        w = csv.writer(fp)
+        w.writerow(["t", *STATE_COLUMNS, CONTROL_COLUMN])
+        for idx, t in enumerate(times):
+            # Make the first state column uniquely identify each physical row.
+            states = [state_base + idx] + [1000.0 + state_base + idx + j for j in range(1, len(STATE_COLUMNS))]
+            w.writerow([t, *states, control_base + idx])
+
+
+def _profile(path: Path, lineage: object | None = None):
+    return _read_profile_data(path, lineage)
+
+
+def test_branch_training_window_uses_parent_history_not_equilibrium(tmp_path: Path) -> None:
+    k = 3
+    root_csv = tmp_path / "results_drum_profile_00001.csv"
+    branch_csv = tmp_path / "results_drum_profile_00002.csv"
+    _write_full_results_csv(root_csv, [0.0, 1.0, 2.0, 3.0], state_base=10.0)
+    _write_full_results_csv(branch_csv, [3.0, 4.0, 5.0], state_base=100.0)
+
+    root = _profile(root_csv, BranchLineageEntry("results_drum_profile_00001", "root_001", "profile_00000", None, None))
+    branch = _profile(branch_csv, BranchLineageEntry("results_drum_profile_00002", "root_001", "profile_00001", "profile_00000", 3.0))
+    state_pad, control_pad = _steady_state_rows(_steady_state(-999.0), k)
+
+    x_seq, y_seq, history_rows = _build_branch_sequences(
+        branch,
+        k=k,
+        by_lineage_key={("root_001", "profile_00000"): root, ("root_001", "profile_00001"): branch},
+        steady_state_rows=(state_pad[:k], control_pad[:k]),
+    )
+
+    assert history_rows == k
+    assert x_seq.shape[0] == 2
+    # First branch window is the final 3 parent rows before t=3.0, followed by
+    # the first branch-continuation row at t=3.0.
+    assert x_seq[0, :, 0].tolist() == [10.0, 11.0, 12.0, 100.0]
+    assert y_seq[0, 0] == 101.0
+    assert -999.0 not in x_seq[0, :, 0]
+
+
+def test_recursive_branch_history_climbs_parent_lineage(tmp_path: Path) -> None:
+    k = 3
+    root_csv = tmp_path / "results_drum_profile_00001.csv"
+    parent_branch_csv = tmp_path / "results_drum_profile_00002.csv"
+    child_branch_csv = tmp_path / "results_drum_profile_00003.csv"
+    _write_full_results_csv(root_csv, [0.0, 1.0, 2.0], state_base=10.0)
+    _write_full_results_csv(parent_branch_csv, [2.0, 3.0], state_base=100.0)
+    _write_full_results_csv(child_branch_csv, [3.5, 4.0, 5.0], state_base=200.0)
+
+    root = _profile(root_csv, BranchLineageEntry("results_drum_profile_00001", "root_001", "profile_00000", None, None))
+    parent_branch = _profile(parent_branch_csv, BranchLineageEntry("results_drum_profile_00002", "root_001", "profile_00001", "profile_00000", 2.0))
+    child_branch = _profile(child_branch_csv, BranchLineageEntry("results_drum_profile_00003", "root_001", "profile_00002", "profile_00001", 3.5))
+    state_pad, control_pad = _steady_state_rows(_steady_state(-999.0), k)
+
+    by_key = {
+        ("root_001", "profile_00000"): root,
+        ("root_001", "profile_00001"): parent_branch,
+        ("root_001", "profile_00002"): child_branch,
+    }
+    x_seq, y_seq, history_rows = _build_branch_sequences(
+        child_branch,
+        k=k,
+        by_lineage_key=by_key,
+        steady_state_rows=(state_pad[:k], control_pad[:k]),
+    )
+
+    assert history_rows == k
+    # Only two rows are available in the immediate parent before t=3.5, so the
+    # oldest row is pulled from that parent's root lineage.
+    assert x_seq[0, :, 0].tolist() == [11.0, 100.0, 101.0, 200.0]
+    assert y_seq[0, 0] == 201.0
+
+
+def test_root_profile_padding_behavior_is_unchanged(tmp_path: Path) -> None:
+    k = 3
+    root_csv = tmp_path / "results_drum_profile_00001.csv"
+    _write_full_results_csv(root_csv, [0.0, 1.0, 2.0], state_base=10.0)
+    root = _profile(root_csv)
+    state_pad, control_pad = _steady_state_rows(_steady_state(-999.0), k)
+
+    x_seq, y_seq = _build_sequences(np.vstack([state_pad, root.states]), np.vstack([control_pad, root.control]), k)
+
+    assert x_seq[0, :, 0].tolist() == [-999.0, -999.0, -999.0, -999.0]
+    assert y_seq[0, 0] == 10.0
+
+
+def test_branch_missing_parent_metadata_fails_loudly(tmp_path: Path) -> None:
+    k = 3
+    branch_csv = tmp_path / "results_drum_profile_00002.csv"
+    _write_full_results_csv(branch_csv, [3.0, 4.0, 5.0], state_base=100.0)
+    branch = _profile(branch_csv, BranchLineageEntry("results_drum_profile_00002", "root_001", "profile_00001", "profile_00000", 3.0))
+    state_pad, control_pad = _steady_state_rows(_steady_state(-999.0), k)
+
+    try:
+        _build_branch_sequences(
+            branch,
+            k=k,
+            by_lineage_key={("root_001", "profile_00001"): branch},
+            steady_state_rows=(state_pad[:k], control_pad[:k]),
+        )
+    except SystemExit as exc:
+        assert "Missing parent metadata/result" in str(exc)
+    else:
+        raise AssertionError("Expected missing branch parent metadata to fail loudly")
