@@ -26,7 +26,6 @@ from typing import Callable
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from matplotlib.lines import Line2D
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = REPO_ROOT / "src"
@@ -41,6 +40,7 @@ from rabl.machine_learning.branchpoint_finder import finite_difference
 from rabl.machine_learning.recursive_branching import (
     LSTMEnsembleForecaster,
     RecursiveBranchingResult,
+    _plot_branched_profiles,
     generate_root_profile,
     load_trained_ensemble,
     run_recursive_branching,
@@ -280,59 +280,6 @@ def _plot_root_profile(root_profile: DrumProfile, save_path: Path) -> None:
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-
-
-def _plot_branched_profiles(result: RecursiveBranchingResult, save_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(10, 6))
-    root_id = "profile_00000"
-    interval_colors = _interval_colors(len(result.intervals))
-
-    for profile_id, node in result.final_profiles.items():
-        t = np.asarray(node.profile.t, dtype=float)
-        u = np.asarray(node.profile.theta_deg, dtype=float)
-        if profile_id == root_id:
-            ax.plot(t, u, color="black", linewidth=2.0, zorder=3, label="root")
-            continue
-
-        k = 0 if node.created_in_interval is None else node.created_in_interval
-        color = interval_colors[k % len(interval_colors)] if interval_colors else "darkcyan"
-        if node.branch_time is None:
-            ax.plot(t, u, color=color, linewidth=1.2, alpha=0.85)
-        else:
-            mask = t >= node.branch_time
-            ax.plot(t[mask], u[mask], color=color, linewidth=1.2, alpha=0.9)
-            branch_idx = int(np.argmin(np.abs(t - node.branch_time)))
-            ax.plot(t[branch_idx], u[branch_idx], "o", color="black", markersize=3.5, zorder=4)
-
-    for interval in result.intervals:
-        ax.axvline(interval.start, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
-    if result.intervals:
-        ax.axvline(result.intervals[-1].end, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
-
-    if result.intervals:
-        legend_handles = [
-            Line2D(
-                [0],
-                [0],
-                color=interval_colors[interval.index % len(interval_colors)],
-                linewidth=2.0,
-                label=f"Spawned in Interval {interval.index + 1}",
-            )
-            for interval in result.intervals
-        ]
-        ax.legend(handles=legend_handles, loc="upper left", frameon=True)
-
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Drum Angle (deg)")
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _interval_colors(n_intervals: int) -> list[str]:
-    """Match the interval color scheme used in generate_branched_control_profiles.py."""
-    palette = ["darkblue", "deepskyblue", "lightblue"]
-    return [palette[i % len(palette)] for i in range(max(0, n_intervals))]
 
 
 def _print_run_summary(

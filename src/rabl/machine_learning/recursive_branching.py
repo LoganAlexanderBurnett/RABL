@@ -654,6 +654,58 @@ def save_profiles_lineage_graph(
     return output_image_path
 
 
+def _plot_branched_profiles(result: RecursiveBranchingResult, save_path: Path) -> Path:
+    """Plot branched drum control profiles and branch points for one root result."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    root_id = "profile_00000"
+    interval_colors = _interval_colors(len(result.intervals))
+
+    for profile_id, node in result.final_profiles.items():
+        t = np.asarray(node.profile.t, dtype=float)
+        u = np.asarray(node.profile.theta_deg, dtype=float)
+        if profile_id == root_id:
+            ax.plot(t, u, color="black", linewidth=2.0, zorder=3, label="root")
+            continue
+
+        k = 0 if node.created_in_interval is None else node.created_in_interval
+        color = interval_colors[k % len(interval_colors)] if interval_colors else "darkcyan"
+        if node.branch_time is None:
+            ax.plot(t, u, color=color, linewidth=1.2, alpha=0.85)
+        else:
+            mask = t >= node.branch_time
+            ax.plot(t[mask], u[mask], color=color, linewidth=1.2, alpha=0.9)
+            branch_idx = int(np.argmin(np.abs(t - node.branch_time)))
+            ax.plot(t[branch_idx], u[branch_idx], "o", color="black", markersize=3.5, zorder=4)
+
+    for interval in result.intervals:
+        ax.axvline(interval.start, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+    if result.intervals:
+        ax.axvline(result.intervals[-1].end, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+
+    if result.intervals:
+        legend_handles = [
+            Line2D(
+                [0],
+                [0],
+                color=interval_colors[interval.index % len(interval_colors)],
+                linewidth=2.0,
+                label=f"Spawned in Interval {interval.index + 1}",
+            )
+            for interval in result.intervals
+        ]
+        ax.legend(handles=legend_handles, loc="upper left", frameon=True)
+
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Drum Angle (deg)")
+    ax.set_title("Branched Drum Control Profiles")
+    ax.grid(True, alpha=0.3)
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return save_path
+
+
 def _interval_colors(n_intervals: int) -> list[str]:
     """Use the same interval palette as branched profile plotting."""
     palette = ["darkcyan", "aquamarine", "mediumturquoise"]
@@ -757,6 +809,7 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
             verbose=True,
         )
         root_group = f"root_{root_idx + 1:03d}"
+        _plot_branched_profiles(result, config.output_dir / f"{root_group}_branched_profiles.png")
         save_recursive_branching_output(result, profiles_h5, root_group_name=root_group)
         mats = save_profiles_as_mat_files(result, config.output_dir, start_index=next_idx)
         next_idx += len(mats)
