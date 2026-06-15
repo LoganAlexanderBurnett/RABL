@@ -1714,6 +1714,7 @@ def main() -> None:
         bagged_h5_path = Path(ensemble["bagged_h5_path"])
         forecast_h5 = Path(ensemble["forecast_output_path"])
         bag_distribution_overlap_plot = ensemble.get("bag_distribution_overlap_plot")
+        ensemble_training_curves_plot = ensemble.get("training_curves_plot")
         t0 = perf_counter()
         point_metrics = _summarize_forecasts(forecast_h5)
         unc_metrics = _compute_uncertainty_metrics(forecast_h5)
@@ -1884,6 +1885,9 @@ def main() -> None:
                 "bagged_h5_path": str(bagged_h5_path),
                 "bag_distribution_overlap_plot": (
                     None if bag_distribution_overlap_plot is None else str(bag_distribution_overlap_plot)
+                ),
+                "ensemble_training_curves_plot": (
+                    None if ensemble_training_curves_plot is None else str(ensemble_training_curves_plot)
                 ),
                 "model_paths": model_paths,
                 "forecast_h5": str(forecast_h5),

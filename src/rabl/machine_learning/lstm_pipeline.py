@@ -763,7 +763,8 @@ def train_model(
     profiler_row_limit: int = 30,
     use_tqdm: bool = True,
     resume_from_weights: Path | None = None,
-) -> tuple[nn.Module, dict[str, list[float]], Path]:
+    save_training_curves: bool = True,
+) -> tuple[nn.Module, dict[str, list[float]], Path | None]:
     """
     Train the LSTM and save a train/val curve plot.
 
@@ -1017,34 +1018,37 @@ def train_model(
         if verbose:
             print(f"Restored best model weights from epoch {best_epoch}.")
 
-    resolved_plot_path.parent.mkdir(parents=True, exist_ok=True)
+    if save_training_curves:
+        resolved_plot_path.parent.mkdir(parents=True, exist_ok=True)
 
-    epochs_range = range(1, len(history["loss"]) + 1)
-    plt.figure(figsize=(10, 6))
-    plt.plot(epochs_range, history["loss"], label="Train Loss (MSE)")
-    plt.plot(epochs_range, history["val_loss"], label="Val Loss (MSE)")
-    plt.yscale("log")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Training and Validation Loss")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-    plt.savefig(resolved_plot_path, dpi=150)
-    print(f"Saved training curves to {resolved_plot_path}")
+        epochs_range = range(1, len(history["loss"]) + 1)
+        plt.figure(figsize=(10, 6))
+        plt.plot(epochs_range, history["loss"], label="Train Loss (MSE)")
+        plt.plot(epochs_range, history["val_loss"], label="Val Loss (MSE)")
+        plt.yscale("log")
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
+        plt.title("Training and Validation Loss")
+        plt.legend()
+        plt.grid()
+        plt.tight_layout()
+        plt.savefig(resolved_plot_path, dpi=150)
+        print(f"Saved training curves to {resolved_plot_path}")
 
-    resolved_lr_plot_path = resolved_plot_path.with_name("lstm_lr_curve.png")
-    epochs_range = range(1, len(history["lr"]) + 1)
-    plt.figure(figsize=(10, 6))
-    plt.plot(epochs_range, history["lr"], label="Learning Rate")
-    plt.xlabel("Epoch")
-    plt.ylabel("Learning Rate")
-    plt.title("Learning Rate Schedule (StepLR)")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-    plt.savefig(resolved_lr_plot_path, dpi=150)
-    print(f"Saved learning-rate curve to {resolved_lr_plot_path}")
+        resolved_lr_plot_path = resolved_plot_path.with_name("lstm_lr_curve.png")
+        epochs_range = range(1, len(history["lr"]) + 1)
+        plt.figure(figsize=(10, 6))
+        plt.plot(epochs_range, history["lr"], label="Learning Rate")
+        plt.xlabel("Epoch")
+        plt.ylabel("Learning Rate")
+        plt.title("Learning Rate Schedule (StepLR)")
+        plt.legend()
+        plt.grid()
+        plt.tight_layout()
+        plt.savefig(resolved_lr_plot_path, dpi=150)
+        print(f"Saved learning-rate curve to {resolved_lr_plot_path}")
+    else:
+        resolved_plot_path = None
 
     if verbose:
         total_data_wait_s = float(sum(history["data_wait_time"]))
@@ -1095,6 +1099,7 @@ def train_with_fallback(
     profiler_row_limit: int = 30,
     use_tqdm: bool = True,
     resume_from_weights: Path | None = None,
+    save_training_curves: bool = True,
 ) -> tuple[nn.Module, dict[str, list[float]], torch.device]:
     """
     Try GPU first (if prefer_gpu). If anything fails, retry on CPU.
@@ -1135,6 +1140,7 @@ def train_with_fallback(
             profiler_row_limit=profiler_row_limit,
             use_tqdm=use_tqdm,
             resume_from_weights=resume_from_weights,
+            save_training_curves=save_training_curves,
         )
         return model, history, preferred
     except Exception as e:
@@ -1171,6 +1177,7 @@ def train_with_fallback(
         profiler_row_limit=profiler_row_limit,
         use_tqdm=use_tqdm,
         resume_from_weights=resume_from_weights,
+        save_training_curves=save_training_curves,
     )
     return model, history, torch.device("cpu")
 
