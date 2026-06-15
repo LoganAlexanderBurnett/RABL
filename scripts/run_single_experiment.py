@@ -40,7 +40,10 @@ if str(SCRIPTS_PATH) not in sys.path:
 
 from rabl.paths import resolve_output_root
 from rabl.machine_learning import build_lstm_dataset
-from rabl.machine_learning.dataset_scaling import LSTMDatasetScalerSplitter
+from rabl.machine_learning.dataset_scaling import (
+    LSTMDatasetScalerSplitter,
+    load_scaler_stats_json,
+)
 from rabl.machine_learning.tuner import GridSearchConfig, run_grid_search, run_hyperband_search
 from rabl.machine_learning.bagging_ensemble import run_bagging_ensemble
 from rabl.machine_learning.lstm_pipeline import (
@@ -130,6 +133,9 @@ class ExperimentConfig:
     forecast_plot_profiles_per_bin: int = 2
     forecast_plot_selection_seed: int | None = None
     forecast_plot_selection_path: str | None = None
+    freeze_scaler_stats: bool = False
+    scaler_stats_path: str | None = None
+    save_scaler_stats: bool = False
     test_manifest_path: str | None = None
     val_manifest_path: str | None = None
     config_py_path: str = str(REPO_ROOT / "scripts" / "config.py")
@@ -248,6 +254,8 @@ def _scale_with_fixed_manifests(
     save_test_manifest: Path | None,
     test_count: int,
     seed: int,
+    frozen_stats_path: Path | None = None,
+    save_stats_path: Path | None = None,
 ) -> Path:
     if test_manifest is not None or val_manifest is not None:
         _validate_fixed_manifests_against_unscaled_h5(
@@ -268,6 +276,8 @@ def _scale_with_fixed_manifests(
         val_manifest_path=val_manifest,
         test_count=None if test_manifest is not None else test_count,
         save_test_manifest_path=save_test_manifest,
+        frozen_stats_path=frozen_stats_path,
+        save_stats_path=save_stats_path,
         output_dir=out_dir,
     )
     return splitter.run()
@@ -1467,6 +1477,51 @@ def _save_forecast_pdf_subset(
     return plotted_names
 
 
+def _decode_h5_attr_strings(value: Any) -> list[str]:
+    arr = np.asarray(value)
+    if arr.ndim == 0:
+        item = arr.item()
+        return [item.decode() if isinstance(item, bytes) else str(item)]
+    return [item.decode() if isinstance(item, bytes) else str(item) for item in arr.tolist()]
+
+
+def _unscaled_h5_feature_and_target_names(unscaled_h5: Path) -> tuple[list[str], list[str]]:
+    with h5py.File(unscaled_h5, "r") as h5f:
+        if "state_feature_names" not in h5f.attrs:
+            raise ValueError(f"Unscaled dataset missing state_feature_names metadata: {unscaled_h5}")
+        if "control_feature_name" not in h5f.attrs:
+            raise ValueError(f"Unscaled dataset missing control_feature_name metadata: {unscaled_h5}")
+        target_names = _decode_h5_attr_strings(h5f.attrs["state_feature_names"])
+        control_name = _decode_h5_attr_strings(h5f.attrs["control_feature_name"])[0]
+    return [*target_names, control_name], target_names
+
+
+def _validate_frozen_scaler_stats_for_unscaled_h5(
+    *,
+    scaler_stats_path: Path,
+    scaling_type: str,
+    unscaled_h5: Path,
+) -> None:
+    input_feature_names, target_names = _unscaled_h5_feature_and_target_names(unscaled_h5)
+    load_scaler_stats_json(
+        scaler_stats_path,
+        scaling_type=scaling_type,
+        input_feature_names=input_feature_names,
+        target_names=target_names,
+    )
+
+
+def _resolve_scaler_stats_paths(cfg: ExperimentConfig, run_dir: Path) -> tuple[Path | None, Path | None]:
+    configured_path = Path(cfg.scaler_stats_path).expanduser().resolve() if cfg.scaler_stats_path else None
+    if cfg.freeze_scaler_stats:
+        if configured_path is None:
+            raise SystemExit("freeze_scaler_stats is true, so scaler_stats_path must be provided.")
+        if not configured_path.exists():
+            raise SystemExit(f"freeze_scaler_stats is true, but scaler_stats_path does not exist: {configured_path}")
+    save_path = configured_path if configured_path is not None else run_dir / "frozen_scaler_stats.json"
+    return configured_path, save_path if cfg.save_scaler_stats else None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run one full experiment starting from sim batch folders.")
     parser.add_argument("--config", type=Path, required=True)
@@ -1508,6 +1563,11 @@ def main() -> None:
     configured_val_manifest = Path(cfg.val_manifest_path).resolve() if cfg.val_manifest_path else None
     generated_test_manifest = run_dir / "test_manifest.json"
     forecast_plot_selection_path = _forecast_plot_selection_path(cfg=cfg, run_dir=run_dir)
+    frozen_scaler_stats_path, save_scaler_stats_path = _resolve_scaler_stats_paths(cfg, run_dir)
+    if cfg.freeze_scaler_stats:
+        print(f"[scale] Frozen scaler statistics enabled: {frozen_scaler_stats_path}")
+    elif cfg.save_scaler_stats:
+        print(f"[scale] Scaler statistics will be saved after the initial/base split: {save_scaler_stats_path}")
 
     sim_root = Path(cfg.sim_root).resolve() if cfg.sim_root else output_root / "sim_profiles"
     var_root = Path(cfg.variography_root).resolve() if cfg.variography_root else output_root / "variography_profiles"
@@ -1568,6 +1628,14 @@ def main() -> None:
                 "provide both explicit manifests for the first cycle."
             )
         save_test_manifest = None if active_test_manifest is not None else generated_test_manifest
+        if cfg.freeze_scaler_stats:
+            assert frozen_scaler_stats_path is not None
+            _validate_frozen_scaler_stats_for_unscaled_h5(
+                scaler_stats_path=frozen_scaler_stats_path,
+                scaling_type=cfg.scaling_type,
+                unscaled_h5=unscaled_h5,
+            )
+        cycle_save_scaler_stats_path = save_scaler_stats_path if (cfg.save_scaler_stats and cycle == 0) else None
         scaled_h5 = _scale_with_fixed_manifests(
             unscaled_h5=unscaled_h5,
             out_dir=cycle_dir / "scaled",
@@ -1578,6 +1646,8 @@ def main() -> None:
             save_test_manifest=save_test_manifest,
             test_count=cfg.test_count,
             seed=cycle_seed,
+            frozen_stats_path=frozen_scaler_stats_path if cfg.freeze_scaler_stats else None,
+            save_stats_path=cycle_save_scaler_stats_path,
         )
         split_budget = _summarize_split_h5(scaled_h5)
         resolved_split_manifests = _get_resolved_split_manifests(scaled_h5)
@@ -1806,6 +1876,9 @@ def main() -> None:
                     "hidden_fc": best.hidden_fc,
                 },
                 "resolved_split_manifests": resolved_split_manifests,
+                "freeze_scaler_stats": bool(cfg.freeze_scaler_stats),
+                "frozen_scaler_stats_path": None if frozen_scaler_stats_path is None else str(frozen_scaler_stats_path),
+                "saved_scaler_stats_path": None if cycle_save_scaler_stats_path is None else str(cycle_save_scaler_stats_path),
                 **split_budget,
                 **new_batch_budget,
                 "bagged_h5_path": str(bagged_h5_path),
