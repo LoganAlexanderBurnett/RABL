@@ -119,6 +119,7 @@ class ExperimentConfig:
     branching: dict[str, Any]
     dymola: dict[str, Any]
     training_seed: int | None = None
+    dataset_build_verbose: bool = False
     plot_bag_distributions: bool = True
     save_individual_ensemble_forecasts: bool = True
     plot_individual_ensemble_forecasts: bool = True
@@ -231,6 +232,7 @@ def _build_from_batches(
     lookback: int,
     cfg_py: Path,
     out_dir: Path,
+    verbose: bool = False,
 ) -> Path:
     cfg = build_lstm_dataset._validate_config(build_lstm_dataset._load_config(cfg_py))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -240,6 +242,7 @@ def _build_from_batches(
         steady_state=cfg["steady_state"],
         k=lookback,
         batch_ids=batch_ids,
+        verbose=verbose,
     )
 
 
@@ -1615,6 +1618,7 @@ def main() -> None:
             lookback=cfg.lookback,
             cfg_py=cfg_py,
             out_dir=cycle_dir / "unscaled",
+            verbose=cfg.dataset_build_verbose,
         )
         step_times["build_unscaled_dataset_sec"] = perf_counter() - t0
         _print_step_result(cycle + 1, "Build unscaled dataset complete", f"Output: {unscaled_h5}")

@@ -427,6 +427,8 @@ def build_dataset(
     steady_state: dict,
     k: int,
     batch_ids: list[str],
+    *,
+    verbose: bool = False,
 ) -> Path:
     k = _validate_lookback(k)
 
@@ -496,7 +498,8 @@ def build_dataset(
                 if lineage.source_stem:
                     file_group.attrs["branch_source_stem"] = lineage.source_stem
             total_samples += x_seq.shape[0]
-            print(f"{profile.csv_path.name}: {x_seq.shape[0]} samples")
+            if verbose:
+                print(f"{profile.csv_path.name}: {x_seq.shape[0]} samples")
 
     if total_samples == 0:
         raise SystemExit("No samples generated; check lookback size or input CSV lengths.")
