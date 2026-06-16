@@ -33,8 +33,8 @@ CONTROL_COLUMN = "drumAngleDeg"
 TIME_COLUMN = "t"
 CSV_PATTERN = "results_drum_profile_*.csv"
 BRANCH_LINEAGE_FILENAME = "branched_results_lineage.json"
-_BRANCH_TIME_ATOL = 1e-6
-_BRANCH_TIME_RTOL = 1e-8
+_BRANCH_TIME_ATOL = 1e-5
+_BRANCH_TIME_RTOL = 1e-7
 
 
 def _branch_time_tolerance(time_value: float) -> float:

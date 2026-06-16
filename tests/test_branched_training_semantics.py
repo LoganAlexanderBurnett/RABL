@@ -208,10 +208,10 @@ def test_branch_start_time_tolerates_csv_roundoff(tmp_path: Path) -> None:
     k = 3
     root_csv = tmp_path / "results_drum_profile_00001.csv"
     branch_csv = tmp_path / "results_drum_profile_00002.csv"
-    branch_time = 60.800000000000004
-    rounded_first_t = 60.79999923706055
-    _write_full_results_csv(root_csv, [59.2, 59.6, 60.0, 60.4], state_base=10.0)
-    _write_full_results_csv(branch_csv, [rounded_first_t, 61.2, 61.6], state_base=100.0)
+    branch_time = 116.10000000000001
+    rounded_first_t = 116.0999984741211
+    _write_full_results_csv(root_csv, [114.9, 115.3, 115.7, 116.0], state_base=10.0)
+    _write_full_results_csv(branch_csv, [rounded_first_t, 116.5, 116.9], state_base=100.0)
 
     root = _profile(root_csv, BranchLineageEntry("results_drum_profile_00001", "root_001", "profile_00000", None, None))
     branch = _profile(branch_csv, BranchLineageEntry("results_drum_profile_00002", "root_001", "profile_00001", "profile_00000", branch_time))
