@@ -204,6 +204,55 @@ def test_branch_training_window_uses_parent_history_not_equilibrium(tmp_path: Pa
     assert -999.0 not in x_seq[0, :, 0]
 
 
+def test_branch_start_time_tolerates_csv_roundoff(tmp_path: Path) -> None:
+    k = 3
+    root_csv = tmp_path / "results_drum_profile_00001.csv"
+    branch_csv = tmp_path / "results_drum_profile_00002.csv"
+    branch_time = 60.800000000000004
+    rounded_first_t = 60.79999923706055
+    _write_full_results_csv(root_csv, [59.2, 59.6, 60.0, 60.4], state_base=10.0)
+    _write_full_results_csv(branch_csv, [rounded_first_t, 61.2, 61.6], state_base=100.0)
+
+    root = _profile(root_csv, BranchLineageEntry("results_drum_profile_00001", "root_001", "profile_00000", None, None))
+    branch = _profile(branch_csv, BranchLineageEntry("results_drum_profile_00002", "root_001", "profile_00001", "profile_00000", branch_time))
+    state_pad, control_pad = _steady_state_rows(_steady_state(-999.0), k)
+
+    x_seq, y_seq, history_rows = _build_branch_sequences(
+        branch,
+        k=k,
+        by_lineage_key={("root_001", "profile_00000"): root, ("root_001", "profile_00001"): branch},
+        steady_state_rows=(state_pad[:k], control_pad[:k]),
+    )
+
+    assert history_rows == k
+    assert x_seq[0, :, 0].tolist() == [11.0, 12.0, 13.0, 100.0]
+    assert y_seq[0, 0] == 101.0
+
+
+def test_branch_start_time_still_fails_when_meaningfully_before_branch_time(tmp_path: Path) -> None:
+    k = 3
+    root_csv = tmp_path / "results_drum_profile_00001.csv"
+    branch_csv = tmp_path / "results_drum_profile_00002.csv"
+    _write_full_results_csv(root_csv, [59.2, 59.6, 60.0, 60.4], state_base=10.0)
+    _write_full_results_csv(branch_csv, [60.79, 61.2, 61.6], state_base=100.0)
+
+    root = _profile(root_csv, BranchLineageEntry("results_drum_profile_00001", "root_001", "profile_00000", None, None))
+    branch = _profile(branch_csv, BranchLineageEntry("results_drum_profile_00002", "root_001", "profile_00001", "profile_00000", 60.8))
+    state_pad, control_pad = _steady_state_rows(_steady_state(-999.0), k)
+
+    try:
+        _build_branch_sequences(
+            branch,
+            k=k,
+            by_lineage_key={("root_001", "profile_00000"): root, ("root_001", "profile_00001"): branch},
+            steady_state_rows=(state_pad[:k], control_pad[:k]),
+        )
+    except SystemExit as exc:
+        assert "starts before branch_time" in str(exc)
+    else:
+        raise AssertionError("Expected branch start meaningfully before branch_time to fail loudly")
+
+
 def test_recursive_branch_history_climbs_parent_lineage(tmp_path: Path) -> None:
     k = 3
     root_csv = tmp_path / "results_drum_profile_00001.csv"

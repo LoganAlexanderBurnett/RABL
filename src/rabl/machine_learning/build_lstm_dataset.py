@@ -33,7 +33,12 @@ CONTROL_COLUMN = "drumAngleDeg"
 TIME_COLUMN = "t"
 CSV_PATTERN = "results_drum_profile_*.csv"
 BRANCH_LINEAGE_FILENAME = "branched_results_lineage.json"
-_BRANCH_TIME_ATOL = 1e-9
+_BRANCH_TIME_ATOL = 1e-6
+_BRANCH_TIME_RTOL = 1e-8
+
+
+def _branch_time_tolerance(time_value: float) -> float:
+    return max(_BRANCH_TIME_ATOL, abs(float(time_value)) * _BRANCH_TIME_RTOL)
 
 
 @dataclass(frozen=True)
@@ -329,7 +334,7 @@ def _collect_pre_branch_history(
             np.empty((0, 1), dtype=float),
         )
 
-    mask = profile.t < float(cutoff_time) - _BRANCH_TIME_ATOL
+    mask = profile.t < float(cutoff_time) - _branch_time_tolerance(float(cutoff_time))
     own_t = profile.t[mask]
     own_states = profile.states[mask]
     own_control = profile.control[mask]
@@ -394,8 +399,10 @@ def _build_branch_sequences(
             f"Missing parent metadata/result for branched profile {lineage.root_id}/{lineage.profile_id}: "
             f"parent_profile_id={lineage.parent_profile_id}"
         )
+    branch_time = float(lineage.branch_time)
+    branch_time_tol = _branch_time_tolerance(branch_time)
     first_t = float(profile.t[0])
-    if first_t < float(lineage.branch_time) - _BRANCH_TIME_ATOL:
+    if first_t + branch_time_tol < branch_time:
         raise SystemExit(
             f"Branched result {profile.csv_path} starts before branch_time: "
             f"first_t={first_t}, branch_time={lineage.branch_time}"
@@ -409,7 +416,7 @@ def _build_branch_sequences(
         steady_state_rows=steady_state_rows,
     )
     finite_hist_t = hist_t[np.isfinite(hist_t)]
-    if finite_hist_t.size and finite_hist_t[-1] >= first_t - _BRANCH_TIME_ATOL:
+    if finite_hist_t.size and finite_hist_t[-1] >= first_t - _branch_time_tolerance(first_t):
         raise SystemExit(
             f"Branch history for {lineage.root_id}/{lineage.profile_id} overlaps branch continuation: "
             f"last_history_t={finite_hist_t[-1]}, first_branch_t={first_t}"
