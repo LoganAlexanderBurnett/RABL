@@ -1557,13 +1557,14 @@ def _validate_frozen_scaler_stats_for_unscaled_h5(
 
 def _resolve_scaler_stats_paths(cfg: ExperimentConfig, run_dir: Path) -> tuple[Path | None, Path | None]:
     configured_path = Path(cfg.scaler_stats_path).expanduser().resolve() if cfg.scaler_stats_path else None
+    default_path = run_dir / "frozen_scaler_stats.json"
     if cfg.freeze_scaler_stats:
-        if configured_path is None:
-            raise SystemExit("freeze_scaler_stats is true, so scaler_stats_path must be provided.")
-        if not configured_path.exists():
-            raise SystemExit(f"freeze_scaler_stats is true, but scaler_stats_path does not exist: {configured_path}")
-    save_path = configured_path if configured_path is not None else run_dir / "frozen_scaler_stats.json"
-    return configured_path, save_path if cfg.save_scaler_stats else None
+        frozen_path = configured_path if configured_path is not None else default_path
+        # Freezing is in-run: cycle 1 writes this path, cycles 2+ load it.
+        return frozen_path, frozen_path
+
+    save_path = configured_path if configured_path is not None else default_path
+    return None, save_path if cfg.save_scaler_stats else None
 
 
 def main() -> None:
@@ -1609,7 +1610,10 @@ def main() -> None:
     forecast_plot_selection_path = _forecast_plot_selection_path(cfg=cfg, run_dir=run_dir)
     frozen_scaler_stats_path, save_scaler_stats_path = _resolve_scaler_stats_paths(cfg, run_dir)
     if cfg.freeze_scaler_stats:
-        print(f"[scale] Frozen scaler statistics enabled: {frozen_scaler_stats_path}")
+        print(
+            "[scale] Frozen scaler statistics enabled: cycle 1 will compute/save stats "
+            f"for later reuse at {frozen_scaler_stats_path}"
+        )
     elif cfg.save_scaler_stats:
         print(f"[scale] Scaler statistics will be saved after the initial/base split: {save_scaler_stats_path}")
 
@@ -1675,12 +1679,30 @@ def main() -> None:
         save_test_manifest = None if active_test_manifest is not None else generated_test_manifest
         if cfg.freeze_scaler_stats:
             assert frozen_scaler_stats_path is not None
-            _validate_frozen_scaler_stats_for_unscaled_h5(
-                scaler_stats_path=frozen_scaler_stats_path,
-                scaling_type=cfg.scaling_type,
-                unscaled_h5=unscaled_h5,
-            )
-        cycle_save_scaler_stats_path = save_scaler_stats_path if (cfg.save_scaler_stats and cycle == 0) else None
+            if cycle == 0:
+                print(f"[scale] Cycle 1 computing scaler statistics and saving frozen copy to {frozen_scaler_stats_path}")
+                cycle_frozen_scaler_stats_path = None
+                cycle_save_scaler_stats_path = frozen_scaler_stats_path
+                scaler_stats_mode = "computed_and_saved"
+            else:
+                if not frozen_scaler_stats_path.exists():
+                    raise SystemExit(
+                        "freeze_scaler_stats is true, but cycle 1 did not create frozen scaler stats at "
+                        f"{frozen_scaler_stats_path}"
+                    )
+                print(f"[scale] Loading frozen scaler statistics from {frozen_scaler_stats_path}")
+                _validate_frozen_scaler_stats_for_unscaled_h5(
+                    scaler_stats_path=frozen_scaler_stats_path,
+                    scaling_type=cfg.scaling_type,
+                    unscaled_h5=unscaled_h5,
+                )
+                cycle_frozen_scaler_stats_path = frozen_scaler_stats_path
+                cycle_save_scaler_stats_path = None
+                scaler_stats_mode = "frozen_loaded"
+        else:
+            cycle_frozen_scaler_stats_path = None
+            cycle_save_scaler_stats_path = save_scaler_stats_path if (cfg.save_scaler_stats and cycle == 0) else None
+            scaler_stats_mode = "computed_and_saved" if cycle_save_scaler_stats_path is not None else "computed_fresh"
         scaled_h5 = _scale_with_fixed_manifests(
             unscaled_h5=unscaled_h5,
             out_dir=cycle_dir / "scaled",
@@ -1691,7 +1713,7 @@ def main() -> None:
             save_test_manifest=save_test_manifest,
             test_count=cfg.test_count,
             seed=cycle_seed,
-            frozen_stats_path=frozen_scaler_stats_path if cfg.freeze_scaler_stats else None,
+            frozen_stats_path=cycle_frozen_scaler_stats_path,
             save_stats_path=cycle_save_scaler_stats_path,
         )
         split_budget = _summarize_split_h5(scaled_h5)
@@ -1943,6 +1965,7 @@ def main() -> None:
                 "resolved_split_manifests": resolved_split_manifests,
                 "freeze_scaler_stats": bool(cfg.freeze_scaler_stats),
                 "frozen_scaler_stats_path": None if frozen_scaler_stats_path is None else str(frozen_scaler_stats_path),
+                "scaler_stats_mode": scaler_stats_mode,
                 "saved_scaler_stats_path": None if cycle_save_scaler_stats_path is None else str(cycle_save_scaler_stats_path),
                 **split_budget,
                 **new_batch_budget,
