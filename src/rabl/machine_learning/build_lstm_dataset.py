@@ -305,10 +305,10 @@ def _lineage_for_csv(
     return mapping.get(csv_path.stem)
 
 
-def _profile_lineage_key(profile: ProfileData) -> tuple[str, str]:
+def _profile_lineage_key(profile: ProfileData) -> tuple[str, str, str]:
     if profile.lineage is None:
         raise ValueError(f"Profile {profile.stem} has no branch lineage metadata.")
-    return (profile.lineage.root_id, profile.lineage.profile_id)
+    return (str(profile.csv_path.parent.resolve()), profile.lineage.root_id, profile.lineage.profile_id)
 
 
 def _collect_pre_branch_history(
@@ -316,9 +316,9 @@ def _collect_pre_branch_history(
     *,
     cutoff_time: float,
     rows_needed: int,
-    by_lineage_key: dict[tuple[str, str], ProfileData],
+    by_lineage_key: dict[tuple[str, str, str], ProfileData],
     steady_state_rows: tuple[np.ndarray, np.ndarray],
-    stack: tuple[tuple[str, str], ...] = (),
+    stack: tuple[tuple[str, str, str], ...] = (),
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return the last ``rows_needed`` physical rows before ``cutoff_time``.
 
@@ -354,9 +354,9 @@ def _collect_pre_branch_history(
 
     key = _profile_lineage_key(profile)
     if key in stack:
-        cycle = " -> ".join(f"{root}/{pid}" for root, pid in stack + (key,))
+        cycle = " -> ".join(f"{namespace}:{root}/{pid}" for namespace, root, pid in stack + (key,))
         raise SystemExit(f"Cycle detected in branch lineage while building dataset: {cycle}")
-    parent_key = (lineage.root_id, lineage.parent_profile_id)
+    parent_key = (str(profile.csv_path.parent.resolve()), lineage.root_id, lineage.parent_profile_id)
     parent = by_lineage_key.get(parent_key)
     if parent is None:
         raise SystemExit(
@@ -385,7 +385,7 @@ def _build_branch_sequences(
     profile: ProfileData,
     *,
     k: int,
-    by_lineage_key: dict[tuple[str, str], ProfileData],
+    by_lineage_key: dict[tuple[str, str, str], ProfileData],
     steady_state_rows: tuple[np.ndarray, np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray, int]:
     lineage = profile.lineage
@@ -393,7 +393,7 @@ def _build_branch_sequences(
         raise ValueError("_build_branch_sequences requires a non-root lineage entry.")
     if lineage.branch_time is None:
         raise SystemExit(f"Missing branch_time for branched profile {lineage.root_id}/{lineage.profile_id}")
-    parent = by_lineage_key.get((lineage.root_id, lineage.parent_profile_id))
+    parent = by_lineage_key.get((str(profile.csv_path.parent.resolve()), lineage.root_id, lineage.parent_profile_id))
     if parent is None:
         raise SystemExit(
             f"Missing parent metadata/result for branched profile {lineage.root_id}/{lineage.profile_id}: "
@@ -452,7 +452,7 @@ def build_dataset(
     for csv_path in csv_files:
         profiles.append(_read_profile_data(csv_path, _lineage_for_csv(csv_path, lineage_by_batch)))
 
-    by_lineage_key: dict[tuple[str, str], ProfileData] = {}
+    by_lineage_key: dict[tuple[str, str, str], ProfileData] = {}
     for profile in profiles:
         if profile.lineage is None:
             continue

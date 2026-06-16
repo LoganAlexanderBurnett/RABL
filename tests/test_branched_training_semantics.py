@@ -151,6 +151,7 @@ CONTROL_COLUMN = build_lstm_dataset_module.CONTROL_COLUMN
 BranchLineageEntry = build_lstm_dataset_module.BranchLineageEntry
 _build_branch_sequences = build_lstm_dataset_module._build_branch_sequences
 _build_sequences = build_lstm_dataset_module._build_sequences
+_profile_lineage_key = build_lstm_dataset_module._profile_lineage_key
 _read_profile_data = build_lstm_dataset_module._read_profile_data
 _steady_state_rows = build_lstm_dataset_module._steady_state_rows
 
@@ -177,6 +178,10 @@ def _profile(path: Path, lineage: object | None = None):
     return _read_profile_data(path, lineage)
 
 
+def _lineage_map(*profiles):
+    return {_profile_lineage_key(profile): profile for profile in profiles}
+
+
 def test_branch_training_window_uses_parent_history_not_equilibrium(tmp_path: Path) -> None:
     k = 3
     root_csv = tmp_path / "results_drum_profile_00001.csv"
@@ -191,7 +196,7 @@ def test_branch_training_window_uses_parent_history_not_equilibrium(tmp_path: Pa
     x_seq, y_seq, history_rows = _build_branch_sequences(
         branch,
         k=k,
-        by_lineage_key={("root_001", "profile_00000"): root, ("root_001", "profile_00001"): branch},
+        by_lineage_key=_lineage_map(root, branch),
         steady_state_rows=(state_pad[:k], control_pad[:k]),
     )
 
@@ -220,7 +225,7 @@ def test_branch_start_time_tolerates_csv_roundoff(tmp_path: Path) -> None:
     x_seq, y_seq, history_rows = _build_branch_sequences(
         branch,
         k=k,
-        by_lineage_key={("root_001", "profile_00000"): root, ("root_001", "profile_00001"): branch},
+        by_lineage_key=_lineage_map(root, branch),
         steady_state_rows=(state_pad[:k], control_pad[:k]),
     )
 
@@ -244,7 +249,7 @@ def test_branch_start_time_still_fails_when_meaningfully_before_branch_time(tmp_
         _build_branch_sequences(
             branch,
             k=k,
-            by_lineage_key={("root_001", "profile_00000"): root, ("root_001", "profile_00001"): branch},
+            by_lineage_key=_lineage_map(root, branch),
             steady_state_rows=(state_pad[:k], control_pad[:k]),
         )
     except SystemExit as exc:
@@ -267,11 +272,7 @@ def test_recursive_branch_history_climbs_parent_lineage(tmp_path: Path) -> None:
     child_branch = _profile(child_branch_csv, BranchLineageEntry("results_drum_profile_00003", "root_001", "profile_00002", "profile_00001", 3.5))
     state_pad, control_pad = _steady_state_rows(_steady_state(-999.0), k)
 
-    by_key = {
-        ("root_001", "profile_00000"): root,
-        ("root_001", "profile_00001"): parent_branch,
-        ("root_001", "profile_00002"): child_branch,
-    }
+    by_key = _lineage_map(root, parent_branch, child_branch)
     x_seq, y_seq, history_rows = _build_branch_sequences(
         child_branch,
         k=k,
@@ -284,6 +285,44 @@ def test_recursive_branch_history_climbs_parent_lineage(tmp_path: Path) -> None:
     # oldest row is pulled from that parent's root lineage.
     assert x_seq[0, :, 0].tolist() == [11.0, 100.0, 101.0, 200.0]
     assert y_seq[0, 0] == 201.0
+
+
+def test_duplicate_root_profile_ids_are_namespaced_by_batch_directory(tmp_path: Path) -> None:
+    k = 3
+    batch_a = tmp_path / "batch_0003"
+    batch_b = tmp_path / "batch_0004"
+    root_a_csv = batch_a / "results_drum_profile_04000.csv"
+    branch_a_csv = batch_a / "results_drum_profile_04001.csv"
+    root_b_csv = batch_b / "results_drum_profile_04020.csv"
+    branch_b_csv = batch_b / "results_drum_profile_04021.csv"
+    _write_full_results_csv(root_a_csv, [0.0, 1.0, 2.0, 3.0], state_base=10.0)
+    _write_full_results_csv(branch_a_csv, [3.0, 4.0, 5.0], state_base=100.0)
+    _write_full_results_csv(root_b_csv, [0.0, 1.0, 2.0, 3.0], state_base=20.0)
+    _write_full_results_csv(branch_b_csv, [3.0, 4.0, 5.0], state_base=200.0)
+
+    root_a = _profile(root_a_csv, BranchLineageEntry("results_drum_profile_04000", "root_001", "profile_00000", None, None))
+    branch_a = _profile(branch_a_csv, BranchLineageEntry("results_drum_profile_04001", "root_001", "profile_00001", "profile_00000", 3.0))
+    root_b = _profile(root_b_csv, BranchLineageEntry("results_drum_profile_04020", "root_001", "profile_00000", None, None))
+    branch_b = _profile(branch_b_csv, BranchLineageEntry("results_drum_profile_04021", "root_001", "profile_00001", "profile_00000", 3.0))
+    by_key = _lineage_map(root_a, branch_a, root_b, branch_b)
+    state_pad, control_pad = _steady_state_rows(_steady_state(-999.0), k)
+
+    assert len(by_key) == 4
+    x_a, _y_a, _history_a = _build_branch_sequences(
+        branch_a,
+        k=k,
+        by_lineage_key=by_key,
+        steady_state_rows=(state_pad[:k], control_pad[:k]),
+    )
+    x_b, _y_b, _history_b = _build_branch_sequences(
+        branch_b,
+        k=k,
+        by_lineage_key=by_key,
+        steady_state_rows=(state_pad[:k], control_pad[:k]),
+    )
+
+    assert x_a[0, :, 0].tolist() == [10.0, 11.0, 12.0, 100.0]
+    assert x_b[0, :, 0].tolist() == [20.0, 21.0, 22.0, 200.0]
 
 
 def test_root_profile_padding_behavior_is_unchanged(tmp_path: Path) -> None:
@@ -310,7 +349,7 @@ def test_branch_missing_parent_metadata_fails_loudly(tmp_path: Path) -> None:
         _build_branch_sequences(
             branch,
             k=k,
-            by_lineage_key={("root_001", "profile_00001"): branch},
+            by_lineage_key=_lineage_map(branch),
             steady_state_rows=(state_pad[:k], control_pad[:k]),
         )
     except SystemExit as exc:
