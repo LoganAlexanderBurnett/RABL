@@ -4,6 +4,7 @@
   "seed": 789,
   "training_seed": 123,
   "dataset_build_verbose": false,
+  "skip_hyperparameter_tuning": false,
   "retrain_cycles": 10,
   "initial_sim_batches": [
     "0001",

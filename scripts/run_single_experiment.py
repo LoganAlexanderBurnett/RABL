@@ -3,8 +3,8 @@
 Workflow:
 1) Build unscaled LSTM dataset from selected /outputs/sim_profiles/batch_xxxx folders.
 2) Split+scale dataset with fixed test set (saved manifest on first pass).
-3) Tune hyperparameters on full train split.
-4) Train bagged ensemble (M models) using tuned hyperparameters.
+3) Tune hyperparameters on full train split, or select the first configured hyperparameter set.
+4) Train bagged ensemble (M models) using the selected hyperparameters.
 5) Sample new controls (branching or random), simulate them, and add new sim batch.
 6) Repeat from step 1 for retraining cycles, keeping test fixed and re-sampling train/val.
 """
@@ -21,6 +21,7 @@ import sys
 import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -120,6 +121,7 @@ class ExperimentConfig:
     dymola: dict[str, Any]
     training_seed: int | None = None
     dataset_build_verbose: bool = False
+    skip_hyperparameter_tuning: bool = False
     plot_bag_distributions: bool = True
     save_individual_ensemble_forecasts: bool = True
     plot_individual_ensemble_forecasts: bool = True
@@ -336,6 +338,45 @@ def _normalize_n_fc_values(grid: dict[str, Any]) -> list[int]:
 def _optional_int(grid: dict[str, Any], key: str) -> int | None:
     value = grid.get(key)
     return None if value is None else int(value)
+
+
+def _first_grid_value(grid: dict[str, Any], key: str) -> Any:
+    value = grid.get(key)
+    if value is None:
+        raise ValueError(f"hp_grid.{key} is required when selecting the first hyperparameter configuration.")
+    if isinstance(value, (list, tuple)):
+        if not value:
+            raise ValueError(f"hp_grid.{key} must contain at least one value.")
+        return value[0]
+    return value
+
+
+def _select_first_hyperparameter_configuration(scaled_h5: Path, out_dir: Path, grid: dict[str, Any]) -> tuple[Any, str]:
+    """Return the first hyperparameter configuration without running a tuning search."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    n_fc_values = _normalize_n_fc_values(grid)
+    if not n_fc_values:
+        raise ValueError("hp_grid.n_fc_values must contain at least one value.")
+
+    selected = {
+        "lookback": int(grid["lookback"]),
+        "dataset_path": str(scaled_h5),
+        "learning_rate": float(_first_grid_value(grid, "learning_rates")),
+        "batch_size": int(_first_grid_value(grid, "batch_sizes")),
+        "n_lstm": int(_first_grid_value(grid, "n_lstm_values")),
+        "n_fc": int(n_fc_values[0]),
+        "hidden_lstm": int(_first_grid_value(grid, "hidden_lstm_values")),
+        "hidden_fc": int(_first_grid_value(grid, "hidden_fc_values")),
+        "best_val_loss": None,
+        "final_val_loss": None,
+        "used_device": "not_trained",
+        "trial_dir": str(out_dir),
+        "weights_path": "",
+        "hyperband": None,
+    }
+    selected_path = out_dir / "selected_first_hyperparameters.json"
+    selected_path.write_text(json.dumps(selected, indent=2) + "\n")
+    return SimpleNamespace(**selected), "first_config"
 
 
 def _tune(scaled_h5: Path, out_dir: Path, seed: int, grid: dict[str, Any]) -> tuple[Any, str]:
@@ -1664,23 +1705,41 @@ def main() -> None:
         step_times["scale_split_dataset_sec"] = perf_counter() - t0
         _print_step_result(cycle + 1, "Scale + split complete", f"Output: {scaled_h5}")
 
-        _print_step_banner(cycle + 1, "Hyperparameter tuning")
-        t0 = perf_counter()
-        best, tuning_method = _tune(
-            scaled_h5=scaled_h5,
-            out_dir=cycle_dir / "tuning",
-            seed=training_seed,
-            grid=cfg.hp_grid,
-        )
-        step_times["hyperparameter_tuning_sec"] = perf_counter() - t0
-        _print_step_result(
-            cycle + 1,
-            "Hyperparameter tuning complete",
-            (
-                f"Best trial: lr={best.learning_rate}, bs={best.batch_size}, "
-                f"n_lstm={best.n_lstm}, n_fc={best.n_fc}, hl={best.hidden_lstm}, hf={best.hidden_fc}"
-            ),
-        )
+        if cfg.skip_hyperparameter_tuning:
+            _print_step_banner(cycle + 1, "Select first hyperparameter configuration")
+            t0 = perf_counter()
+            best, tuning_method = _select_first_hyperparameter_configuration(
+                scaled_h5=scaled_h5,
+                out_dir=cycle_dir / "tuning",
+                grid=cfg.hp_grid,
+            )
+            step_times["hyperparameter_tuning_sec"] = perf_counter() - t0
+            _print_step_result(
+                cycle + 1,
+                "Hyperparameter tuning skipped",
+                (
+                    f"Using first config: lr={best.learning_rate}, bs={best.batch_size}, "
+                    f"n_lstm={best.n_lstm}, n_fc={best.n_fc}, hl={best.hidden_lstm}, hf={best.hidden_fc}"
+                ),
+            )
+        else:
+            _print_step_banner(cycle + 1, "Hyperparameter tuning")
+            t0 = perf_counter()
+            best, tuning_method = _tune(
+                scaled_h5=scaled_h5,
+                out_dir=cycle_dir / "tuning",
+                seed=training_seed,
+                grid=cfg.hp_grid,
+            )
+            step_times["hyperparameter_tuning_sec"] = perf_counter() - t0
+            _print_step_result(
+                cycle + 1,
+                "Hyperparameter tuning complete",
+                (
+                    f"Best trial: lr={best.learning_rate}, bs={best.batch_size}, "
+                    f"n_lstm={best.n_lstm}, n_fc={best.n_fc}, hl={best.hidden_lstm}, hf={best.hidden_fc}"
+                ),
+            )
 
         _print_step_banner(cycle + 1, "Train bagged ensemble")
         save_member_forecasts_for_cycle = bool(
@@ -1871,6 +1930,7 @@ def main() -> None:
                 "bag_split_mode": cfg.bag_split_mode,
                 "branching_target_weights": cfg.branching_target_weights,
                 "branching_target_weight_order": list(TARGET_NAMES),
+                "skip_hyperparameter_tuning": bool(cfg.skip_hyperparameter_tuning),
                 "tuning_method": tuning_method,
                 "best_trial": {
                     "learning_rate": best.learning_rate,
