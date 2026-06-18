@@ -112,12 +112,9 @@ class RecursiveBranchingBatchConfig:
     nugget_v_deg2_s2: float = 0.0
     finite_difference_order: int = 4
     target_weights: tuple[float, ...] | None = None
-<<<<<<< HEAD
-=======
     branch_time_min: float = 25.0
     branch_time_max: float = 175.0
     plot_root_forecasts: bool = True
->>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
     device: str = "cpu"
 
 

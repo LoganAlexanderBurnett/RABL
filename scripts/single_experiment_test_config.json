@@ -78,14 +78,10 @@
     "N_k": 3,
     "N_b": 2,
     "device": "cpu",
-<<<<<<< HEAD
-    "finite_difference_order": 4
-=======
     "finite_difference_order": 4,
     "branch_time_min": 25.0,
     "branch_time_max": 175.0,
     "plot_root_forecasts": true
->>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
   },
   "dymola": {
     "output_interval": 0.4

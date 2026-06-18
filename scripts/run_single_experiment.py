@@ -120,11 +120,8 @@ class ExperimentConfig:
     branching: dict[str, Any]
     dymola: dict[str, Any]
     training_seed: int | None = None
-<<<<<<< HEAD
-=======
     dataset_build_verbose: bool = False
     skip_hyperparameter_tuning: bool = False
->>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
     plot_bag_distributions: bool = True
     save_individual_ensemble_forecasts: bool = True
     plot_individual_ensemble_forecasts: bool = True
@@ -139,12 +136,9 @@ class ExperimentConfig:
     forecast_plot_profiles_per_bin: int = 2
     forecast_plot_selection_seed: int | None = None
     forecast_plot_selection_path: str | None = None
-<<<<<<< HEAD
-=======
     freeze_scaler_stats: bool = False
     scaler_stats_path: str | None = None
     save_scaler_stats: bool = False
->>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
     test_manifest_path: str | None = None
     val_manifest_path: str | None = None
     config_py_path: str = str(REPO_ROOT / "scripts" / "config.py")
@@ -604,12 +598,9 @@ def _run_recursive_branching_internal(
         nugget_v_deg2_s2=float(variography_params["NUGGET_V_DEG2_S2"]),
         finite_difference_order=int(cfg.branching.get("finite_difference_order", 4)),
         target_weights=_resolve_branching_target_weights(cfg.branching_target_weights),
-<<<<<<< HEAD
-=======
         branch_time_min=float(cfg.branching.get("branch_time_min", 25.0)),
         branch_time_max=float(cfg.branching.get("branch_time_max", 175.0)),
         plot_root_forecasts=bool(cfg.branching.get("plot_root_forecasts", True)),
->>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
         device=str(cfg.branching.get("device", "cpu")),
         config_path=Path(cfg.config_py_path),
     )
@@ -1911,8 +1902,6 @@ def _save_forecast_pdf_subset(
     finally:
         subset_h5.unlink(missing_ok=True)
     return plotted_names
-<<<<<<< HEAD
-=======
 
 
 def _decode_h5_attr_strings(value: Any) -> list[str]:
@@ -1959,7 +1948,6 @@ def _resolve_scaler_stats_paths(cfg: ExperimentConfig, run_dir: Path) -> tuple[P
 
     save_path = configured_path if configured_path is not None else default_path
     return None, save_path if cfg.save_scaler_stats else None
->>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
 
 
 def main() -> None:
@@ -2003,8 +1991,6 @@ def main() -> None:
     configured_val_manifest = Path(cfg.val_manifest_path).resolve() if cfg.val_manifest_path else None
     generated_test_manifest = run_dir / "test_manifest.json"
     forecast_plot_selection_path = _forecast_plot_selection_path(cfg=cfg, run_dir=run_dir)
-<<<<<<< HEAD
-=======
     frozen_scaler_stats_path, save_scaler_stats_path = _resolve_scaler_stats_paths(cfg, run_dir)
     if cfg.freeze_scaler_stats:
         print(
@@ -2013,7 +1999,6 @@ def main() -> None:
         )
     elif cfg.save_scaler_stats:
         print(f"[scale] Scaler statistics will be saved after the initial/base split: {save_scaler_stats_path}")
->>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
 
     sim_root = Path(cfg.sim_root).resolve() if cfg.sim_root else output_root / "sim_profiles"
     var_root = Path(cfg.variography_root).resolve() if cfg.variography_root else output_root / "variography_profiles"
@@ -2199,10 +2184,7 @@ def main() -> None:
         bagged_h5_path = Path(ensemble["bagged_h5_path"])
         forecast_h5 = Path(ensemble["forecast_output_path"])
         bag_distribution_overlap_plot = ensemble.get("bag_distribution_overlap_plot")
-<<<<<<< HEAD
-=======
         ensemble_training_curves_plot = ensemble.get("training_curves_plot")
->>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
         t0 = perf_counter()
         point_metrics = _summarize_forecasts(forecast_h5)
         unc_metrics = _compute_uncertainty_metrics(forecast_h5)
@@ -2368,10 +2350,7 @@ def main() -> None:
                 "bag_split_mode": cfg.bag_split_mode,
                 "branching_target_weights": cfg.branching_target_weights,
                 "branching_target_weight_order": list(TARGET_NAMES),
-<<<<<<< HEAD
-=======
                 "skip_hyperparameter_tuning": bool(cfg.skip_hyperparameter_tuning),
->>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
                 "tuning_method": tuning_method,
                 "best_trial": {
                     "learning_rate": best.learning_rate,
@@ -2392,12 +2371,9 @@ def main() -> None:
                 "bag_distribution_overlap_plot": (
                     None if bag_distribution_overlap_plot is None else str(bag_distribution_overlap_plot)
                 ),
-<<<<<<< HEAD
-=======
                 "ensemble_training_curves_plot": (
                     None if ensemble_training_curves_plot is None else str(ensemble_training_curves_plot)
                 ),
->>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
                 "model_paths": model_paths,
                 "forecast_h5": str(forecast_h5),
                 "forecast_pdf": str(forecast_pdf),
@@ -2495,25 +2471,18 @@ def main() -> None:
         cycle_rows=metadata["cycles"],
         output_path=metrics_plots_dir / "rolling_forecast_metrics_comparison.png",
     )
-<<<<<<< HEAD
-=======
     rolling_forecast_metrics_comparison_per_target_path = _plot_rolling_forecast_metrics_comparison_per_target(
         cycle_rows=metadata["cycles"],
         output_path=metrics_plots_dir / "rolling_forecast_metrics_comparison_per-target.png",
     )
->>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
     metadata["postprocess_timing"] = {
         "rolling_forecast_metrics_compare_sec": perf_counter() - t0,
     }
     metadata["metrics_plots"] = {
         "metrics_vs_cycle": str(metrics_plots_dir / "metrics_vs_cycle.png"),
-<<<<<<< HEAD
-        "metrics_vs_train_samples": str(metrics_plots_dir / "metrics_vs_train_samples.png"),
-=======
         "metrics_vs_cycle_per_target": str(metrics_plots_dir / "metrics_vs_cycle_per-target.png"),
         "metrics_vs_train_samples": str(metrics_plots_dir / "metrics_vs_train_samples.png"),
         "metrics_vs_train_samples_per_target": str(metrics_plots_dir / "metrics_vs_train_samples_per-target.png"),
->>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
         "profiles_by_cycle_color": str(cycle_colored_plot_path),
         "training_distribution_theta_rho_n_by_cycle": (
             None if training_distribution_plot_path is None else str(training_distribution_plot_path)
@@ -2523,14 +2492,11 @@ def main() -> None:
             if rolling_forecast_metrics_comparison_path is None
             else str(rolling_forecast_metrics_comparison_path)
         ),
-<<<<<<< HEAD
-=======
         "rolling_forecast_metrics_comparison_per_target": (
             None
             if rolling_forecast_metrics_comparison_per_target_path is None
             else str(rolling_forecast_metrics_comparison_per_target_path)
         ),
->>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
     }
 
     metadata_path = run_dir / "run_metadata.json"
