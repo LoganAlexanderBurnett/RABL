@@ -46,6 +46,11 @@ def main() -> None:
         required=True,
         help="Batch IDs to include (e.g., --batches 0001 0002 0004).",
     )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress per-profile sample-count messages while building the dataset.",
+    )
 
     args = parser.parse_args()
     config_path: Path = args.config
@@ -61,6 +66,7 @@ def main() -> None:
         config["steady_state"],
         args.lookback,
         args.batches,
+        verbose=not args.quiet,
     )
 
 

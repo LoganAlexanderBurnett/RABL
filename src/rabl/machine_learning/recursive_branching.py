@@ -12,6 +12,7 @@ This module orchestrates a persistent branching workflow:
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 import importlib.util
 import json
@@ -26,8 +27,15 @@ import torch
 from matplotlib.lines import Line2D
 from scipy.io import savemat
 
+from rabl.machine_learning.bagging_ensemble import _save_ensemble_rolling_forecasts_hdf5
 from rabl.machine_learning.branchpoint_finder import finite_difference
-from rabl.machine_learning.lstm_pipeline import build_model, rolling_forecast, _load_scaling_stats
+from rabl.machine_learning.lstm_pipeline import (
+    _descale_targets_from_stats,
+    _load_scaling_stats,
+    build_model,
+    rolling_forecast,
+    save_forecast_profiles_pdf,
+)
 from rabl.machine_learning.build_lstm_dataset import CONTROL_COLUMN, STATE_COLUMNS
 from rabl.variography.DrumVariography import DrumProfile, DrumProfileGenerator
 
@@ -104,6 +112,12 @@ class RecursiveBranchingBatchConfig:
     nugget_v_deg2_s2: float = 0.0
     finite_difference_order: int = 4
     target_weights: tuple[float, ...] | None = None
+<<<<<<< HEAD
+=======
+    branch_time_min: float = 25.0
+    branch_time_max: float = 175.0
+    plot_root_forecasts: bool = True
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
     device: str = "cpu"
 
 
@@ -257,6 +271,26 @@ def _append_manifest(
     manifest_path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
 
+def _append_artifact_manifest(
+    manifest_path: Path,
+    *,
+    root_group_name: str,
+    branched_profiles_plot: Path,
+    root_forecast_h5: Path | None,
+    root_forecast_pdf: Path | None,
+) -> None:
+    entries = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else []
+    entries.append(
+        {
+            "root_group_name": root_group_name,
+            "branched_profiles_plot": str(branched_profiles_plot),
+            "root_forecast_h5": None if root_forecast_h5 is None else str(root_forecast_h5),
+            "root_forecast_pdf": None if root_forecast_pdf is None else str(root_forecast_pdf),
+        }
+    )
+    manifest_path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+
+
 def load_trained_ensemble(
     model_paths: list[Path],
     *,
@@ -337,6 +371,8 @@ def _select_branch_time(
     *,
     interval: Interval,
     is_last_interval: bool,
+    branch_time_min: float = 25.0,
+    branch_time_max: float = 175.0,
     positive_only: bool = True,
 ) -> tuple[float, np.ndarray, bool]:
     if d_unc_dt.ndim != 2:
@@ -351,14 +387,27 @@ def _select_branch_time(
             "weights must be 1D with length equal to target dimension. "
             f"Got weights={weights.shape}, targets={d_unc_dt.shape[1]}."
         )
+    if not branch_time_min < branch_time_max:
+        raise ValueError(
+            "branch_time_min must be strictly less than branch_time_max. "
+            f"Got branch_time_min={branch_time_min}, branch_time_max={branch_time_max}."
+        )
 
     metric_components = np.maximum(d_unc_dt, 0.0) if positive_only else d_unc_dt
     weighted_sq = (metric_components ** 2) * weights[None, :]
     score = np.sqrt(np.sum(weighted_sq, axis=1))
 
-    mask = _interval_mask(t, interval, is_last=is_last_interval)
+    mask = (
+        _interval_mask(t, interval, is_last=is_last_interval)
+        & (t > float(branch_time_min))
+        & (t < float(branch_time_max))
+    )
     if not np.any(mask):
-        raise RuntimeError(f"No time points found in interval {interval.index}: [{interval.start}, {interval.end}].")
+        raise RuntimeError(
+            f"No eligible branch times found in interval {interval.index}: "
+            f"[{interval.start}, {interval.end}] after applying the strict branch-time constraint "
+            f"{branch_time_min} < t < {branch_time_max}."
+        )
 
     masked_idx = np.where(mask)[0]
     score_interval = score[masked_idx]
@@ -376,6 +425,8 @@ def run_recursive_branching(
     n_branches: int,
     weights: np.ndarray,
     finite_difference_order: int = 4,
+    branch_time_min: float = 25.0,
+    branch_time_max: float = 175.0,
     seed: int | None = None,
     verbose: bool = True,
 ) -> RecursiveBranchingResult:
@@ -391,6 +442,11 @@ def run_recursive_branching(
         raise ValueError(f"weights must be 1D, got shape {weights.shape}.")
     if np.any(weights < 0):
         raise ValueError("weights must be non-negative.")
+    if not branch_time_min < branch_time_max:
+        raise ValueError(
+            "branch_time_min must be strictly less than branch_time_max. "
+            f"Got branch_time_min={branch_time_min}, branch_time_max={branch_time_max}."
+        )
 
     t_grid = np.asarray(root_profile.t, dtype=float)
     intervals = partition_horizon(t_grid, n_intervals=n_intervals)
@@ -401,6 +457,19 @@ def run_recursive_branching(
     next_profile_idx = 1
 
     for interval in intervals:
+        eligible_interval_mask = (
+            _interval_mask(t_grid, interval, is_last=(interval.index == len(intervals) - 1))
+            & (t_grid > float(branch_time_min))
+            & (t_grid < float(branch_time_max))
+        )
+        if not np.any(eligible_interval_mask):
+            if verbose:
+                print(
+                    f"\n[branch-skip] interval={interval.index} has no points satisfying "
+                    f"{branch_time_min} < t < {branch_time_max}; skipping interval.\n"
+                )
+            continue
+
         current_nodes = list(profiles.values())
         for node in current_nodes:
             forecasts = forecaster.forecast(node.profile)  # (M, S, D)
@@ -428,6 +497,8 @@ def run_recursive_branching(
                 weights,
                 interval=interval,
                 is_last_interval=(interval.index == len(intervals) - 1),
+                branch_time_min=branch_time_min,
+                branch_time_max=branch_time_max,
             )
 
             if all_non_positive:
@@ -473,6 +544,83 @@ def run_recursive_branching(
                 )
 
     return RecursiveBranchingResult(intervals=intervals, final_profiles=profiles, branch_events=branch_events)
+
+
+def _descale_uncertainty_widths_from_stats(stats: dict, sigma_values: np.ndarray) -> np.ndarray:
+    """Descale uncertainty widths without applying target offsets."""
+    scaling_type = stats["type"]
+    y_stats = stats["y"]
+    if scaling_type == "standard":
+        return sigma_values * y_stats["std"]
+    if scaling_type == "minmax":
+        return sigma_values * y_stats["span"]
+    raise ValueError(f"Unsupported scaling type: {scaling_type}")
+
+
+def _save_branching_ensemble_forecasts(
+    *,
+    result: RecursiveBranchingResult,
+    forecaster: EnsembleForecaster,
+    output_path: Path,
+    target_names: list[str],
+    derivative_order: int,
+    dt: float,
+    scaling_stats: dict,
+    profile_ids: Collection[str] | None = None,
+) -> Path:
+    """Save ensemble forecasts and uncertainty derivatives for selected profiles.
+
+    When ``profile_ids`` is omitted, forecasts are saved for every profile in
+    ``result.final_profiles``. Explicit selections are validated so a misspelled
+    or unavailable profile ID fails loudly.
+    """
+    if profile_ids is None:
+        selected_ids = sorted(result.final_profiles)
+    else:
+        selected_ids = list(dict.fromkeys(str(profile_id) for profile_id in profile_ids))
+        missing = [profile_id for profile_id in selected_ids if profile_id not in result.final_profiles]
+        if missing:
+            raise KeyError(
+                "Requested branching forecast profiles are absent from the recursive result: "
+                f"{missing}. Available profiles: {sorted(result.final_profiles)}"
+            )
+    if not selected_ids:
+        raise ValueError("At least one branching profile must be selected for forecast saving.")
+
+    forecasts: list[dict[str, np.ndarray | str]] = []
+    for profile_id in selected_ids:
+        node = result.final_profiles[profile_id]
+        pred_stack_scaled = forecaster.forecast(node.profile)
+        y_mean_scaled = np.mean(pred_stack_scaled, axis=0)
+        y_two_sigma_scaled = 2.0 * np.std(pred_stack_scaled, axis=0, ddof=0)
+        y_dsigma_dt_scaled = finite_difference(y_two_sigma_scaled, order=derivative_order, dt=dt)
+
+        y_mean = _descale_targets_from_stats(scaling_stats, y_mean_scaled)
+        y_two_sigma = _descale_uncertainty_widths_from_stats(scaling_stats, y_two_sigma_scaled)
+        t_series = np.asarray(node.profile.t, dtype=np.float32)
+        u_series = np.asarray(node.profile.theta_deg, dtype=np.float32)
+
+        # Branching has no measured truth series. Duplicate the mean into the
+        # truth columns to retain compatibility with ensemble plotting helpers.
+        table = np.column_stack([t_series, u_series, y_mean, y_mean, y_two_sigma]).astype(np.float32)
+        forecasts.append(
+            {
+                "profile": profile_id,
+                "table": table,
+                # The derivative remains in scaled target units, matching the
+                # uncertainty derivative used for branch-point selection.
+                "dx_sigma_dt": y_dsigma_dt_scaled.astype(np.float32),
+            }
+        )
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _save_ensemble_rolling_forecasts_hdf5(
+        forecasts,
+        output_path=output_path,
+        target_names=target_names,
+    )
+    return output_path
 
 
 def save_recursive_branching_output(
@@ -654,6 +802,58 @@ def save_profiles_lineage_graph(
     return output_image_path
 
 
+def _plot_branched_profiles(result: RecursiveBranchingResult, save_path: Path) -> Path:
+    """Plot branched drum control profiles and branch points for one root result."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    root_id = "profile_00000"
+    interval_colors = _interval_colors(len(result.intervals))
+
+    for profile_id, node in result.final_profiles.items():
+        t = np.asarray(node.profile.t, dtype=float)
+        u = np.asarray(node.profile.theta_deg, dtype=float)
+        if profile_id == root_id:
+            ax.plot(t, u, color="black", linewidth=2.0, zorder=3, label="root")
+            continue
+
+        k = 0 if node.created_in_interval is None else node.created_in_interval
+        color = interval_colors[k % len(interval_colors)] if interval_colors else "darkcyan"
+        if node.branch_time is None:
+            ax.plot(t, u, color=color, linewidth=1.2, alpha=0.85)
+        else:
+            mask = t >= node.branch_time
+            ax.plot(t[mask], u[mask], color=color, linewidth=1.2, alpha=0.9)
+            branch_idx = int(np.argmin(np.abs(t - node.branch_time)))
+            ax.plot(t[branch_idx], u[branch_idx], "o", color="black", markersize=3.5, zorder=4)
+
+    for interval in result.intervals:
+        ax.axvline(interval.start, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+    if result.intervals:
+        ax.axvline(result.intervals[-1].end, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+
+    if result.intervals:
+        legend_handles = [
+            Line2D(
+                [0],
+                [0],
+                color=interval_colors[interval.index % len(interval_colors)],
+                linewidth=2.0,
+                label=f"Spawned in Interval {interval.index + 1}",
+            )
+            for interval in result.intervals
+        ]
+        ax.legend(handles=legend_handles, loc="upper left", frameon=True)
+
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Drum Angle (deg)")
+    ax.set_title("Branched Drum Control Profiles")
+    ax.grid(True, alpha=0.3)
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return save_path
+
+
 def _interval_colors(n_intervals: int) -> list[str]:
     """Use the same interval palette as branched profile plotting."""
     palette = ["darkcyan", "aquamarine", "mediumturquoise"]
@@ -734,10 +934,14 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
 
     profiles_h5 = config.output_dir / "profiles.h5"
     manifest_path = config.output_dir / "branched_profiles_manifest.json"
+    artifact_manifest_path = config.output_dir / "branching_artifacts_manifest.json"
     if manifest_path.exists():
         manifest_path.unlink()
+    if artifact_manifest_path.exists():
+        artifact_manifest_path.unlink()
 
     next_idx = _find_latest_variography_profile_index(config.output_dir.parents[0]) + 1
+    target_names = list(STATE_COLUMNS[:num_targets])
     for root_idx in range(config.Nr):
         root = generate_root_profile(
             generator,
@@ -753,10 +957,41 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
             n_branches=config.Nb,
             weights=weights,
             finite_difference_order=config.finite_difference_order,
+            branch_time_min=config.branch_time_min,
+            branch_time_max=config.branch_time_max,
             seed=config.seed + root_idx,
             verbose=True,
         )
         root_group = f"root_{root_idx + 1:03d}"
+        branched_profiles_plot = _plot_branched_profiles(
+            result,
+            config.output_dir / f"{root_group}_branched_profiles.png",
+        )
+        root_forecast_h5: Path | None = None
+        root_forecast_pdf: Path | None = None
+        if config.plot_root_forecasts:
+            root_forecast_h5 = _save_branching_ensemble_forecasts(
+                result=result,
+                forecaster=forecaster,
+                output_path=config.output_dir / f"{root_group}_ensemble_forecast.h5",
+                target_names=target_names,
+                derivative_order=config.finite_difference_order,
+                dt=config.dt,
+                scaling_stats=scaling_stats,
+                profile_ids=["profile_00000"],
+            )
+            root_forecast_pdf = config.output_dir / f"{root_group}_ensemble_forecast_with_derivative.pdf"
+            save_forecast_profiles_pdf(
+                forecast_h5_path=root_forecast_h5,
+                output_pdf_path=root_forecast_pdf,
+                target_names=target_names,
+                state_dim=state_dim,
+                control_channel=0,
+                mode="ensemble",
+                include_uncertainty_derivative=True,
+                derivative_order=config.finite_difference_order,
+                derivative_dt=config.dt,
+            )
         save_recursive_branching_output(result, profiles_h5, root_group_name=root_group)
         mats = save_profiles_as_mat_files(result, config.output_dir, start_index=next_idx)
         next_idx += len(mats)
@@ -765,6 +1000,13 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
             root_group_name=root_group,
             result=result,
             written_mats=mats,
+        )
+        _append_artifact_manifest(
+            artifact_manifest_path,
+            root_group_name=root_group,
+            branched_profiles_plot=branched_profiles_plot,
+            root_forecast_h5=root_forecast_h5,
+            root_forecast_pdf=root_forecast_pdf,
         )
 
     return config.output_dir

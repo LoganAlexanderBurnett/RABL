@@ -3,8 +3,8 @@
 Workflow:
 1) Build unscaled LSTM dataset from selected /outputs/sim_profiles/batch_xxxx folders.
 2) Split+scale dataset with fixed test set (saved manifest on first pass).
-3) Tune hyperparameters on full train split.
-4) Train bagged ensemble (M models) using tuned hyperparameters.
+3) Tune hyperparameters on full train split, or select the first configured hyperparameter set.
+4) Train bagged ensemble (M models) using the selected hyperparameters.
 5) Sample new controls (branching or random), simulate them, and add new sim batch.
 6) Repeat from step 1 for retraining cycles, keeping test fixed and re-sampling train/val.
 """
@@ -21,9 +21,10 @@ import sys
 import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Iterable
 
 import h5py
 import matplotlib.pyplot as plt
@@ -40,7 +41,10 @@ if str(SCRIPTS_PATH) not in sys.path:
 
 from rabl.paths import resolve_output_root
 from rabl.machine_learning import build_lstm_dataset
-from rabl.machine_learning.dataset_scaling import LSTMDatasetScalerSplitter
+from rabl.machine_learning.dataset_scaling import (
+    LSTMDatasetScalerSplitter,
+    load_scaler_stats_json,
+)
 from rabl.machine_learning.tuner import GridSearchConfig, run_grid_search, run_hyperband_search
 from rabl.machine_learning.bagging_ensemble import run_bagging_ensemble
 from rabl.machine_learning.lstm_pipeline import (
@@ -116,6 +120,11 @@ class ExperimentConfig:
     branching: dict[str, Any]
     dymola: dict[str, Any]
     training_seed: int | None = None
+<<<<<<< HEAD
+=======
+    dataset_build_verbose: bool = False
+    skip_hyperparameter_tuning: bool = False
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
     plot_bag_distributions: bool = True
     save_individual_ensemble_forecasts: bool = True
     plot_individual_ensemble_forecasts: bool = True
@@ -130,6 +139,12 @@ class ExperimentConfig:
     forecast_plot_profiles_per_bin: int = 2
     forecast_plot_selection_seed: int | None = None
     forecast_plot_selection_path: str | None = None
+<<<<<<< HEAD
+=======
+    freeze_scaler_stats: bool = False
+    scaler_stats_path: str | None = None
+    save_scaler_stats: bool = False
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
     test_manifest_path: str | None = None
     val_manifest_path: str | None = None
     config_py_path: str = str(REPO_ROOT / "scripts" / "config.py")
@@ -225,6 +240,7 @@ def _build_from_batches(
     lookback: int,
     cfg_py: Path,
     out_dir: Path,
+    verbose: bool = False,
 ) -> Path:
     cfg = build_lstm_dataset._validate_config(build_lstm_dataset._load_config(cfg_py))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -234,6 +250,7 @@ def _build_from_batches(
         steady_state=cfg["steady_state"],
         k=lookback,
         batch_ids=batch_ids,
+        verbose=verbose,
     )
 
 
@@ -248,6 +265,8 @@ def _scale_with_fixed_manifests(
     save_test_manifest: Path | None,
     test_count: int,
     seed: int,
+    frozen_stats_path: Path | None = None,
+    save_stats_path: Path | None = None,
 ) -> Path:
     if test_manifest is not None or val_manifest is not None:
         _validate_fixed_manifests_against_unscaled_h5(
@@ -268,6 +287,8 @@ def _scale_with_fixed_manifests(
         val_manifest_path=val_manifest,
         test_count=None if test_manifest is not None else test_count,
         save_test_manifest_path=save_test_manifest,
+        frozen_stats_path=frozen_stats_path,
+        save_stats_path=save_stats_path,
         output_dir=out_dir,
     )
     return splitter.run()
@@ -323,6 +344,45 @@ def _normalize_n_fc_values(grid: dict[str, Any]) -> list[int]:
 def _optional_int(grid: dict[str, Any], key: str) -> int | None:
     value = grid.get(key)
     return None if value is None else int(value)
+
+
+def _first_grid_value(grid: dict[str, Any], key: str) -> Any:
+    value = grid.get(key)
+    if value is None:
+        raise ValueError(f"hp_grid.{key} is required when selecting the first hyperparameter configuration.")
+    if isinstance(value, (list, tuple)):
+        if not value:
+            raise ValueError(f"hp_grid.{key} must contain at least one value.")
+        return value[0]
+    return value
+
+
+def _select_first_hyperparameter_configuration(scaled_h5: Path, out_dir: Path, grid: dict[str, Any]) -> tuple[Any, str]:
+    """Return the first hyperparameter configuration without running a tuning search."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    n_fc_values = _normalize_n_fc_values(grid)
+    if not n_fc_values:
+        raise ValueError("hp_grid.n_fc_values must contain at least one value.")
+
+    selected = {
+        "lookback": int(grid["lookback"]),
+        "dataset_path": str(scaled_h5),
+        "learning_rate": float(_first_grid_value(grid, "learning_rates")),
+        "batch_size": int(_first_grid_value(grid, "batch_sizes")),
+        "n_lstm": int(_first_grid_value(grid, "n_lstm_values")),
+        "n_fc": int(n_fc_values[0]),
+        "hidden_lstm": int(_first_grid_value(grid, "hidden_lstm_values")),
+        "hidden_fc": int(_first_grid_value(grid, "hidden_fc_values")),
+        "best_val_loss": None,
+        "final_val_loss": None,
+        "used_device": "not_trained",
+        "trial_dir": str(out_dir),
+        "weights_path": "",
+        "hyperband": None,
+    }
+    selected_path = out_dir / "selected_first_hyperparameters.json"
+    selected_path.write_text(json.dumps(selected, indent=2) + "\n")
+    return SimpleNamespace(**selected), "first_config"
 
 
 def _tune(scaled_h5: Path, out_dir: Path, seed: int, grid: dict[str, Any]) -> tuple[Any, str]:
@@ -414,7 +474,39 @@ def _find_latest_global_result_index(sim_root: Path) -> int:
     return max_idx
 
 
-def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, sim_root: Path) -> int:
+def _load_branched_profile_manifest(profiles_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
+    manifest_path = profiles_dir / "branched_profiles_manifest.json"
+    if not manifest_path.exists():
+        raise RuntimeError(f"Missing branched profile manifest: {manifest_path}")
+    entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(entries, list):
+        raise RuntimeError(f"Invalid branched profile manifest: {manifest_path}")
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in entries:
+        root_id = str(entry.get("root_group_name", "")).strip()
+        profile_id = str(entry.get("profile_id", "")).strip()
+        if not root_id or not profile_id:
+            raise RuntimeError(f"Invalid branched profile manifest entry: {entry}")
+        out[(root_id, profile_id)] = entry
+    return out
+
+
+def _parse_branched_result_stem(stem: str) -> tuple[str, str]:
+    # results_root_001__profile_00012 -> (root_001, profile_00012)
+    if not stem.startswith("results_") or "__" not in stem:
+        raise RuntimeError(f"Unexpected branched result stem: {stem}")
+    root_part, profile_id = stem[len("results_") :].split("__", 1)
+    if not root_part or not profile_id:
+        raise RuntimeError(f"Unexpected branched result stem: {stem}")
+    return root_part, profile_id
+
+
+def _copy_branched_results_to_batch_root_with_global_numbering(
+    out_dir: Path,
+    sim_root: Path,
+    *,
+    profiles_dir: Path | None = None,
+) -> int:
     branched_results_dir = out_dir / "branched_results"
     if not branched_results_dir.exists():
         raise RuntimeError(f"No branched_results directory found after branched simulation: {branched_results_dir}")
@@ -423,6 +515,8 @@ def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, si
     if not sources:
         raise RuntimeError(f"No branched CSV results found after branched simulation: {branched_results_dir}")
 
+    manifest_index = _load_branched_profile_manifest(profiles_dir) if profiles_dir is not None else {}
+    lineage_entries: list[dict[str, Any]] = []
     next_idx = _find_latest_global_result_index(sim_root) + 1
     copied = 0
     for csv_src in sources:
@@ -433,8 +527,27 @@ def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, si
         shutil.copy2(csv_src, csv_dst)
         if mat_src.exists():
             shutil.copy2(mat_src, mat_dst)
+
+        root_id, profile_id = _parse_branched_result_stem(csv_src.stem)
+        manifest_entry = manifest_index.get((root_id, profile_id))
+        if manifest_entry is None:
+            raise RuntimeError(
+                f"Missing branched manifest entry for simulated result {csv_src.name}: "
+                f"root_id={root_id}, profile_id={profile_id}"
+            )
+        lineage_entries.append(
+            {
+                "result_stem": stem,
+                "source_stem": csv_src.stem,
+                "root_id": root_id,
+                "profile_id": profile_id,
+                "parent_profile_id": str(manifest_entry.get("parent_profile_id", "")).strip(),
+                "branch_time": manifest_entry.get("branch_time"),
+            }
+        )
         copied += 1
         next_idx += 1
+    (out_dir / "branched_results_lineage.json").write_text(json.dumps(lineage_entries, indent=2), encoding="utf-8")
     print(f"[step] Copied {copied} branched result profiles into batch root: {out_dir}")
     return copied
 
@@ -491,6 +604,12 @@ def _run_recursive_branching_internal(
         nugget_v_deg2_s2=float(variography_params["NUGGET_V_DEG2_S2"]),
         finite_difference_order=int(cfg.branching.get("finite_difference_order", 4)),
         target_weights=_resolve_branching_target_weights(cfg.branching_target_weights),
+<<<<<<< HEAD
+=======
+        branch_time_min=float(cfg.branching.get("branch_time_min", 25.0)),
+        branch_time_max=float(cfg.branching.get("branch_time_max", 175.0)),
+        plot_root_forecasts=bool(cfg.branching.get("plot_root_forecasts", True)),
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
         device=str(cfg.branching.get("device", "cpu")),
         config_path=Path(cfg.config_py_path),
     )
@@ -527,7 +646,7 @@ def _run_dymola_internal(
         runner.close()
     if mode == "branched_mat":
         _plot_stitched_results(out_dir / "branched_results")
-        copied_count = _copy_branched_results_to_batch_root_with_global_numbering(out_dir, sim_root)
+        copied_count = _copy_branched_results_to_batch_root_with_global_numbering(out_dir, sim_root, profiles_dir=profiles_dir)
         if copied_count < 1:
             raise RuntimeError(f"No branched result CSVs were copied into batch root: {out_dir}")
         _cleanup_production_artifacts(out_dir)
@@ -865,8 +984,13 @@ def _extract_root_id_from_results_stem(stem: str) -> str:
     return "unknown_root"
 
 
-def _summarize_forecasts(forecast_h5: Path) -> dict[str, float]:
+def _target_name_from_column(column_name: str) -> str:
+    return column_name.split(")_", 1)[1] if ")_" in column_name else column_name.rsplit("_", 1)[-1]
+
+
+def _summarize_forecasts(forecast_h5: Path) -> dict[str, Any]:
     all_err: list[np.ndarray] = []
+    per_target_err: dict[str, list[np.ndarray]] = {}
     with h5py.File(forecast_h5, "r") as h5f:
         for profile_name in h5f.keys():
             grp = h5f[profile_name]
@@ -879,13 +1003,25 @@ def _summarize_forecasts(forecast_h5: Path) -> dict[str, float]:
                 continue
             err = table[:, pred_cols] - table[:, true_cols]
             all_err.append(err)
+            for local_idx, true_idx in enumerate(true_cols):
+                target_name = _target_name_from_column(cols[true_idx])
+                per_target_err.setdefault(target_name, []).append(err[:, local_idx])
     if not all_err:
-        return {"rmse": float("nan"), "mae": float("nan"), "max_abs": float("nan")}
+        return {"rmse": float("nan"), "mae": float("nan"), "max_abs": float("nan"), "per_target": {}}
     cat = np.concatenate(all_err, axis=0)
+    per_target = {}
+    for target_name, chunks in per_target_err.items():
+        target_err = np.concatenate(chunks, axis=0)
+        per_target[target_name] = {
+            "rmse": float(np.sqrt(np.mean(target_err**2))),
+            "mae": float(np.mean(np.abs(target_err))),
+            "max_abs": float(np.max(np.abs(target_err))),
+        }
     return {
         "rmse": float(np.sqrt(np.mean(cat**2))),
         "mae": float(np.mean(np.abs(cat))),
         "max_abs": float(np.max(np.abs(cat))),
+        "per_target": per_target,
     }
 
 
@@ -897,6 +1033,7 @@ def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
     }
     all_err: list[np.ndarray] = []
     all_sigma95: list[np.ndarray] = []
+    target_names: list[str] = []
     with h5py.File(forecast_h5, "r") as h5f:
         for profile_name in h5f.keys():
             grp = h5f[profile_name]
@@ -908,6 +1045,8 @@ def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
             sigma_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_2sigma(t)_")]
             if not true_cols or len(true_cols) != len(mean_cols) or len(sigma_cols) != len(true_cols):
                 continue
+            if not target_names:
+                target_names = [_target_name_from_column(cols[idx]) for idx in true_cols]
             y_true = table[:, true_cols]
             y_mean = table[:, mean_cols]
             sigma95 = table[:, sigma_cols]
@@ -919,6 +1058,7 @@ def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
             "coverage": {"50": float("nan"), "80": float("nan"), "95": float("nan")},
             "interval_width": {"50": float("nan"), "80": float("nan"), "95": float("nan")},
             "calibration_error": float("nan"),
+            "per_target": {},
         }
 
     err = np.concatenate(all_err, axis=0)
@@ -928,18 +1068,74 @@ def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
     coverage: dict[str, float] = {}
     width: dict[str, float] = {}
     cal_terms: list[float] = []
+    per_target: dict[str, dict[str, Any]] = {
+        name: {"coverage": {}, "interval_width": {}} for name in target_names
+    }
     for level, z in z_by_level.items():
         half_width = z * std
         cov = float(np.mean(err <= half_width))
         coverage[level] = cov
         width[level] = float(np.mean(2.0 * half_width))
         cal_terms.append(abs(cov - (float(level) / 100.0)))
+        cov_per_target = np.mean(err <= half_width, axis=0)
+        width_per_target = np.mean(2.0 * half_width, axis=0)
+        for target_name, target_cov, target_width in zip(target_names, cov_per_target, width_per_target, strict=True):
+            per_target[target_name]["coverage"][level] = float(target_cov)
+            per_target[target_name]["interval_width"][level] = float(target_width)
+
+    for target_name, target_metrics in per_target.items():
+        target_metrics["calibration_error"] = float(
+            np.mean([abs(float(target_metrics["coverage"][level]) - (float(level) / 100.0)) for level in z_by_level])
+        )
 
     return {
         "coverage": coverage,
         "interval_width": width,
         "calibration_error": float(np.mean(cal_terms)),
+        "per_target": per_target,
     }
+
+
+def _set_log_y_if_positive(ax, values: Any) -> None:
+    flat: list[float] = []
+
+    def _extend(item: Any) -> None:
+        if isinstance(item, np.ndarray):
+            flat.extend(float(v) for v in item.astype(float).ravel())
+        elif isinstance(item, (list, tuple)):
+            for subitem in item:
+                _extend(subitem)
+        else:
+            try:
+                flat.append(float(item))
+            except (TypeError, ValueError):
+                return
+
+    _extend(values)
+    arr = np.asarray(flat, dtype=float)
+    positive = arr[np.isfinite(arr) & (arr > 0.0)]
+    if positive.size:
+        ax.set_yscale("log")
+        ax.set_ylim(bottom=max(float(np.min(positive)) * 0.5, 1e-12))
+
+
+def _ordered_target_names(names: Iterable[str]) -> list[str]:
+    unique = set(names)
+    ordered = [name for name in TARGET_NAMES if name in unique]
+    ordered.extend(sorted(unique.difference(ordered)))
+    return ordered
+
+
+def _cycle_metric_target_names(cycle_metrics: list[dict[str, Any]]) -> list[str]:
+    names: set[str] = set()
+    for metrics in cycle_metrics:
+        forecast_targets = metrics.get("forecast_quality", {}).get("per_target", {})
+        uncertainty_targets = metrics.get("uncertainty_quality", {}).get("per_target", {})
+        if isinstance(forecast_targets, dict):
+            names.update(str(name) for name in forecast_targets)
+        if isinstance(uncertainty_targets, dict):
+            names.update(str(name) for name in uncertainty_targets)
+    return _ordered_target_names(names)
 
 
 def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path) -> None:
@@ -960,6 +1156,7 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     ax.plot(cycles, mae, marker="o", label="MAE")
     ax.set_title("Forecast error vs cycle")
     ax.set_xlabel("Cycle")
+    _set_log_y_if_positive(ax, [rmse, mae])
     ax.grid(alpha=0.3)
     ax.legend()
 
@@ -997,6 +1194,7 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     axes[0].plot(x_values, mae, marker="o", label="MAE")
     axes[0].set_title("Forecast error vs data budget")
     axes[0].set_xlabel(x_label)
+    _set_log_y_if_positive(axes[0], [rmse, mae])
     axes[0].grid(alpha=0.3)
     axes[0].legend()
 
@@ -1008,6 +1206,307 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     fig.tight_layout()
     fig.savefig(out_dir / "metrics_vs_train_samples.png", dpi=150)
     plt.close(fig)
+
+    targets = _cycle_metric_target_names(cycle_metrics)
+    if not targets:
+        return
+
+    cmap = plt.colormaps.get_cmap("tab20")
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    error_values: list[list[float]] = []
+    for idx, target in enumerate(targets):
+        color = cmap(idx % cmap.N)
+        forecast_series = [m.get("forecast_quality", {}).get("per_target", {}).get(target, {}) for m in cycle_metrics]
+        uncertainty_series = [m.get("uncertainty_quality", {}).get("per_target", {}).get(target, {}) for m in cycle_metrics]
+        target_rmse = [_metric_float(values, "rmse") for values in forecast_series]
+        target_mae = [_metric_float(values, "mae") for values in forecast_series]
+        error_values.extend([target_rmse, target_mae])
+        axes[0, 0].plot(cycles, target_rmse, marker="o", color=color, label=target)
+        axes[0, 0].plot(cycles, target_mae, marker="o", linestyle="--", color=color, alpha=0.8)
+        axes[0, 1].plot(
+            cycles,
+            [_metric_float(values.get("coverage", {}), "95") if isinstance(values, dict) else float("nan") for values in uncertainty_series],
+            marker="o",
+            color=color,
+            label=target,
+        )
+        axes[1, 0].plot(
+            cycles,
+            [_metric_float(values, "calibration_error") for values in uncertainty_series],
+            marker="o",
+            color=color,
+            label=target,
+        )
+        axes[1, 1].plot(
+            cycles,
+            [
+                _metric_float(values.get("interval_width", {}), "95") if isinstance(values, dict) else float("nan")
+                for values in uncertainty_series
+            ],
+            marker="o",
+            color=color,
+            label=target,
+        )
+
+    axes[0, 0].set_title("Per-target forecast error vs cycle (solid=RMSE, dashed=MAE)")
+    axes[0, 0].set_xlabel("Cycle")
+    _set_log_y_if_positive(axes[0, 0], error_values)
+    axes[0, 0].grid(alpha=0.3)
+    axes[0, 1].axhline(0.95, linestyle="--", linewidth=1.0, color="0.4")
+    axes[0, 1].set_ylim(0.0, 1.05)
+    axes[0, 1].set_title("Per-target empirical coverage (95%) vs cycle")
+    axes[0, 1].set_xlabel("Cycle")
+    axes[0, 1].grid(alpha=0.3)
+    axes[1, 0].set_title("Per-target calibration error vs cycle")
+    axes[1, 0].set_xlabel("Cycle")
+    axes[1, 0].grid(alpha=0.3)
+    axes[1, 1].set_title("Per-target 95% interval width vs cycle")
+    axes[1, 1].set_xlabel("Cycle")
+    axes[1, 1].grid(alpha=0.3)
+    handles, labels = axes[0, 1].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=min(5, max(1, len(labels))), fontsize=7)
+    fig.tight_layout(rect=[0, 0.08, 1, 1])
+    fig.savefig(out_dir / "metrics_vs_cycle_per-target.png", dpi=150)
+    plt.close(fig)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    error_values = []
+    for idx, target in enumerate(targets):
+        color = cmap(idx % cmap.N)
+        forecast_series = [m.get("forecast_quality", {}).get("per_target", {}).get(target, {}) for m in cycle_metrics]
+        uncertainty_series = [m.get("uncertainty_quality", {}).get("per_target", {}).get(target, {}) for m in cycle_metrics]
+        target_rmse = [_metric_float(values, "rmse") for values in forecast_series]
+        target_mae = [_metric_float(values, "mae") for values in forecast_series]
+        error_values.extend([target_rmse, target_mae])
+        axes[0].plot(x_values, target_rmse, marker="o", color=color, label=target)
+        axes[0].plot(x_values, target_mae, marker="o", linestyle="--", color=color, alpha=0.8)
+        axes[1].plot(
+            x_values,
+            [_metric_float(values, "calibration_error") for values in uncertainty_series],
+            marker="o",
+            color=color,
+            label=target,
+        )
+    axes[0].set_title("Per-target forecast error vs data budget (solid=RMSE, dashed=MAE)")
+    axes[0].set_xlabel(x_label)
+    _set_log_y_if_positive(axes[0], error_values)
+    axes[0].grid(alpha=0.3)
+    axes[1].set_title("Per-target calibration error vs data budget")
+    axes[1].set_xlabel(x_label)
+    axes[1].grid(alpha=0.3)
+    handles, labels = axes[1].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=min(5, max(1, len(labels))), fontsize=7)
+    fig.tight_layout(rect=[0, 0.12, 1, 1])
+    fig.savefig(out_dir / "metrics_vs_train_samples_per-target.png", dpi=150)
+    plt.close(fig)
+
+
+def _metric_float(data: dict[str, Any], key: str) -> float:
+    try:
+        return float(data.get(key, float("nan")))
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _plot_rolling_forecast_metrics_comparison(
+    *,
+    cycle_rows: list[dict[str, Any]],
+    output_path: Path,
+) -> Path | None:
+    """Plot compare_rolling_forecast_metrics-style summaries for experiment cycles."""
+    rows_with_metrics = [
+        row
+        for row in cycle_rows
+        if row.get("rolling_forecast_metrics_json") not in (None, "")
+    ]
+    if not rows_with_metrics:
+        print("[warn] No rolling forecast metrics JSON paths found for comparison plot; skipping.")
+        return None
+
+    datasets: list[dict[str, Any]] = []
+    labels: list[str] = []
+    train_profile_counts: list[int] = []
+    for row in rows_with_metrics:
+        metrics_path = Path(str(row["rolling_forecast_metrics_json"]))
+        if not metrics_path.exists():
+            print(f"[warn] Missing rolling forecast metrics JSON for comparison plot: {metrics_path}")
+            continue
+        data = json.loads(metrics_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            print(f"[warn] Rolling forecast metrics JSON is not an object; skipping: {metrics_path}")
+            continue
+        datasets.append(data)
+        labels.append(f"cycle_{int(row['cycle']):02d}")
+        train_profile_counts.append(int(row.get("train_profile_count", row.get("train_sample_count", 0))))
+
+    if not datasets:
+        print("[warn] No readable rolling forecast metrics JSON files found for comparison plot; skipping.")
+        return None
+
+    smape = [_metric_float(data, "smape") for data in datasets]
+    nrmse = [_metric_float(data, "nrmse") for data in datasets]
+    cov95 = [_metric_float(data, "empirical_coverage_95") for data in datasets]
+    cal95 = [_metric_float(data, "calibration_error_95") for data in datasets]
+    w95 = [_metric_float(data, "interval_width_95_mean") for data in datasets]
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharex=False)
+    x = np.arange(len(labels))
+
+    axes[0, 0].bar(x, smape, color="C0")
+    axes[0, 0].set_title("sMAPE")
+    axes[0, 0].set_xticks(x, labels, rotation=20, ha="right")
+    _set_log_y_if_positive(axes[0, 0], smape)
+    axes[0, 0].grid(alpha=0.3)
+
+    axes[0, 1].bar(x, nrmse, color="C1")
+    axes[0, 1].set_title("NRMSE")
+    axes[0, 1].set_xticks(x, labels, rotation=20, ha="right")
+    _set_log_y_if_positive(axes[0, 1], nrmse)
+    axes[0, 1].grid(alpha=0.3)
+
+    axes[0, 2].bar(x, cal95, color="C3")
+    axes[0, 2].set_title("Calibration Error (95%)")
+    axes[0, 2].set_xticks(x, labels, rotation=20, ha="right")
+    axes[0, 2].grid(alpha=0.3)
+
+    axes[1, 0].bar(x, cov95, color="C2")
+    axes[1, 0].axhline(0.95, linestyle="--", linewidth=1.0, color="0.4", label="ideal 0.95")
+    axes[1, 0].set_ylim(0.0, 1.05)
+    axes[1, 0].set_title("Empirical Coverage (95%)")
+    axes[1, 0].set_xticks(x, labels, rotation=20, ha="right")
+    axes[1, 0].grid(alpha=0.3)
+    axes[1, 0].legend(loc="best", fontsize=8)
+
+    axes[1, 1].bar(x, w95, color="C4")
+    axes[1, 1].set_title("Mean 95% Interval Width")
+    axes[1, 1].set_xticks(x, labels, rotation=20, ha="right")
+    axes[1, 1].grid(alpha=0.3)
+
+    ax = axes[1, 2]
+    if len(set(train_profile_counts)) > 1:
+        color_norm = plt.Normalize(vmin=min(train_profile_counts), vmax=max(train_profile_counts))
+    else:
+        color_norm = plt.Normalize(vmin=0, vmax=max(1, train_profile_counts[0]))
+    cmap = plt.colormaps.get_cmap("plasma")
+    for label, data, train_count in zip(labels, datasets, train_profile_counts, strict=True):
+        mae_h = np.asarray(data.get("horizon_mean_mae", []), dtype=float)
+        if mae_h.size:
+            ax.plot(
+                np.arange(mae_h.size),
+                mae_h,
+                label=label,
+                linewidth=1.6,
+                color=cmap(color_norm(train_count)),
+            )
+    ax.set_title("Horizon-wise MAE")
+    ax.set_xlabel("Horizon step")
+    ax.set_ylabel("Mean Absolute Error")
+    _set_log_y_if_positive(ax, [np.asarray(data.get("horizon_mean_mae", []), dtype=float) for data in datasets])
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+    sm = plt.cm.ScalarMappable(norm=color_norm, cmap=cmap)
+    sm.set_array([])
+    fig.colorbar(sm, ax=ax, label="Training profiles used")
+
+    fig.suptitle("Rolling Forecast Metrics Comparison", fontsize=15)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"[step] Saved rolling forecast metrics comparison plot: {output_path}")
+    return output_path
+
+
+def _plot_rolling_forecast_metrics_comparison_per_target(
+    *,
+    cycle_rows: list[dict[str, Any]],
+    output_path: Path,
+) -> Path | None:
+    """Plot per-target rolling forecast summaries for experiment cycles."""
+    rows_with_metrics = [
+        row
+        for row in cycle_rows
+        if row.get("rolling_forecast_metrics_json") not in (None, "")
+    ]
+    if not rows_with_metrics:
+        print("[warn] No rolling forecast metrics JSON paths found for per-target comparison plot; skipping.")
+        return None
+
+    datasets: list[dict[str, Any]] = []
+    labels: list[str] = []
+    for row in rows_with_metrics:
+        metrics_path = Path(str(row["rolling_forecast_metrics_json"]))
+        if not metrics_path.exists():
+            print(f"[warn] Missing rolling forecast metrics JSON for per-target comparison plot: {metrics_path}")
+            continue
+        data = json.loads(metrics_path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            datasets.append(data)
+            labels.append(f"cycle_{int(row['cycle']):02d}")
+
+    target_names = _ordered_target_names(
+        name
+        for data in datasets
+        for key in (
+            "per_target_smape",
+            "per_target_nrmse",
+            "per_target_calibration_error_95",
+            "per_target_empirical_coverage_95",
+            "per_target_interval_width_95_mean",
+            "per_target_horizon_mean_mae",
+        )
+        if isinstance(data.get(key), dict)
+        for name in data[key]
+    )
+    if not datasets or not target_names:
+        print("[warn] No per-target rolling forecast metrics found for comparison plot; skipping.")
+        return None
+
+    x = np.arange(len(labels))
+    cmap = plt.colormaps.get_cmap("tab20")
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharex=False)
+
+    plot_specs = [
+        (axes[0, 0], "per_target_smape", "sMAPE", True),
+        (axes[0, 1], "per_target_nrmse", "NRMSE", True),
+        (axes[0, 2], "per_target_calibration_error_95", "Calibration Error (95%)", False),
+        (axes[1, 0], "per_target_empirical_coverage_95", "Empirical Coverage (95%)", False),
+        (axes[1, 1], "per_target_interval_width_95_mean", "Mean 95% Interval Width", False),
+        (axes[1, 2], "per_target_horizon_mean_mae", "Horizon Mean MAE", True),
+    ]
+    for ax, key, title, log_scale in plot_specs:
+        plotted_values: list[list[float]] = []
+        for idx, target in enumerate(target_names):
+            values = [
+                _metric_float(data.get(key, {}) if isinstance(data.get(key), dict) else {}, target)
+                for data in datasets
+            ]
+            plotted_values.append(values)
+            ax.plot(x, values, marker="o", linewidth=1.4, color=cmap(idx % cmap.N), label=target)
+        if key == "per_target_empirical_coverage_95":
+            ax.axhline(0.95, linestyle="--", linewidth=1.0, color="0.4", label="ideal 0.95")
+            ax.set_ylim(0.0, 1.05)
+        if log_scale:
+            _set_log_y_if_positive(ax, plotted_values)
+        ax.set_title(title)
+        ax.set_xticks(x, labels, rotation=20, ha="right")
+        ax.grid(alpha=0.3)
+
+    handles, labels_for_legend = axes[0, 0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels_for_legend,
+        loc="lower center",
+        ncol=min(6, max(1, len(labels_for_legend))),
+        fontsize=7,
+    )
+    fig.suptitle("Per-target Rolling Forecast Metrics Comparison", fontsize=15)
+    fig.tight_layout(rect=[0, 0.08, 1, 0.96])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"[step] Saved per-target rolling forecast metrics comparison plot: {output_path}")
+    return output_path
 
 
 
@@ -1412,6 +1911,55 @@ def _save_forecast_pdf_subset(
     finally:
         subset_h5.unlink(missing_ok=True)
     return plotted_names
+<<<<<<< HEAD
+=======
+
+
+def _decode_h5_attr_strings(value: Any) -> list[str]:
+    arr = np.asarray(value)
+    if arr.ndim == 0:
+        item = arr.item()
+        return [item.decode() if isinstance(item, bytes) else str(item)]
+    return [item.decode() if isinstance(item, bytes) else str(item) for item in arr.tolist()]
+
+
+def _unscaled_h5_feature_and_target_names(unscaled_h5: Path) -> tuple[list[str], list[str]]:
+    with h5py.File(unscaled_h5, "r") as h5f:
+        if "state_feature_names" not in h5f.attrs:
+            raise ValueError(f"Unscaled dataset missing state_feature_names metadata: {unscaled_h5}")
+        if "control_feature_name" not in h5f.attrs:
+            raise ValueError(f"Unscaled dataset missing control_feature_name metadata: {unscaled_h5}")
+        target_names = _decode_h5_attr_strings(h5f.attrs["state_feature_names"])
+        control_name = _decode_h5_attr_strings(h5f.attrs["control_feature_name"])[0]
+    return [*target_names, control_name], target_names
+
+
+def _validate_frozen_scaler_stats_for_unscaled_h5(
+    *,
+    scaler_stats_path: Path,
+    scaling_type: str,
+    unscaled_h5: Path,
+) -> None:
+    input_feature_names, target_names = _unscaled_h5_feature_and_target_names(unscaled_h5)
+    load_scaler_stats_json(
+        scaler_stats_path,
+        scaling_type=scaling_type,
+        input_feature_names=input_feature_names,
+        target_names=target_names,
+    )
+
+
+def _resolve_scaler_stats_paths(cfg: ExperimentConfig, run_dir: Path) -> tuple[Path | None, Path | None]:
+    configured_path = Path(cfg.scaler_stats_path).expanduser().resolve() if cfg.scaler_stats_path else None
+    default_path = run_dir / "frozen_scaler_stats.json"
+    if cfg.freeze_scaler_stats:
+        frozen_path = configured_path if configured_path is not None else default_path
+        # Freezing is in-run: cycle 1 writes this path, cycles 2+ load it.
+        return frozen_path, frozen_path
+
+    save_path = configured_path if configured_path is not None else default_path
+    return None, save_path if cfg.save_scaler_stats else None
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
 
 
 def main() -> None:
@@ -1455,6 +2003,17 @@ def main() -> None:
     configured_val_manifest = Path(cfg.val_manifest_path).resolve() if cfg.val_manifest_path else None
     generated_test_manifest = run_dir / "test_manifest.json"
     forecast_plot_selection_path = _forecast_plot_selection_path(cfg=cfg, run_dir=run_dir)
+<<<<<<< HEAD
+=======
+    frozen_scaler_stats_path, save_scaler_stats_path = _resolve_scaler_stats_paths(cfg, run_dir)
+    if cfg.freeze_scaler_stats:
+        print(
+            "[scale] Frozen scaler statistics enabled: cycle 1 will compute/save stats "
+            f"for later reuse at {frozen_scaler_stats_path}"
+        )
+    elif cfg.save_scaler_stats:
+        print(f"[scale] Scaler statistics will be saved after the initial/base split: {save_scaler_stats_path}")
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
 
     sim_root = Path(cfg.sim_root).resolve() if cfg.sim_root else output_root / "sim_profiles"
     var_root = Path(cfg.variography_root).resolve() if cfg.variography_root else output_root / "variography_profiles"
@@ -1487,6 +2046,8 @@ def main() -> None:
         branching_seed = int(base_seed + cycle * branching_root_count)
         cycle_start = perf_counter()
         step_times: dict[str, float] = {}
+        branching_artifacts_manifest: Path | None = None
+        branching_artifacts: list[dict[str, Any]] = []
         cycle_input_batches = list(known_batches)
         cycle_dir = run_dir / f"cycle_{cycle + 1:02d}"
         cycle_dir.mkdir(parents=True, exist_ok=True)
@@ -1502,6 +2063,7 @@ def main() -> None:
             lookback=cfg.lookback,
             cfg_py=cfg_py,
             out_dir=cycle_dir / "unscaled",
+            verbose=cfg.dataset_build_verbose,
         )
         step_times["build_unscaled_dataset_sec"] = perf_counter() - t0
         _print_step_result(cycle + 1, "Build unscaled dataset complete", f"Output: {unscaled_h5}")
@@ -1515,6 +2077,32 @@ def main() -> None:
                 "provide both explicit manifests for the first cycle."
             )
         save_test_manifest = None if active_test_manifest is not None else generated_test_manifest
+        if cfg.freeze_scaler_stats:
+            assert frozen_scaler_stats_path is not None
+            if cycle == 0:
+                print(f"[scale] Cycle 1 computing scaler statistics and saving frozen copy to {frozen_scaler_stats_path}")
+                cycle_frozen_scaler_stats_path = None
+                cycle_save_scaler_stats_path = frozen_scaler_stats_path
+                scaler_stats_mode = "computed_and_saved"
+            else:
+                if not frozen_scaler_stats_path.exists():
+                    raise SystemExit(
+                        "freeze_scaler_stats is true, but cycle 1 did not create frozen scaler stats at "
+                        f"{frozen_scaler_stats_path}"
+                    )
+                print(f"[scale] Loading frozen scaler statistics from {frozen_scaler_stats_path}")
+                _validate_frozen_scaler_stats_for_unscaled_h5(
+                    scaler_stats_path=frozen_scaler_stats_path,
+                    scaling_type=cfg.scaling_type,
+                    unscaled_h5=unscaled_h5,
+                )
+                cycle_frozen_scaler_stats_path = frozen_scaler_stats_path
+                cycle_save_scaler_stats_path = None
+                scaler_stats_mode = "frozen_loaded"
+        else:
+            cycle_frozen_scaler_stats_path = None
+            cycle_save_scaler_stats_path = save_scaler_stats_path if (cfg.save_scaler_stats and cycle == 0) else None
+            scaler_stats_mode = "computed_and_saved" if cycle_save_scaler_stats_path is not None else "computed_fresh"
         scaled_h5 = _scale_with_fixed_manifests(
             unscaled_h5=unscaled_h5,
             out_dir=cycle_dir / "scaled",
@@ -1525,6 +2113,8 @@ def main() -> None:
             save_test_manifest=save_test_manifest,
             test_count=cfg.test_count,
             seed=cycle_seed,
+            frozen_stats_path=cycle_frozen_scaler_stats_path,
+            save_stats_path=cycle_save_scaler_stats_path,
         )
         split_budget = _summarize_split_h5(scaled_h5)
         resolved_split_manifests = _get_resolved_split_manifests(scaled_h5)
@@ -1537,23 +2127,41 @@ def main() -> None:
         step_times["scale_split_dataset_sec"] = perf_counter() - t0
         _print_step_result(cycle + 1, "Scale + split complete", f"Output: {scaled_h5}")
 
-        _print_step_banner(cycle + 1, "Hyperparameter tuning")
-        t0 = perf_counter()
-        best, tuning_method = _tune(
-            scaled_h5=scaled_h5,
-            out_dir=cycle_dir / "tuning",
-            seed=training_seed,
-            grid=cfg.hp_grid,
-        )
-        step_times["hyperparameter_tuning_sec"] = perf_counter() - t0
-        _print_step_result(
-            cycle + 1,
-            "Hyperparameter tuning complete",
-            (
-                f"Best trial: lr={best.learning_rate}, bs={best.batch_size}, "
-                f"n_lstm={best.n_lstm}, n_fc={best.n_fc}, hl={best.hidden_lstm}, hf={best.hidden_fc}"
-            ),
-        )
+        if cfg.skip_hyperparameter_tuning:
+            _print_step_banner(cycle + 1, "Select first hyperparameter configuration")
+            t0 = perf_counter()
+            best, tuning_method = _select_first_hyperparameter_configuration(
+                scaled_h5=scaled_h5,
+                out_dir=cycle_dir / "tuning",
+                grid=cfg.hp_grid,
+            )
+            step_times["hyperparameter_tuning_sec"] = perf_counter() - t0
+            _print_step_result(
+                cycle + 1,
+                "Hyperparameter tuning skipped",
+                (
+                    f"Using first config: lr={best.learning_rate}, bs={best.batch_size}, "
+                    f"n_lstm={best.n_lstm}, n_fc={best.n_fc}, hl={best.hidden_lstm}, hf={best.hidden_fc}"
+                ),
+            )
+        else:
+            _print_step_banner(cycle + 1, "Hyperparameter tuning")
+            t0 = perf_counter()
+            best, tuning_method = _tune(
+                scaled_h5=scaled_h5,
+                out_dir=cycle_dir / "tuning",
+                seed=training_seed,
+                grid=cfg.hp_grid,
+            )
+            step_times["hyperparameter_tuning_sec"] = perf_counter() - t0
+            _print_step_result(
+                cycle + 1,
+                "Hyperparameter tuning complete",
+                (
+                    f"Best trial: lr={best.learning_rate}, bs={best.batch_size}, "
+                    f"n_lstm={best.n_lstm}, n_fc={best.n_fc}, hl={best.hidden_lstm}, hf={best.hidden_fc}"
+                ),
+            )
 
         _print_step_banner(cycle + 1, "Train bagged ensemble")
         save_member_forecasts_for_cycle = bool(
@@ -1591,6 +2199,10 @@ def main() -> None:
         bagged_h5_path = Path(ensemble["bagged_h5_path"])
         forecast_h5 = Path(ensemble["forecast_output_path"])
         bag_distribution_overlap_plot = ensemble.get("bag_distribution_overlap_plot")
+<<<<<<< HEAD
+=======
+        ensemble_training_curves_plot = ensemble.get("training_curves_plot")
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
         t0 = perf_counter()
         point_metrics = _summarize_forecasts(forecast_h5)
         unc_metrics = _compute_uncertainty_metrics(forecast_h5)
@@ -1678,6 +2290,19 @@ def main() -> None:
                     variography_root=var_root,
                 )
                 step_times["profile_generation_sec"] = perf_counter() - t0
+                branching_artifacts_manifest = Path(var_batch) / "branching_artifacts_manifest.json"
+                if branching_artifacts_manifest.exists():
+                    loaded_artifacts = json.loads(branching_artifacts_manifest.read_text(encoding="utf-8"))
+                    if not isinstance(loaded_artifacts, list):
+                        raise RuntimeError(
+                            f"Invalid branching artifacts manifest; expected a list: {branching_artifacts_manifest}"
+                        )
+                    branching_artifacts = loaded_artifacts
+                elif bool(cfg.branching.get("plot_root_forecasts", True)):
+                    raise RuntimeError(
+                        "Recursive branching was configured to plot root forecasts, but the artifact manifest "
+                        f"was not created: {branching_artifacts_manifest}"
+                    )
                 pymola_mode = "branched_mat"
                 _print_step_result(cycle + 1, "Recursive branching profile generation complete", f"Profiles dir: {var_batch}")
             else:
@@ -1743,6 +2368,10 @@ def main() -> None:
                 "bag_split_mode": cfg.bag_split_mode,
                 "branching_target_weights": cfg.branching_target_weights,
                 "branching_target_weight_order": list(TARGET_NAMES),
+<<<<<<< HEAD
+=======
+                "skip_hyperparameter_tuning": bool(cfg.skip_hyperparameter_tuning),
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
                 "tuning_method": tuning_method,
                 "best_trial": {
                     "learning_rate": best.learning_rate,
@@ -1753,12 +2382,22 @@ def main() -> None:
                     "hidden_fc": best.hidden_fc,
                 },
                 "resolved_split_manifests": resolved_split_manifests,
+                "freeze_scaler_stats": bool(cfg.freeze_scaler_stats),
+                "frozen_scaler_stats_path": None if frozen_scaler_stats_path is None else str(frozen_scaler_stats_path),
+                "scaler_stats_mode": scaler_stats_mode,
+                "saved_scaler_stats_path": None if cycle_save_scaler_stats_path is None else str(cycle_save_scaler_stats_path),
                 **split_budget,
                 **new_batch_budget,
                 "bagged_h5_path": str(bagged_h5_path),
                 "bag_distribution_overlap_plot": (
                     None if bag_distribution_overlap_plot is None else str(bag_distribution_overlap_plot)
                 ),
+<<<<<<< HEAD
+=======
+                "ensemble_training_curves_plot": (
+                    None if ensemble_training_curves_plot is None else str(ensemble_training_curves_plot)
+                ),
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
                 "model_paths": model_paths,
                 "forecast_h5": str(forecast_h5),
                 "forecast_pdf": str(forecast_pdf),
@@ -1799,6 +2438,10 @@ def main() -> None:
                     [] if test_difficulty_result is None else test_difficulty_result.get("artifacts", [])
                 ),
                 "new_variography_batch": None if var_batch is None else str(var_batch),
+                "branching_artifacts_manifest": (
+                    None if branching_artifacts_manifest is None else str(branching_artifacts_manifest)
+                ),
+                "branching_artifacts": branching_artifacts,
                 "new_sim_batch": sim_batch,
                 "timing": step_times,
             }
@@ -1852,12 +2495,25 @@ def main() -> None:
         cycle_rows=metadata["cycles"],
         output_path=metrics_plots_dir / "rolling_forecast_metrics_comparison.png",
     )
+<<<<<<< HEAD
+=======
+    rolling_forecast_metrics_comparison_per_target_path = _plot_rolling_forecast_metrics_comparison_per_target(
+        cycle_rows=metadata["cycles"],
+        output_path=metrics_plots_dir / "rolling_forecast_metrics_comparison_per-target.png",
+    )
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
     metadata["postprocess_timing"] = {
         "rolling_forecast_metrics_compare_sec": perf_counter() - t0,
     }
     metadata["metrics_plots"] = {
         "metrics_vs_cycle": str(metrics_plots_dir / "metrics_vs_cycle.png"),
+<<<<<<< HEAD
         "metrics_vs_train_samples": str(metrics_plots_dir / "metrics_vs_train_samples.png"),
+=======
+        "metrics_vs_cycle_per_target": str(metrics_plots_dir / "metrics_vs_cycle_per-target.png"),
+        "metrics_vs_train_samples": str(metrics_plots_dir / "metrics_vs_train_samples.png"),
+        "metrics_vs_train_samples_per_target": str(metrics_plots_dir / "metrics_vs_train_samples_per-target.png"),
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
         "profiles_by_cycle_color": str(cycle_colored_plot_path),
         "training_distribution_theta_rho_n_by_cycle": (
             None if training_distribution_plot_path is None else str(training_distribution_plot_path)
@@ -1867,6 +2523,14 @@ def main() -> None:
             if rolling_forecast_metrics_comparison_path is None
             else str(rolling_forecast_metrics_comparison_path)
         ),
+<<<<<<< HEAD
+=======
+        "rolling_forecast_metrics_comparison_per_target": (
+            None
+            if rolling_forecast_metrics_comparison_per_target_path is None
+            else str(rolling_forecast_metrics_comparison_per_target_path)
+        ),
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
     }
 
     metadata_path = run_dir / "run_metadata.json"

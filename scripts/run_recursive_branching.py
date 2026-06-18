@@ -26,7 +26,6 @@ from typing import Callable
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from matplotlib.lines import Line2D
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = REPO_ROOT / "src"
@@ -34,13 +33,11 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from rabl.paths import resolve_output_root
-from rabl.machine_learning.bagging_ensemble import (
-    _save_ensemble_rolling_forecasts_hdf5,
-)
-from rabl.machine_learning.branchpoint_finder import finite_difference
 from rabl.machine_learning.recursive_branching import (
     LSTMEnsembleForecaster,
     RecursiveBranchingResult,
+    _save_branching_ensemble_forecasts,
+    _plot_branched_profiles,
     generate_root_profile,
     load_trained_ensemble,
     run_recursive_branching,
@@ -49,7 +46,7 @@ from rabl.machine_learning.recursive_branching import (
     save_recursive_branching_output,
 )
 from rabl.machine_learning.lstm_pipeline import save_forecast_profiles_pdf
-from rabl.machine_learning.lstm_pipeline import _descale_targets_from_stats, _load_scaling_stats
+from rabl.machine_learning.lstm_pipeline import _load_scaling_stats
 from rabl.variography.DrumVariography import DrumProfile, DrumProfileGenerator
 from rabl.machine_learning.build_lstm_dataset import CONTROL_COLUMN, STATE_COLUMNS
 
@@ -72,6 +69,7 @@ class RecursiveBranchingRunConfig:
     seed: int = 123
     Nr: int = 1
     visualize: bool = True
+    root_only_forecast: bool = False
 
     lookback: int = 12
     n_features: int = 13
@@ -85,6 +83,8 @@ class RecursiveBranchingRunConfig:
     fc_hidden: tuple[int, ...] = (64,)
 
     finite_difference_order: int = 4
+    branch_time_min: float = 25.0
+    branch_time_max: float = 175.0
     kernel: str = "matern52"
     device: str = "cpu"
     config_path: Path = DEFAULT_CONFIG_PATH
@@ -188,21 +188,6 @@ def _make_control_window(u_series: np.ndarray, step: int, lookback: int, *, cont
     return out
 
 
-def _descale_uncertainty_widths_from_stats(stats: dict, sigma_values: np.ndarray) -> np.ndarray:
-    """Descale uncertainty widths (e.g., 2σ) without applying offsets.
-
-    Mean predictions use a full inverse transform; uncertainty widths should only
-    be multiplied by the target scale (std/span).
-    """
-    scaling_type = stats["type"]
-    y_stats = stats["y"]
-    if scaling_type == "standard":
-        return sigma_values * y_stats["std"]
-    if scaling_type == "minmax":
-        return sigma_values * y_stats["span"]
-    raise ValueError(f"Unsupported scaling type: {scaling_type}")
-
-
 def build_profile_to_x_adapter(
     *,
     n_steps: int,
@@ -282,59 +267,6 @@ def _plot_root_profile(root_profile: DrumProfile, save_path: Path) -> None:
     plt.close(fig)
 
 
-def _plot_branched_profiles(result: RecursiveBranchingResult, save_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(10, 6))
-    root_id = "profile_00000"
-    interval_colors = _interval_colors(len(result.intervals))
-
-    for profile_id, node in result.final_profiles.items():
-        t = np.asarray(node.profile.t, dtype=float)
-        u = np.asarray(node.profile.theta_deg, dtype=float)
-        if profile_id == root_id:
-            ax.plot(t, u, color="black", linewidth=2.0, zorder=3, label="root")
-            continue
-
-        k = 0 if node.created_in_interval is None else node.created_in_interval
-        color = interval_colors[k % len(interval_colors)] if interval_colors else "darkcyan"
-        if node.branch_time is None:
-            ax.plot(t, u, color=color, linewidth=1.2, alpha=0.85)
-        else:
-            mask = t >= node.branch_time
-            ax.plot(t[mask], u[mask], color=color, linewidth=1.2, alpha=0.9)
-            branch_idx = int(np.argmin(np.abs(t - node.branch_time)))
-            ax.plot(t[branch_idx], u[branch_idx], "o", color="black", markersize=3.5, zorder=4)
-
-    for interval in result.intervals:
-        ax.axvline(interval.start, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
-    if result.intervals:
-        ax.axvline(result.intervals[-1].end, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
-
-    if result.intervals:
-        legend_handles = [
-            Line2D(
-                [0],
-                [0],
-                color=interval_colors[interval.index % len(interval_colors)],
-                linewidth=2.0,
-                label=f"Spawned in Interval {interval.index + 1}",
-            )
-            for interval in result.intervals
-        ]
-        ax.legend(handles=legend_handles, loc="upper left", frameon=True)
-
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Drum Angle (deg)")
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _interval_colors(n_intervals: int) -> list[str]:
-    """Match the interval color scheme used in generate_branched_control_profiles.py."""
-    palette = ["darkblue", "deepskyblue", "lightblue"]
-    return [palette[i % len(palette)] for i in range(max(0, n_intervals))]
-
-
 def _print_run_summary(
     *,
     config: RecursiveBranchingRunConfig,
@@ -369,49 +301,6 @@ def _print_run_summary(
     branched_profiles = len(result.final_profiles) - 1
     print(f"\nTotal profiles: {len(result.final_profiles)} (branched/new={branched_profiles})")
     print(f"Profiles branched per interval: {per_interval_counts}\n")
-
-
-def _save_branching_ensemble_forecasts(
-    *,
-    result: RecursiveBranchingResult,
-    forecaster: LSTMEnsembleForecaster,
-    output_dir: Path,
-    target_names: list[str],
-    derivative_order: int,
-    dt: float,
-    scaling_stats: dict,
-) -> Path:
-    forecasts: list[dict[str, np.ndarray | str]] = []
-    for profile_id, node in sorted(result.final_profiles.items()):
-        pred_stack_scaled = forecaster.forecast(node.profile)
-        y_mean_scaled = np.mean(pred_stack_scaled, axis=0)
-        y_two_sigma_scaled = 2.0 * np.std(pred_stack_scaled, axis=0, ddof=0)
-        y_dsigma_dt_scaled = finite_difference(y_two_sigma_scaled, order=derivative_order, dt=dt)
-
-        y_mean = _descale_targets_from_stats(scaling_stats, y_mean_scaled)
-        y_two_sigma = _descale_uncertainty_widths_from_stats(scaling_stats, y_two_sigma_scaled)
-
-        t_series = np.asarray(node.profile.t, dtype=np.float32)
-        u_series = np.asarray(node.profile.theta_deg, dtype=np.float32)
-
-        # Branching workflow has no measured truth series; duplicate mean for x_true fields
-        # to keep schema compatible with existing ensemble plotting utilities.
-        # NOTE: y_mean / y_2sigma are descaled physical values; dx_sigma_dt is kept scaled.
-        table = np.column_stack([t_series, u_series, y_mean, y_mean, y_two_sigma]).astype(np.float32)
-        forecasts.append({
-            "profile": profile_id,
-            "table": table,
-            # Keep uncertainty derivative in scaled units.
-            "dx_sigma_dt": y_dsigma_dt_scaled.astype(np.float32),
-        })
-
-    forecast_h5 = output_dir / "ensemble_forecasts.h5"
-    _save_ensemble_rolling_forecasts_hdf5(
-        forecasts,
-        output_path=forecast_h5,
-        target_names=target_names,
-    )
-    return forecast_h5
 
 
 def _run_single_recursive_branching_workflow(
@@ -509,6 +398,8 @@ def _run_single_recursive_branching_workflow(
         n_branches=config.Nb,
         weights=weights,
         finite_difference_order=config.finite_difference_order,
+        branch_time_min=config.branch_time_min,
+        branch_time_max=config.branch_time_max,
         seed=config.seed + root_index,
         verbose=True,
     )
@@ -551,11 +442,12 @@ def _run_single_recursive_branching_workflow(
     forecast_h5 = _save_branching_ensemble_forecasts(
         result=result,
         forecaster=forecaster,
-        output_dir=run_output_dir,
+        output_path=run_output_dir / "ensemble_forecasts.h5",
         target_names=target_names,
         derivative_order=config.finite_difference_order,
         dt=config.dt,
         scaling_stats=scaling_stats,
+        profile_ids=["profile_00000"] if config.root_only_forecast else None,
     )
     process_elapsed_seconds = perf_counter() - process_start
 
@@ -755,6 +647,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fc-hidden", type=int, nargs="+", required=True)
 
     parser.add_argument("--finite-difference-order", type=int, default=4, choices=[2, 4])
+    parser.add_argument(
+        "--branch-time-min",
+        type=float,
+        default=25.0,
+        help="Strict lower bound for recursive branch times.",
+    )
+    parser.add_argument(
+        "--branch-time-max",
+        type=float,
+        default=175.0,
+        help="Strict upper bound for recursive branch times.",
+    )
     parser.add_argument("--kernel", type=str, default="matern52", choices=["matern32", "matern52"])
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument(
@@ -763,6 +667,11 @@ def parse_args() -> argparse.Namespace:
         choices=[0, 1],
         default=1,
         help="Whether to generate PNG/PDF visualizations (1=yes, 0=no).",
+    )
+    parser.add_argument(
+        "--root-only-forecast",
+        action="store_true",
+        help="Save the ensemble forecast and uncertainty derivative only for profile_00000.",
     )
     parser.add_argument(
         "--weights-npy",
@@ -787,6 +696,7 @@ def main() -> None:
         baseline_angle_deg=args.baseline_angle_deg,
         seed=_resolve_seed(args),
         visualize=bool(args.visualize),
+        root_only_forecast=bool(args.root_only_forecast),
         lookback=args.lookback,
         n_features=args.n_features,
         state_dim=args.state_dim,
@@ -797,6 +707,8 @@ def main() -> None:
         n_fc=args.n_fc,
         fc_hidden=tuple(args.fc_hidden),
         finite_difference_order=args.finite_difference_order,
+        branch_time_min=args.branch_time_min,
+        branch_time_max=args.branch_time_max,
         kernel=args.kernel,
         device=args.device,
         config_path=args.config,

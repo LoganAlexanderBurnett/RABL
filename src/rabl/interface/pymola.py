@@ -75,6 +75,14 @@ class BranchNode:
     stop_time: float
 
 
+_BRANCH_TIME_SNAP_ATOL = 1e-5
+_BRANCH_TIME_SNAP_RTOL = 1e-7
+
+
+def _branch_time_snap_tolerance(branch_time: float) -> float:
+    return max(_BRANCH_TIME_SNAP_ATOL, abs(float(branch_time)) * _BRANCH_TIME_SNAP_RTOL)
+
+
 class DymolaBatchRunner:
     def __init__(self, config: BatchConfig):
         self.cfg = config
@@ -625,12 +633,26 @@ class DymolaBatchRunner:
     def _save_branch_outputs(self, job: BranchNode, result_cols: list[np.ndarray]) -> tuple[Path, Path, float]:
         t0 = time()
         csv_out = self.branched_results_abs / f"results_{job.root_id}__{job.profile_id}.csv"
+        output_cols = [np.asarray(col, dtype=float).copy() for col in result_cols]
+        if output_cols and job.branch_time is not None:
+            t = output_cols[0]
+            if t.size:
+                branch_time = float(job.branch_time)
+                delta = abs(float(t[0]) - branch_time)
+                tol = _branch_time_snap_tolerance(branch_time)
+                if delta <= tol:
+                    t[0] = branch_time
+                else:
+                    raise ValueError(
+                        f"Branched result {job.root_id}/{job.profile_id} starts at t={float(t[0])}, "
+                        f"which differs from branch_time={branch_time} by {delta} (> {tol})."
+                    )
         with open(csv_out, "w", newline="") as fp:
             w = csv.writer(fp)
             w.writerow(self.cfg.vars_to_pull)
-            w.writerows(zip(*result_cols))
+            w.writerows(zip(*output_cols))
         mat_out = csv_out.with_suffix(".mat")
-        savemat(str(mat_out), {"table": np.column_stack(result_cols), "columns": np.array(self.cfg.vars_to_pull, dtype=object)})
+        savemat(str(mat_out), {"table": np.column_stack(output_cols), "columns": np.array(self.cfg.vars_to_pull, dtype=object)})
         return csv_out, mat_out, (time() - t0)
 
     def _log_branch_failure(self, job: BranchNode, status: str, *, detail: str = "") -> None:

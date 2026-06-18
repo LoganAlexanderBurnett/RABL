@@ -763,7 +763,8 @@ def train_model(
     profiler_row_limit: int = 30,
     use_tqdm: bool = True,
     resume_from_weights: Path | None = None,
-) -> tuple[nn.Module, dict[str, list[float]], Path]:
+    save_training_curves: bool = True,
+) -> tuple[nn.Module, dict[str, list[float]], Path | None]:
     """
     Train the LSTM and save a train/val curve plot.
 
@@ -1017,34 +1018,37 @@ def train_model(
         if verbose:
             print(f"Restored best model weights from epoch {best_epoch}.")
 
-    resolved_plot_path.parent.mkdir(parents=True, exist_ok=True)
+    if save_training_curves:
+        resolved_plot_path.parent.mkdir(parents=True, exist_ok=True)
 
-    epochs_range = range(1, len(history["loss"]) + 1)
-    plt.figure(figsize=(10, 6))
-    plt.plot(epochs_range, history["loss"], label="Train Loss (MSE)")
-    plt.plot(epochs_range, history["val_loss"], label="Val Loss (MSE)")
-    plt.yscale("log")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Training and Validation Loss")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-    plt.savefig(resolved_plot_path, dpi=150)
-    print(f"Saved training curves to {resolved_plot_path}")
+        epochs_range = range(1, len(history["loss"]) + 1)
+        plt.figure(figsize=(10, 6))
+        plt.plot(epochs_range, history["loss"], label="Train Loss (MSE)")
+        plt.plot(epochs_range, history["val_loss"], label="Val Loss (MSE)")
+        plt.yscale("log")
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
+        plt.title("Training and Validation Loss")
+        plt.legend()
+        plt.grid()
+        plt.tight_layout()
+        plt.savefig(resolved_plot_path, dpi=150)
+        print(f"Saved training curves to {resolved_plot_path}")
 
-    resolved_lr_plot_path = resolved_plot_path.with_name("lstm_lr_curve.png")
-    epochs_range = range(1, len(history["lr"]) + 1)
-    plt.figure(figsize=(10, 6))
-    plt.plot(epochs_range, history["lr"], label="Learning Rate")
-    plt.xlabel("Epoch")
-    plt.ylabel("Learning Rate")
-    plt.title("Learning Rate Schedule (StepLR)")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-    plt.savefig(resolved_lr_plot_path, dpi=150)
-    print(f"Saved learning-rate curve to {resolved_lr_plot_path}")
+        resolved_lr_plot_path = resolved_plot_path.with_name("lstm_lr_curve.png")
+        epochs_range = range(1, len(history["lr"]) + 1)
+        plt.figure(figsize=(10, 6))
+        plt.plot(epochs_range, history["lr"], label="Learning Rate")
+        plt.xlabel("Epoch")
+        plt.ylabel("Learning Rate")
+        plt.title("Learning Rate Schedule (StepLR)")
+        plt.legend()
+        plt.grid()
+        plt.tight_layout()
+        plt.savefig(resolved_lr_plot_path, dpi=150)
+        print(f"Saved learning-rate curve to {resolved_lr_plot_path}")
+    else:
+        resolved_plot_path = None
 
     if verbose:
         total_data_wait_s = float(sum(history["data_wait_time"]))
@@ -1095,6 +1099,7 @@ def train_with_fallback(
     profiler_row_limit: int = 30,
     use_tqdm: bool = True,
     resume_from_weights: Path | None = None,
+    save_training_curves: bool = True,
 ) -> tuple[nn.Module, dict[str, list[float]], torch.device]:
     """
     Try GPU first (if prefer_gpu). If anything fails, retry on CPU.
@@ -1135,6 +1140,7 @@ def train_with_fallback(
             profiler_row_limit=profiler_row_limit,
             use_tqdm=use_tqdm,
             resume_from_weights=resume_from_weights,
+            save_training_curves=save_training_curves,
         )
         return model, history, preferred
     except Exception as e:
@@ -1171,6 +1177,7 @@ def train_with_fallback(
         profiler_row_limit=profiler_row_limit,
         use_tqdm=use_tqdm,
         resume_from_weights=resume_from_weights,
+        save_training_curves=save_training_curves,
     )
     return model, history, torch.device("cpu")
 
@@ -2153,6 +2160,9 @@ def compute_and_save_rolling_forecast_metrics(
         "nrmse": float(np.nanmean(nrmse_per_target)),
         "per_target_rmse": {n: float(v) for n, v in zip(target_names, rmse_per_target, strict=True)},
         "per_target_mae": {n: float(v) for n, v in zip(target_names, mae_per_target, strict=True)},
+        "per_target_smape": {n: float(v) for n, v in zip(target_names, smape_per_target, strict=True)},
+        "per_target_nrmse": {n: float(v) for n, v in zip(target_names, nrmse_per_target, strict=True)},
+        "per_target_horizon_mean_mae": {n: float(v) for n, v in zip(target_names, mae_per_target, strict=True)},
         "per_target_bias": {n: float(v) for n, v in zip(target_names, bias_per_target, strict=True)},
         "per_target_r2": {n: float(v) for n, v in zip(target_names, r2_per_target, strict=True)},
         "horizon_mean_rmse": horizon_rmse.tolist(),
@@ -2166,6 +2176,17 @@ def compute_and_save_rolling_forecast_metrics(
         result["empirical_coverage_95"] = cov95
         result["calibration_error_95"] = float(abs(cov95 - 0.95))
         result["interval_width_95_mean"] = float(np.mean(2.0 * half_width))
+        cov95_per_target = np.mean(abs_err <= half_width, axis=0)
+        width95_per_target = np.mean(2.0 * half_width, axis=0)
+        result["per_target_empirical_coverage_95"] = {
+            n: float(v) for n, v in zip(target_names, cov95_per_target, strict=True)
+        }
+        result["per_target_calibration_error_95"] = {
+            n: float(abs(v - 0.95)) for n, v in zip(target_names, cov95_per_target, strict=True)
+        }
+        result["per_target_interval_width_95_mean"] = {
+            n: float(v) for n, v in zip(target_names, width95_per_target, strict=True)
+        }
 
     output_json_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result

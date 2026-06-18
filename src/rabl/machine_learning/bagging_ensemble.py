@@ -139,6 +139,10 @@ BAG_DISTRIBUTION_COLUMNS = {
     "theta": "drumAngleDeg",
     "rho": "rho_dollars",
     "n": "n",
+<<<<<<< HEAD
+=======
+    "t": "t",
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
 }
 
 
@@ -159,6 +163,10 @@ def _collect_bag_distribution_values(
     state_dim: int,
     control_channel: int,
     target_names: list[str],
+<<<<<<< HEAD
+=======
+    lookback: int,
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
 ) -> dict[str, np.ndarray]:
     rho_idx = target_names.index("rho_dollars")
     n_idx = target_names.index("n")
@@ -194,9 +202,18 @@ def _collect_bag_distribution_values(
         theta = _descale_feature_from_stats(scaling_stats, x_data[:, -1, control_idx], control_idx)
         rho = _descale_target_channel(scaling_stats, y_data[:, rho_idx], rho_idx)
         n_values = _descale_target_channel(scaling_stats, y_data[:, n_idx], n_idx)
+<<<<<<< HEAD
         raw_values["theta"].append(theta.astype(np.float32, copy=False))
         raw_values["rho"].append(rho.astype(np.float32, copy=False))
         raw_values["n"].append(n_values.astype(np.float32, copy=False))
+=======
+        t_values = _read_profile_target_times(profile_group, sample_count=x_data.shape[0], lookback=lookback)
+        raw_values["theta"].append(theta.astype(np.float32, copy=False))
+        raw_values["rho"].append(rho.astype(np.float32, copy=False))
+        raw_values["n"].append(n_values.astype(np.float32, copy=False))
+        if t_values.size:
+            raw_values["t"].append(t_values.astype(np.float32, copy=False))
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
 
     concatenated = {
         key: np.concatenate(arrays) if arrays else np.asarray([], dtype=np.float32)
@@ -209,6 +226,38 @@ def _collect_bag_distribution_values(
     return finite_values
 
 
+<<<<<<< HEAD
+=======
+def _read_profile_target_times(profile_group: h5py.Group, *, sample_count: int, lookback: int) -> np.ndarray:
+    source_file = str(profile_group.attrs.get("source_file", "")).strip()
+    if not source_file:
+        return np.asarray([], dtype=np.float32)
+    source_path = Path(source_file)
+    if not source_path.exists():
+        return np.asarray([], dtype=np.float32)
+
+    try:
+        with source_path.open(newline="") as fp:
+            import csv
+
+            reader = csv.DictReader(fp)
+            if reader.fieldnames is None or "t" not in reader.fieldnames:
+                return np.asarray([], dtype=np.float32)
+            times = np.asarray([float(row["t"]) for row in reader], dtype=np.float32)
+    except OSError:
+        return np.asarray([], dtype=np.float32)
+    if times.size == 0:
+        return times
+
+    history_rows = max(0, int(profile_group.attrs.get("history_rows_prepended", lookback + 1)))
+    target_indices = np.arange(sample_count, dtype=np.int64) + int(lookback) + 1 - history_rows
+    if "selected_sample_indices" in profile_group:
+        target_indices = profile_group["selected_sample_indices"][...].astype(np.int64) + int(lookback) + 1 - history_rows
+    valid = (target_indices >= 0) & (target_indices < times.size)
+    return times[target_indices[valid]]
+
+
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
 def _plot_bag_distribution_overlap(
     bagged_h5_path: Path,
     *,
@@ -217,7 +266,11 @@ def _plot_bag_distribution_overlap(
     control_channel: int = 0,
     target_names: list[str] | None = None,
 ) -> Path | None:
+<<<<<<< HEAD
     """Plot theta/rho/n density overlap across bagged train splits."""
+=======
+    """Plot theta/rho/n/time density overlap across bagged train splits."""
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
     if target_names is None:
         target_names = list(TARGET_NAMES)
     if "rho_dollars" not in target_names or "n" not in target_names:
@@ -225,7 +278,11 @@ def _plot_bag_distribution_overlap(
     bagged_h5_path = Path(bagged_h5_path)
     if output_path is None:
         output_path = bagged_h5_path.with_name(
+<<<<<<< HEAD
             f"{bagged_h5_path.stem}_bag_distribution_overlap_theta_rho_n.png"
+=======
+            f"{bagged_h5_path.stem}_bag_distribution_overlap_theta_rho_n_t.png"
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
         )
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -239,6 +296,10 @@ def _plot_bag_distribution_overlap(
         )
         if not bag_names:
             return None
+<<<<<<< HEAD
+=======
+        lookback = int(h5f.attrs.get("k_lookback", 0))
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
         bag_values = {
             bag_name: _collect_bag_distribution_values(
                 train_group[bag_name],
@@ -246,6 +307,10 @@ def _plot_bag_distribution_overlap(
                 state_dim=state_dim,
                 control_channel=control_channel,
                 target_names=target_names,
+<<<<<<< HEAD
+=======
+                lookback=lookback,
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
             )
             for bag_name in bag_names
         }
@@ -253,8 +318,13 @@ def _plot_bag_distribution_overlap(
     if not any(any(values.size for values in bag_data.values()) for bag_data in bag_values.values()):
         return None
 
+<<<<<<< HEAD
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.8))
     axes = np.atleast_1d(axes)
+=======
+    fig, axes = plt.subplots(2, 2, figsize=(13.5, 9.0))
+    axes = np.atleast_1d(axes).ravel()
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
     cmap = plt.get_cmap("tab10")
     for ax, (summary_name, label) in zip(axes, BAG_DISTRIBUTION_COLUMNS.items(), strict=True):
         all_values = [bag_data[summary_name] for bag_data in bag_values.values() if bag_data[summary_name].size]
@@ -291,12 +361,64 @@ def _plot_bag_distribution_overlap(
     handles, labels = axes[0].get_legend_handles_labels()
     if handles:
         fig.legend(handles, labels, loc="upper center", ncol=min(4, len(handles)), frameon=False)
+<<<<<<< HEAD
     fig.suptitle("Bag training distribution overlap", y=1.03)
+=======
+    fig.suptitle("Bag training distribution overlap", y=1.02)
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return output_path
 
+<<<<<<< HEAD
+=======
+
+def _plot_ensemble_training_curves(histories: list[dict[str, list[float]]], output_path: Path) -> Path | None:
+    histories = [history for history in histories if history.get("loss") and history.get("val_loss")]
+    if not histories:
+        return None
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(11, 6.5))
+    cmap = plt.get_cmap("tab10")
+    for member_idx, history in enumerate(histories):
+        color = cmap(member_idx % 10)
+        train_loss = np.asarray(history["loss"], dtype=float)
+        val_loss = np.asarray(history["val_loss"], dtype=float)
+        train_epochs = np.arange(1, train_loss.size + 1)
+        val_epochs = np.arange(1, val_loss.size + 1)
+        ax.plot(
+            train_epochs,
+            train_loss,
+            color=color,
+            linestyle="-",
+            linewidth=1.5,
+            alpha=0.9,
+            label=f"model_{member_idx} train",
+        )
+        ax.plot(
+            val_epochs,
+            val_loss,
+            color=color,
+            linestyle="--",
+            linewidth=1.5,
+            alpha=0.9,
+            label=f"model_{member_idx} val",
+        )
+    ax.set_yscale("log")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss (MSE)")
+    ax.set_title("Bagging ensemble training and validation loss")
+    ax.grid(alpha=0.3)
+    ax.legend(ncol=2, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
 def _venn_region_counts(
     bag_sets: list[set[str]],
     *,
@@ -980,6 +1102,7 @@ def run_bagging_ensemble(
             early_stopping_patience=config.early_stopping_patience,
             early_stopping_min_delta=config.early_stopping_min_delta,
             restore_best_weights=True,
+            save_training_curves=False,
         )
 
         model_path = model_dir / "model.pt"
@@ -988,6 +1111,10 @@ def run_bagging_ensemble(
         models.append(model)
         histories.append(history)
         used_devices.append(str(used_device))
+
+    training_curves_plot = _plot_ensemble_training_curves(histories, out_dir / "ensemble_train_val_curves.png")
+    if config.verbose >= 1 and training_curves_plot is not None:
+        print(f"[bagging] saved ensemble training curves plot: {training_curves_plot}")
 
     forecast_output_path = out_dir / "rolling_forecasts.h5"
     test_profile_ds = ProfileDataset(bagged_h5_path, _get_profile_names(bagged_h5_path, "test"), "test")
@@ -1010,5 +1137,9 @@ def run_bagging_ensemble(
         "used_devices": used_devices,
         "histories": histories,
         "bag_distribution_overlap_plot": bag_distribution_overlap_plot,
+<<<<<<< HEAD
+=======
+        "training_curves_plot": training_curves_plot,
+>>>>>>> codex/add-forecast-plot-configuration-and-helper-b0qp4w
         "save_member_forecasts": bool(save_member_forecasts),
     }

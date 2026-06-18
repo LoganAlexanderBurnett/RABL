@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from collections import defaultdict
-from typing import Literal
+from typing import Any, Literal
 import json
 
 import h5py
@@ -45,6 +45,8 @@ class LSTMDatasetScalerSplitter:
         train_profile_limit_with_manifests: int | None = None,
         test_count: int | None = None,
         save_test_manifest_path: Path | None = None,
+        frozen_stats_path: Path | None = None,
+        save_stats_path: Path | None = None,
     ) -> None:
         self.input_path = Path(input_path)
         self.scaling_type = scaling_type
@@ -60,6 +62,8 @@ class LSTMDatasetScalerSplitter:
         self.save_test_manifest_path = (
             Path(save_test_manifest_path) if save_test_manifest_path else None
         )
+        self.frozen_stats_path = Path(frozen_stats_path) if frozen_stats_path else None
+        self.save_stats_path = Path(save_stats_path) if save_stats_path else None
 
     def run(self) -> Path:
         if not self.input_path.exists():
@@ -93,7 +97,39 @@ class LSTMDatasetScalerSplitter:
             rng = np.random.default_rng(self.seed)
             split_payload, split_definition = self._build_split_payload(files_group, file_keys, rng)
             output_path = self._resolve_output_path(split_definition)
-            train_stats = self._compute_stats(files_group, split_payload["train"])
+            split_summary = self._summarize_split_payload(files_group, split_payload["train"])
+            if self.frozen_stats_path is not None:
+                print(f"[scale] Loading frozen scaler statistics from {self.frozen_stats_path}")
+                train_stats = load_scaler_stats_json(
+                    self.frozen_stats_path,
+                    scaling_type=self.scaling_type,
+                    input_feature_names=_input_feature_names_from_attrs(h5f),
+                    target_names=_target_names_from_attrs(h5f),
+                )
+                current_stats = self._compute_stats(files_group, split_payload["train"])
+                _log_stats_comparison(self.scaling_type, train_stats, current_stats)
+            else:
+                print("[scale] Computing scaler statistics from the current training split.")
+                train_stats = self._compute_stats(files_group, split_payload["train"])
+
+            if self.save_stats_path is not None:
+                write_scaler_stats_json(
+                    self.save_stats_path,
+                    scaling_type=self.scaling_type,
+                    stats=train_stats,
+                    input_feature_names=_input_feature_names_from_attrs(h5f),
+                    target_names=_target_names_from_attrs(h5f),
+                    train_profile_count=split_summary["train_profile_count"],
+                    train_window_count=split_summary["train_window_count"],
+                )
+                # Immediate reload catches partial writes and schema/feature-order mistakes.
+                load_scaler_stats_json(
+                    self.save_stats_path,
+                    scaling_type=self.scaling_type,
+                    input_feature_names=_input_feature_names_from_attrs(h5f),
+                    target_names=_target_names_from_attrs(h5f),
+                )
+                print(f"[scale] Saved scaler statistics to {self.save_stats_path}")
 
             with h5py.File(output_path, "w") as out_h5f:
                 self._write_metadata(h5f, out_h5f, train_stats, split_definition)
@@ -381,6 +417,23 @@ class LSTMDatasetScalerSplitter:
             split_definition.update(extra_meta)
         return payload, split_definition
 
+
+    @staticmethod
+    def _summarize_split_payload(
+        files_group: h5py.Group,
+        split_payload: dict[str, np.ndarray | None],
+    ) -> dict[str, int]:
+        window_count = 0
+        for key, selected_indices in split_payload.items():
+            if selected_indices is None:
+                window_count += int(files_group[key]["X"].shape[0])
+            else:
+                window_count += int(len(selected_indices))
+        return {
+            "train_profile_count": int(len(split_payload)),
+            "train_window_count": int(window_count),
+        }
+
     @staticmethod
     def _entries_to_indices(entries: list[tuple[str, int]]) -> dict[str, np.ndarray]:
         profile_to_indices: defaultdict[str, list[int]] = defaultdict(list)
@@ -425,6 +478,9 @@ class LSTMDatasetScalerSplitter:
         for key, value in src_h5f.attrs.items():
             dst_h5f.attrs[key] = value
         dst_h5f.attrs["scaling_type"] = self.scaling_type
+        dst_h5f.attrs["scaling_stats_source"] = "frozen" if self.frozen_stats_path is not None else "computed_train_split"
+        dst_h5f.attrs["frozen_scaler_stats_path"] = "" if self.frozen_stats_path is None else str(self.frozen_stats_path)
+        dst_h5f.attrs["saved_scaler_stats_path"] = "" if self.save_stats_path is None else str(self.save_stats_path)
         dst_h5f.attrs["train_fraction"] = self.splits.train
         dst_h5f.attrs["val_fraction"] = self.splits.val
         dst_h5f.attrs["test_fraction"] = self.splits.test
@@ -499,6 +555,170 @@ class LSTMDatasetScalerSplitter:
             out_group.create_dataset("Y", data=y_scaled, compression="gzip")
             for attr_key, attr_value in file_group.attrs.items():
                 out_group.attrs[attr_key] = attr_value
+
+
+def _decode_attr_strings(value: Any) -> list[str]:
+    arr = np.asarray(value)
+    if arr.ndim == 0:
+        item = arr.item()
+        return [item.decode() if isinstance(item, bytes) else str(item)]
+    return [item.decode() if isinstance(item, bytes) else str(item) for item in arr.tolist()]
+
+
+def _input_feature_names_from_attrs(h5f: h5py.File) -> list[str]:
+    if "state_feature_names" not in h5f.attrs:
+        raise ValueError("Input dataset is missing 'state_feature_names' metadata.")
+    if "control_feature_name" not in h5f.attrs:
+        raise ValueError("Input dataset is missing 'control_feature_name' metadata.")
+    state_names = _decode_attr_strings(h5f.attrs["state_feature_names"])
+    control_name = _decode_attr_strings(h5f.attrs["control_feature_name"])[0]
+    return [*state_names, control_name]
+
+
+def _target_names_from_attrs(h5f: h5py.File) -> list[str]:
+    if "state_feature_names" not in h5f.attrs:
+        raise ValueError("Input dataset is missing 'state_feature_names' metadata.")
+    return _decode_attr_strings(h5f.attrs["state_feature_names"])
+
+
+def _as_jsonable_stats(stats: dict[str, dict[str, np.ndarray]]) -> dict[str, dict[str, list[float]]]:
+    return {
+        axis: {name: np.asarray(values, dtype=float).tolist() for name, values in axis_stats.items()}
+        for axis, axis_stats in stats.items()
+    }
+
+
+def _stats_from_jsonable(payload: dict[str, Any]) -> dict[str, dict[str, np.ndarray]]:
+    return {
+        axis: {name: np.asarray(values, dtype=float) for name, values in axis_stats.items()}
+        for axis, axis_stats in payload.items()
+    }
+
+
+def write_scaler_stats_json(
+    path: Path,
+    *,
+    scaling_type: ScalingType,
+    stats: dict[str, dict[str, np.ndarray]],
+    input_feature_names: list[str],
+    target_names: list[str],
+    train_profile_count: int | None = None,
+    train_window_count: int | None = None,
+) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "scaling_type": scaling_type,
+        "input_feature_names": list(input_feature_names),
+        "target_names": list(target_names),
+        "zero_variance_handling": "replace_zero_std_or_span_with_1.0",
+        "epsilon": None,
+        "clipping": None,
+        "train_profile_count": None if train_profile_count is None else int(train_profile_count),
+        "train_window_count": None if train_window_count is None else int(train_window_count),
+        "stats": _as_jsonable_stats(stats),
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    if not path.exists() or path.stat().st_size <= 0:
+        raise OSError(f"Failed to write scaler stats file: {path}")
+    return path
+
+
+def load_scaler_stats_json(
+    path: Path,
+    *,
+    scaling_type: ScalingType,
+    input_feature_names: list[str],
+    target_names: list[str],
+) -> dict[str, dict[str, np.ndarray]]:
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Frozen scaler stats file not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Scaler stats file must contain a JSON object: {path}")
+    file_scaling_type = str(payload.get("scaling_type", ""))
+    if file_scaling_type != scaling_type:
+        raise ValueError(
+            f"Frozen scaler type mismatch: file has {file_scaling_type!r}, "
+            f"configured scaling_type is {scaling_type!r}."
+        )
+    saved_inputs = [str(name) for name in payload.get("input_feature_names", [])]
+    if saved_inputs != list(input_feature_names):
+        raise ValueError(
+            "Frozen scaler input feature order mismatch. "
+            f"saved={saved_inputs}, current={list(input_feature_names)}."
+        )
+    saved_targets = [str(name) for name in payload.get("target_names", [])]
+    if saved_targets != list(target_names):
+        raise ValueError(
+            "Frozen scaler target order mismatch. "
+            f"saved={saved_targets}, current={list(target_names)}."
+        )
+    stats_payload = payload.get("stats")
+    if not isinstance(stats_payload, dict):
+        raise ValueError(f"Scaler stats file missing 'stats' object: {path}")
+    stats = _stats_from_jsonable(stats_payload)
+    _validate_scaler_stats_arrays(stats, scaling_type, len(input_feature_names), len(target_names), source=str(path))
+    return stats
+
+
+def _validate_scaler_stats_arrays(
+    stats: dict[str, dict[str, np.ndarray]],
+    scaling_type: ScalingType,
+    n_input_features: int,
+    n_targets: int,
+    *,
+    source: str,
+) -> None:
+    required = {
+        "none": {"x": (), "y": ()},
+        "standard": {"x": ("mean", "std"), "y": ("mean", "std")},
+        "minmax": {"x": ("min", "max", "span"), "y": ("min", "max", "span")},
+    }.get(scaling_type)
+    if required is None:
+        raise ValueError(f"Unsupported scaling_type: {scaling_type}")
+    expected_lengths = {"x": n_input_features, "y": n_targets}
+    for axis, keys in required.items():
+        axis_stats = stats.get(axis)
+        if not isinstance(axis_stats, dict):
+            raise ValueError(f"Scaler stats from {source} missing axis {axis!r}.")
+        for key in keys:
+            if key not in axis_stats:
+                raise ValueError(f"Scaler stats from {source} missing required array {axis}.{key}.")
+            arr = np.asarray(axis_stats[key], dtype=float)
+            if arr.shape != (expected_lengths[axis],):
+                raise ValueError(
+                    f"Scaler stats array {axis}.{key} from {source} has shape {arr.shape}; "
+                    f"expected {(expected_lengths[axis],)}."
+                )
+            if not np.all(np.isfinite(arr)):
+                raise ValueError(f"Scaler stats array {axis}.{key} from {source} contains non-finite values.")
+        if scaling_type == "standard" and keys:
+            if np.any(np.asarray(axis_stats["std"], dtype=float) == 0):
+                raise ValueError(f"Scaler stats from {source} contain zero standard deviations for axis {axis}.")
+        if scaling_type == "minmax" and keys:
+            if np.any(np.asarray(axis_stats["span"], dtype=float) == 0):
+                raise ValueError(f"Scaler stats from {source} contain zero spans for axis {axis}.")
+
+
+def _log_stats_comparison(
+    scaling_type: ScalingType,
+    frozen_stats: dict[str, dict[str, np.ndarray]],
+    current_stats: dict[str, dict[str, np.ndarray]],
+) -> None:
+    if scaling_type == "none":
+        print("[scale] Frozen scaling uses type 'none'; no numeric stats to compare.")
+        return
+    keys = ("mean", "std") if scaling_type == "standard" else ("min", "max", "span")
+    parts = []
+    for axis in ("x", "y"):
+        for key in keys:
+            frozen = np.asarray(frozen_stats[axis][key], dtype=float)
+            current = np.asarray(current_stats[axis][key], dtype=float)
+            parts.append(f"{axis}.{key}_max_abs_delta={float(np.max(np.abs(current - frozen))):.6g}")
+    print("[scale] Frozen-vs-current scaler stat deltas: " + ", ".join(parts))
 
 
 def _init_stats(scaling_type: ScalingType, features: int) -> dict:
