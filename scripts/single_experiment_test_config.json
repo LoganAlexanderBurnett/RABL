@@ -78,7 +78,9 @@
     "N_k": 3,
     "N_b": 2,
     "device": "cpu",
-    "finite_difference_order": 4
+    "finite_difference_order": 4,
+    "branch_time_min": 25.0,
+    "branch_time_max": 175.0
   },
   "dymola": {
     "output_interval": 0.4

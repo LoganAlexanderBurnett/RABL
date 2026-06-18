@@ -104,6 +104,8 @@ class RecursiveBranchingBatchConfig:
     nugget_v_deg2_s2: float = 0.0
     finite_difference_order: int = 4
     target_weights: tuple[float, ...] | None = None
+    branch_time_min: float = 25.0
+    branch_time_max: float = 175.0
     device: str = "cpu"
 
 
@@ -337,6 +339,8 @@ def _select_branch_time(
     *,
     interval: Interval,
     is_last_interval: bool,
+    branch_time_min: float = 25.0,
+    branch_time_max: float = 175.0,
     positive_only: bool = True,
 ) -> tuple[float, np.ndarray, bool]:
     if d_unc_dt.ndim != 2:
@@ -351,14 +355,27 @@ def _select_branch_time(
             "weights must be 1D with length equal to target dimension. "
             f"Got weights={weights.shape}, targets={d_unc_dt.shape[1]}."
         )
+    if not branch_time_min < branch_time_max:
+        raise ValueError(
+            "branch_time_min must be strictly less than branch_time_max. "
+            f"Got branch_time_min={branch_time_min}, branch_time_max={branch_time_max}."
+        )
 
     metric_components = np.maximum(d_unc_dt, 0.0) if positive_only else d_unc_dt
     weighted_sq = (metric_components ** 2) * weights[None, :]
     score = np.sqrt(np.sum(weighted_sq, axis=1))
 
-    mask = _interval_mask(t, interval, is_last=is_last_interval)
+    mask = (
+        _interval_mask(t, interval, is_last=is_last_interval)
+        & (t > float(branch_time_min))
+        & (t < float(branch_time_max))
+    )
     if not np.any(mask):
-        raise RuntimeError(f"No time points found in interval {interval.index}: [{interval.start}, {interval.end}].")
+        raise RuntimeError(
+            f"No eligible branch times found in interval {interval.index}: "
+            f"[{interval.start}, {interval.end}] after applying the strict branch-time constraint "
+            f"{branch_time_min} < t < {branch_time_max}."
+        )
 
     masked_idx = np.where(mask)[0]
     score_interval = score[masked_idx]
@@ -376,6 +393,8 @@ def run_recursive_branching(
     n_branches: int,
     weights: np.ndarray,
     finite_difference_order: int = 4,
+    branch_time_min: float = 25.0,
+    branch_time_max: float = 175.0,
     seed: int | None = None,
     verbose: bool = True,
 ) -> RecursiveBranchingResult:
@@ -391,6 +410,11 @@ def run_recursive_branching(
         raise ValueError(f"weights must be 1D, got shape {weights.shape}.")
     if np.any(weights < 0):
         raise ValueError("weights must be non-negative.")
+    if not branch_time_min < branch_time_max:
+        raise ValueError(
+            "branch_time_min must be strictly less than branch_time_max. "
+            f"Got branch_time_min={branch_time_min}, branch_time_max={branch_time_max}."
+        )
 
     t_grid = np.asarray(root_profile.t, dtype=float)
     intervals = partition_horizon(t_grid, n_intervals=n_intervals)
@@ -401,6 +425,19 @@ def run_recursive_branching(
     next_profile_idx = 1
 
     for interval in intervals:
+        eligible_interval_mask = (
+            _interval_mask(t_grid, interval, is_last=(interval.index == len(intervals) - 1))
+            & (t_grid > float(branch_time_min))
+            & (t_grid < float(branch_time_max))
+        )
+        if not np.any(eligible_interval_mask):
+            if verbose:
+                print(
+                    f"\n[branch-skip] interval={interval.index} has no points satisfying "
+                    f"{branch_time_min} < t < {branch_time_max}; skipping interval.\n"
+                )
+            continue
+
         current_nodes = list(profiles.values())
         for node in current_nodes:
             forecasts = forecaster.forecast(node.profile)  # (M, S, D)
@@ -428,6 +465,8 @@ def run_recursive_branching(
                 weights,
                 interval=interval,
                 is_last_interval=(interval.index == len(intervals) - 1),
+                branch_time_min=branch_time_min,
+                branch_time_max=branch_time_max,
             )
 
             if all_non_positive:
@@ -805,6 +844,8 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
             n_branches=config.Nb,
             weights=weights,
             finite_difference_order=config.finite_difference_order,
+            branch_time_min=config.branch_time_min,
+            branch_time_max=config.branch_time_max,
             seed=config.seed + root_idx,
             verbose=True,
         )

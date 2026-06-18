@@ -85,6 +85,8 @@ class RecursiveBranchingRunConfig:
     fc_hidden: tuple[int, ...] = (64,)
 
     finite_difference_order: int = 4
+    branch_time_min: float = 25.0
+    branch_time_max: float = 175.0
     kernel: str = "matern52"
     device: str = "cpu"
     config_path: Path = DEFAULT_CONFIG_PATH
@@ -456,6 +458,8 @@ def _run_single_recursive_branching_workflow(
         n_branches=config.Nb,
         weights=weights,
         finite_difference_order=config.finite_difference_order,
+        branch_time_min=config.branch_time_min,
+        branch_time_max=config.branch_time_max,
         seed=config.seed + root_index,
         verbose=True,
     )
@@ -702,6 +706,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fc-hidden", type=int, nargs="+", required=True)
 
     parser.add_argument("--finite-difference-order", type=int, default=4, choices=[2, 4])
+    parser.add_argument(
+        "--branch-time-min",
+        type=float,
+        default=25.0,
+        help="Strict lower bound for recursive branch times.",
+    )
+    parser.add_argument(
+        "--branch-time-max",
+        type=float,
+        default=175.0,
+        help="Strict upper bound for recursive branch times.",
+    )
     parser.add_argument("--kernel", type=str, default="matern52", choices=["matern32", "matern52"])
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument(
@@ -744,6 +760,8 @@ def main() -> None:
         n_fc=args.n_fc,
         fc_hidden=tuple(args.fc_hidden),
         finite_difference_order=args.finite_difference_order,
+        branch_time_min=args.branch_time_min,
+        branch_time_max=args.branch_time_max,
         kernel=args.kernel,
         device=args.device,
         config_path=args.config,

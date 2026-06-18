@@ -598,6 +598,8 @@ def _run_recursive_branching_internal(
         nugget_v_deg2_s2=float(variography_params["NUGGET_V_DEG2_S2"]),
         finite_difference_order=int(cfg.branching.get("finite_difference_order", 4)),
         target_weights=_resolve_branching_target_weights(cfg.branching_target_weights),
+        branch_time_min=float(cfg.branching.get("branch_time_min", 25.0)),
+        branch_time_max=float(cfg.branching.get("branch_time_max", 175.0)),
         device=str(cfg.branching.get("device", "cpu")),
         config_path=Path(cfg.config_py_path),
     )
