@@ -226,6 +226,22 @@ def _plot_boxplot(
     plt.close(fig)
 
 
+def _set_log_y_if_positive(ax, values: Any) -> None:
+    flat: list[float] = []
+    if isinstance(values, np.ndarray):
+        flat = [float(v) for v in values.ravel()]
+    else:
+        for value in values:
+            if isinstance(value, (list, tuple, np.ndarray)):
+                flat.extend(float(v) for v in np.asarray(value, dtype=float).ravel())
+            else:
+                flat.append(float(value))
+    arr = np.asarray(flat, dtype=float)
+    positive = arr[np.isfinite(arr) & (arr > 0.0)]
+    if positive.size:
+        ax.set_yscale("log")
+        ax.set_ylim(bottom=max(float(np.min(positive)) * 0.5, 1e-12))
+
 def _plot_summary_grid(
     *,
     per_profile_rows: list[dict[str, Any]],
@@ -274,6 +290,7 @@ def _plot_summary_grid(
                 ax.set_ylabel(f"Mean {metric_name}")
                 ax.set_xlabel(f"{descriptor_latex[descriptor]} bins")
                 ax.set_title(f"{metric_name} by {descriptor_latex[descriptor]} bin")
+                _set_log_y_if_positive(ax, means)
                 ax.grid(alpha=0.25, axis="y")
                 ax.set_axisbelow(True)
 
@@ -321,6 +338,7 @@ def _plot_summary_grid(
                 ax.set_xlabel(f"{descriptor_latex[descriptor]} bins")
                 ax.set_ylabel("MAE")
                 ax.set_title(f"MAE distribution by {descriptor_latex[descriptor]} bin")
+                _set_log_y_if_positive(ax, values)
                 ax.tick_params(axis="x", rotation=25, labelsize=8)
                 ax.grid(alpha=0.25, axis="y")
                 ax.set_axisbelow(True)

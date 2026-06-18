@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Iterable
 
 import h5py
 import matplotlib.pyplot as plt
@@ -972,8 +972,13 @@ def _extract_root_id_from_results_stem(stem: str) -> str:
     return "unknown_root"
 
 
-def _summarize_forecasts(forecast_h5: Path) -> dict[str, float]:
+def _target_name_from_column(column_name: str) -> str:
+    return column_name.split(")_", 1)[1] if ")_" in column_name else column_name.rsplit("_", 1)[-1]
+
+
+def _summarize_forecasts(forecast_h5: Path) -> dict[str, Any]:
     all_err: list[np.ndarray] = []
+    per_target_err: dict[str, list[np.ndarray]] = {}
     with h5py.File(forecast_h5, "r") as h5f:
         for profile_name in h5f.keys():
             grp = h5f[profile_name]
@@ -986,13 +991,25 @@ def _summarize_forecasts(forecast_h5: Path) -> dict[str, float]:
                 continue
             err = table[:, pred_cols] - table[:, true_cols]
             all_err.append(err)
+            for local_idx, true_idx in enumerate(true_cols):
+                target_name = _target_name_from_column(cols[true_idx])
+                per_target_err.setdefault(target_name, []).append(err[:, local_idx])
     if not all_err:
-        return {"rmse": float("nan"), "mae": float("nan"), "max_abs": float("nan")}
+        return {"rmse": float("nan"), "mae": float("nan"), "max_abs": float("nan"), "per_target": {}}
     cat = np.concatenate(all_err, axis=0)
+    per_target = {}
+    for target_name, chunks in per_target_err.items():
+        target_err = np.concatenate(chunks, axis=0)
+        per_target[target_name] = {
+            "rmse": float(np.sqrt(np.mean(target_err**2))),
+            "mae": float(np.mean(np.abs(target_err))),
+            "max_abs": float(np.max(np.abs(target_err))),
+        }
     return {
         "rmse": float(np.sqrt(np.mean(cat**2))),
         "mae": float(np.mean(np.abs(cat))),
         "max_abs": float(np.max(np.abs(cat))),
+        "per_target": per_target,
     }
 
 
@@ -1004,6 +1021,7 @@ def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
     }
     all_err: list[np.ndarray] = []
     all_sigma95: list[np.ndarray] = []
+    target_names: list[str] = []
     with h5py.File(forecast_h5, "r") as h5f:
         for profile_name in h5f.keys():
             grp = h5f[profile_name]
@@ -1015,6 +1033,8 @@ def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
             sigma_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_2sigma(t)_")]
             if not true_cols or len(true_cols) != len(mean_cols) or len(sigma_cols) != len(true_cols):
                 continue
+            if not target_names:
+                target_names = [_target_name_from_column(cols[idx]) for idx in true_cols]
             y_true = table[:, true_cols]
             y_mean = table[:, mean_cols]
             sigma95 = table[:, sigma_cols]
@@ -1026,6 +1046,7 @@ def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
             "coverage": {"50": float("nan"), "80": float("nan"), "95": float("nan")},
             "interval_width": {"50": float("nan"), "80": float("nan"), "95": float("nan")},
             "calibration_error": float("nan"),
+            "per_target": {},
         }
 
     err = np.concatenate(all_err, axis=0)
@@ -1035,18 +1056,74 @@ def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
     coverage: dict[str, float] = {}
     width: dict[str, float] = {}
     cal_terms: list[float] = []
+    per_target: dict[str, dict[str, Any]] = {
+        name: {"coverage": {}, "interval_width": {}} for name in target_names
+    }
     for level, z in z_by_level.items():
         half_width = z * std
         cov = float(np.mean(err <= half_width))
         coverage[level] = cov
         width[level] = float(np.mean(2.0 * half_width))
         cal_terms.append(abs(cov - (float(level) / 100.0)))
+        cov_per_target = np.mean(err <= half_width, axis=0)
+        width_per_target = np.mean(2.0 * half_width, axis=0)
+        for target_name, target_cov, target_width in zip(target_names, cov_per_target, width_per_target, strict=True):
+            per_target[target_name]["coverage"][level] = float(target_cov)
+            per_target[target_name]["interval_width"][level] = float(target_width)
+
+    for target_name, target_metrics in per_target.items():
+        target_metrics["calibration_error"] = float(
+            np.mean([abs(float(target_metrics["coverage"][level]) - (float(level) / 100.0)) for level in z_by_level])
+        )
 
     return {
         "coverage": coverage,
         "interval_width": width,
         "calibration_error": float(np.mean(cal_terms)),
+        "per_target": per_target,
     }
+
+
+def _set_log_y_if_positive(ax, values: Any) -> None:
+    flat: list[float] = []
+
+    def _extend(item: Any) -> None:
+        if isinstance(item, np.ndarray):
+            flat.extend(float(v) for v in item.astype(float).ravel())
+        elif isinstance(item, (list, tuple)):
+            for subitem in item:
+                _extend(subitem)
+        else:
+            try:
+                flat.append(float(item))
+            except (TypeError, ValueError):
+                return
+
+    _extend(values)
+    arr = np.asarray(flat, dtype=float)
+    positive = arr[np.isfinite(arr) & (arr > 0.0)]
+    if positive.size:
+        ax.set_yscale("log")
+        ax.set_ylim(bottom=max(float(np.min(positive)) * 0.5, 1e-12))
+
+
+def _ordered_target_names(names: Iterable[str]) -> list[str]:
+    unique = set(names)
+    ordered = [name for name in TARGET_NAMES if name in unique]
+    ordered.extend(sorted(unique.difference(ordered)))
+    return ordered
+
+
+def _cycle_metric_target_names(cycle_metrics: list[dict[str, Any]]) -> list[str]:
+    names: set[str] = set()
+    for metrics in cycle_metrics:
+        forecast_targets = metrics.get("forecast_quality", {}).get("per_target", {})
+        uncertainty_targets = metrics.get("uncertainty_quality", {}).get("per_target", {})
+        if isinstance(forecast_targets, dict):
+            names.update(str(name) for name in forecast_targets)
+        if isinstance(uncertainty_targets, dict):
+            names.update(str(name) for name in uncertainty_targets)
+    return _ordered_target_names(names)
 
 
 def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path) -> None:
@@ -1067,6 +1144,7 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     ax.plot(cycles, mae, marker="o", label="MAE")
     ax.set_title("Forecast error vs cycle")
     ax.set_xlabel("Cycle")
+    _set_log_y_if_positive(ax, [rmse, mae])
     ax.grid(alpha=0.3)
     ax.legend()
 
@@ -1104,6 +1182,7 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     axes[0].plot(x_values, mae, marker="o", label="MAE")
     axes[0].set_title("Forecast error vs data budget")
     axes[0].set_xlabel(x_label)
+    _set_log_y_if_positive(axes[0], [rmse, mae])
     axes[0].grid(alpha=0.3)
     axes[0].legend()
 
@@ -1116,6 +1195,98 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     fig.savefig(out_dir / "metrics_vs_train_samples.png", dpi=150)
     plt.close(fig)
 
+    targets = _cycle_metric_target_names(cycle_metrics)
+    if not targets:
+        return
+
+    cmap = plt.colormaps.get_cmap("tab20")
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    error_values: list[list[float]] = []
+    for idx, target in enumerate(targets):
+        color = cmap(idx % cmap.N)
+        forecast_series = [m.get("forecast_quality", {}).get("per_target", {}).get(target, {}) for m in cycle_metrics]
+        uncertainty_series = [m.get("uncertainty_quality", {}).get("per_target", {}).get(target, {}) for m in cycle_metrics]
+        target_rmse = [_metric_float(values, "rmse") for values in forecast_series]
+        target_mae = [_metric_float(values, "mae") for values in forecast_series]
+        error_values.extend([target_rmse, target_mae])
+        axes[0, 0].plot(cycles, target_rmse, marker="o", color=color, label=target)
+        axes[0, 0].plot(cycles, target_mae, marker="o", linestyle="--", color=color, alpha=0.8)
+        axes[0, 1].plot(
+            cycles,
+            [_metric_float(values.get("coverage", {}), "95") if isinstance(values, dict) else float("nan") for values in uncertainty_series],
+            marker="o",
+            color=color,
+            label=target,
+        )
+        axes[1, 0].plot(
+            cycles,
+            [_metric_float(values, "calibration_error") for values in uncertainty_series],
+            marker="o",
+            color=color,
+            label=target,
+        )
+        axes[1, 1].plot(
+            cycles,
+            [
+                _metric_float(values.get("interval_width", {}), "95") if isinstance(values, dict) else float("nan")
+                for values in uncertainty_series
+            ],
+            marker="o",
+            color=color,
+            label=target,
+        )
+
+    axes[0, 0].set_title("Per-target forecast error vs cycle (solid=RMSE, dashed=MAE)")
+    axes[0, 0].set_xlabel("Cycle")
+    _set_log_y_if_positive(axes[0, 0], error_values)
+    axes[0, 0].grid(alpha=0.3)
+    axes[0, 1].axhline(0.95, linestyle="--", linewidth=1.0, color="0.4")
+    axes[0, 1].set_ylim(0.0, 1.05)
+    axes[0, 1].set_title("Per-target empirical coverage (95%) vs cycle")
+    axes[0, 1].set_xlabel("Cycle")
+    axes[0, 1].grid(alpha=0.3)
+    axes[1, 0].set_title("Per-target calibration error vs cycle")
+    axes[1, 0].set_xlabel("Cycle")
+    axes[1, 0].grid(alpha=0.3)
+    axes[1, 1].set_title("Per-target 95% interval width vs cycle")
+    axes[1, 1].set_xlabel("Cycle")
+    axes[1, 1].grid(alpha=0.3)
+    handles, labels = axes[0, 1].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=min(5, max(1, len(labels))), fontsize=7)
+    fig.tight_layout(rect=[0, 0.08, 1, 1])
+    fig.savefig(out_dir / "metrics_vs_cycle_per-target.png", dpi=150)
+    plt.close(fig)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    error_values = []
+    for idx, target in enumerate(targets):
+        color = cmap(idx % cmap.N)
+        forecast_series = [m.get("forecast_quality", {}).get("per_target", {}).get(target, {}) for m in cycle_metrics]
+        uncertainty_series = [m.get("uncertainty_quality", {}).get("per_target", {}).get(target, {}) for m in cycle_metrics]
+        target_rmse = [_metric_float(values, "rmse") for values in forecast_series]
+        target_mae = [_metric_float(values, "mae") for values in forecast_series]
+        error_values.extend([target_rmse, target_mae])
+        axes[0].plot(x_values, target_rmse, marker="o", color=color, label=target)
+        axes[0].plot(x_values, target_mae, marker="o", linestyle="--", color=color, alpha=0.8)
+        axes[1].plot(
+            x_values,
+            [_metric_float(values, "calibration_error") for values in uncertainty_series],
+            marker="o",
+            color=color,
+            label=target,
+        )
+    axes[0].set_title("Per-target forecast error vs data budget (solid=RMSE, dashed=MAE)")
+    axes[0].set_xlabel(x_label)
+    _set_log_y_if_positive(axes[0], error_values)
+    axes[0].grid(alpha=0.3)
+    axes[1].set_title("Per-target calibration error vs data budget")
+    axes[1].set_xlabel(x_label)
+    axes[1].grid(alpha=0.3)
+    handles, labels = axes[1].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=min(5, max(1, len(labels))), fontsize=7)
+    fig.tight_layout(rect=[0, 0.12, 1, 1])
+    fig.savefig(out_dir / "metrics_vs_train_samples_per-target.png", dpi=150)
+    plt.close(fig)
 
 
 def _metric_float(data: dict[str, Any], key: str) -> float:
@@ -1172,11 +1343,13 @@ def _plot_rolling_forecast_metrics_comparison(
     axes[0, 0].bar(x, smape, color="C0")
     axes[0, 0].set_title("sMAPE")
     axes[0, 0].set_xticks(x, labels, rotation=20, ha="right")
+    _set_log_y_if_positive(axes[0, 0], smape)
     axes[0, 0].grid(alpha=0.3)
 
     axes[0, 1].bar(x, nrmse, color="C1")
     axes[0, 1].set_title("NRMSE")
     axes[0, 1].set_xticks(x, labels, rotation=20, ha="right")
+    _set_log_y_if_positive(axes[0, 1], nrmse)
     axes[0, 1].grid(alpha=0.3)
 
     axes[0, 2].bar(x, cal95, color="C3")
@@ -1216,6 +1389,7 @@ def _plot_rolling_forecast_metrics_comparison(
     ax.set_title("Horizon-wise MAE")
     ax.set_xlabel("Horizon step")
     ax.set_ylabel("Mean Absolute Error")
+    _set_log_y_if_positive(ax, [np.asarray(data.get("horizon_mean_mae", []), dtype=float) for data in datasets])
     ax.grid(alpha=0.3)
     ax.legend(fontsize=8)
     sm = plt.cm.ScalarMappable(norm=color_norm, cmap=cmap)
@@ -1228,6 +1402,98 @@ def _plot_rolling_forecast_metrics_comparison(
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
     print(f"[step] Saved rolling forecast metrics comparison plot: {output_path}")
+    return output_path
+
+
+def _plot_rolling_forecast_metrics_comparison_per_target(
+    *,
+    cycle_rows: list[dict[str, Any]],
+    output_path: Path,
+) -> Path | None:
+    """Plot per-target rolling forecast summaries for experiment cycles."""
+    rows_with_metrics = [
+        row
+        for row in cycle_rows
+        if row.get("rolling_forecast_metrics_json") not in (None, "")
+    ]
+    if not rows_with_metrics:
+        print("[warn] No rolling forecast metrics JSON paths found for per-target comparison plot; skipping.")
+        return None
+
+    datasets: list[dict[str, Any]] = []
+    labels: list[str] = []
+    for row in rows_with_metrics:
+        metrics_path = Path(str(row["rolling_forecast_metrics_json"]))
+        if not metrics_path.exists():
+            print(f"[warn] Missing rolling forecast metrics JSON for per-target comparison plot: {metrics_path}")
+            continue
+        data = json.loads(metrics_path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            datasets.append(data)
+            labels.append(f"cycle_{int(row['cycle']):02d}")
+
+    target_names = _ordered_target_names(
+        name
+        for data in datasets
+        for key in (
+            "per_target_smape",
+            "per_target_nrmse",
+            "per_target_calibration_error_95",
+            "per_target_empirical_coverage_95",
+            "per_target_interval_width_95_mean",
+            "per_target_horizon_mean_mae",
+        )
+        if isinstance(data.get(key), dict)
+        for name in data[key]
+    )
+    if not datasets or not target_names:
+        print("[warn] No per-target rolling forecast metrics found for comparison plot; skipping.")
+        return None
+
+    x = np.arange(len(labels))
+    cmap = plt.colormaps.get_cmap("tab20")
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharex=False)
+
+    plot_specs = [
+        (axes[0, 0], "per_target_smape", "sMAPE", True),
+        (axes[0, 1], "per_target_nrmse", "NRMSE", True),
+        (axes[0, 2], "per_target_calibration_error_95", "Calibration Error (95%)", False),
+        (axes[1, 0], "per_target_empirical_coverage_95", "Empirical Coverage (95%)", False),
+        (axes[1, 1], "per_target_interval_width_95_mean", "Mean 95% Interval Width", False),
+        (axes[1, 2], "per_target_horizon_mean_mae", "Horizon Mean MAE", True),
+    ]
+    for ax, key, title, log_scale in plot_specs:
+        plotted_values: list[list[float]] = []
+        for idx, target in enumerate(target_names):
+            values = [
+                _metric_float(data.get(key, {}) if isinstance(data.get(key), dict) else {}, target)
+                for data in datasets
+            ]
+            plotted_values.append(values)
+            ax.plot(x, values, marker="o", linewidth=1.4, color=cmap(idx % cmap.N), label=target)
+        if key == "per_target_empirical_coverage_95":
+            ax.axhline(0.95, linestyle="--", linewidth=1.0, color="0.4", label="ideal 0.95")
+            ax.set_ylim(0.0, 1.05)
+        if log_scale:
+            _set_log_y_if_positive(ax, plotted_values)
+        ax.set_title(title)
+        ax.set_xticks(x, labels, rotation=20, ha="right")
+        ax.grid(alpha=0.3)
+
+    handles, labels_for_legend = axes[0, 0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels_for_legend,
+        loc="lower center",
+        ncol=min(6, max(1, len(labels_for_legend))),
+        fontsize=7,
+    )
+    fig.suptitle("Per-target Rolling Forecast Metrics Comparison", fontsize=15)
+    fig.tight_layout(rect=[0, 0.08, 1, 0.96])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"[step] Saved per-target rolling forecast metrics comparison plot: {output_path}")
     return output_path
 
 
@@ -2069,12 +2335,18 @@ def main() -> None:
         cycle_rows=metadata["cycles"],
         output_path=metrics_plots_dir / "rolling_forecast_metrics_comparison.png",
     )
+    rolling_forecast_metrics_comparison_per_target_path = _plot_rolling_forecast_metrics_comparison_per_target(
+        cycle_rows=metadata["cycles"],
+        output_path=metrics_plots_dir / "rolling_forecast_metrics_comparison_per-target.png",
+    )
     metadata["postprocess_timing"] = {
         "rolling_forecast_metrics_compare_sec": perf_counter() - t0,
     }
     metadata["metrics_plots"] = {
         "metrics_vs_cycle": str(metrics_plots_dir / "metrics_vs_cycle.png"),
+        "metrics_vs_cycle_per_target": str(metrics_plots_dir / "metrics_vs_cycle_per-target.png"),
         "metrics_vs_train_samples": str(metrics_plots_dir / "metrics_vs_train_samples.png"),
+        "metrics_vs_train_samples_per_target": str(metrics_plots_dir / "metrics_vs_train_samples_per-target.png"),
         "profiles_by_cycle_color": str(cycle_colored_plot_path),
         "training_distribution_theta_rho_n_by_cycle": (
             None if training_distribution_plot_path is None else str(training_distribution_plot_path)
@@ -2083,6 +2355,11 @@ def main() -> None:
             None
             if rolling_forecast_metrics_comparison_path is None
             else str(rolling_forecast_metrics_comparison_path)
+        ),
+        "rolling_forecast_metrics_comparison_per_target": (
+            None
+            if rolling_forecast_metrics_comparison_per_target_path is None
+            else str(rolling_forecast_metrics_comparison_per_target_path)
         ),
     }
 

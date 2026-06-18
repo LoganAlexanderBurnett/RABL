@@ -2160,6 +2160,9 @@ def compute_and_save_rolling_forecast_metrics(
         "nrmse": float(np.nanmean(nrmse_per_target)),
         "per_target_rmse": {n: float(v) for n, v in zip(target_names, rmse_per_target, strict=True)},
         "per_target_mae": {n: float(v) for n, v in zip(target_names, mae_per_target, strict=True)},
+        "per_target_smape": {n: float(v) for n, v in zip(target_names, smape_per_target, strict=True)},
+        "per_target_nrmse": {n: float(v) for n, v in zip(target_names, nrmse_per_target, strict=True)},
+        "per_target_horizon_mean_mae": {n: float(v) for n, v in zip(target_names, mae_per_target, strict=True)},
         "per_target_bias": {n: float(v) for n, v in zip(target_names, bias_per_target, strict=True)},
         "per_target_r2": {n: float(v) for n, v in zip(target_names, r2_per_target, strict=True)},
         "horizon_mean_rmse": horizon_rmse.tolist(),
@@ -2173,6 +2176,17 @@ def compute_and_save_rolling_forecast_metrics(
         result["empirical_coverage_95"] = cov95
         result["calibration_error_95"] = float(abs(cov95 - 0.95))
         result["interval_width_95_mean"] = float(np.mean(2.0 * half_width))
+        cov95_per_target = np.mean(abs_err <= half_width, axis=0)
+        width95_per_target = np.mean(2.0 * half_width, axis=0)
+        result["per_target_empirical_coverage_95"] = {
+            n: float(v) for n, v in zip(target_names, cov95_per_target, strict=True)
+        }
+        result["per_target_calibration_error_95"] = {
+            n: float(abs(v - 0.95)) for n, v in zip(target_names, cov95_per_target, strict=True)
+        }
+        result["per_target_interval_width_95_mean"] = {
+            n: float(v) for n, v in zip(target_names, width95_per_target, strict=True)
+        }
 
     output_json_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
