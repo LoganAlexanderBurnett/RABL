@@ -80,7 +80,8 @@
     "device": "cpu",
     "finite_difference_order": 4,
     "branch_time_min": 25.0,
-    "branch_time_max": 175.0
+    "branch_time_max": 175.0,
+    "plot_root_forecasts": true
   },
   "dymola": {
     "output_interval": 0.4

@@ -33,13 +33,10 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from rabl.paths import resolve_output_root
-from rabl.machine_learning.bagging_ensemble import (
-    _save_ensemble_rolling_forecasts_hdf5,
-)
-from rabl.machine_learning.branchpoint_finder import finite_difference
 from rabl.machine_learning.recursive_branching import (
     LSTMEnsembleForecaster,
     RecursiveBranchingResult,
+    _save_branching_ensemble_forecasts,
     _plot_branched_profiles,
     generate_root_profile,
     load_trained_ensemble,
@@ -49,7 +46,7 @@ from rabl.machine_learning.recursive_branching import (
     save_recursive_branching_output,
 )
 from rabl.machine_learning.lstm_pipeline import save_forecast_profiles_pdf
-from rabl.machine_learning.lstm_pipeline import _descale_targets_from_stats, _load_scaling_stats
+from rabl.machine_learning.lstm_pipeline import _load_scaling_stats
 from rabl.variography.DrumVariography import DrumProfile, DrumProfileGenerator
 from rabl.machine_learning.build_lstm_dataset import CONTROL_COLUMN, STATE_COLUMNS
 
@@ -72,6 +69,7 @@ class RecursiveBranchingRunConfig:
     seed: int = 123
     Nr: int = 1
     visualize: bool = True
+    root_only_forecast: bool = False
 
     lookback: int = 12
     n_features: int = 13
@@ -190,21 +188,6 @@ def _make_control_window(u_series: np.ndarray, step: int, lookback: int, *, cont
     return out
 
 
-def _descale_uncertainty_widths_from_stats(stats: dict, sigma_values: np.ndarray) -> np.ndarray:
-    """Descale uncertainty widths (e.g., 2σ) without applying offsets.
-
-    Mean predictions use a full inverse transform; uncertainty widths should only
-    be multiplied by the target scale (std/span).
-    """
-    scaling_type = stats["type"]
-    y_stats = stats["y"]
-    if scaling_type == "standard":
-        return sigma_values * y_stats["std"]
-    if scaling_type == "minmax":
-        return sigma_values * y_stats["span"]
-    raise ValueError(f"Unsupported scaling type: {scaling_type}")
-
-
 def build_profile_to_x_adapter(
     *,
     n_steps: int,
@@ -318,49 +301,6 @@ def _print_run_summary(
     branched_profiles = len(result.final_profiles) - 1
     print(f"\nTotal profiles: {len(result.final_profiles)} (branched/new={branched_profiles})")
     print(f"Profiles branched per interval: {per_interval_counts}\n")
-
-
-def _save_branching_ensemble_forecasts(
-    *,
-    result: RecursiveBranchingResult,
-    forecaster: LSTMEnsembleForecaster,
-    output_dir: Path,
-    target_names: list[str],
-    derivative_order: int,
-    dt: float,
-    scaling_stats: dict,
-) -> Path:
-    forecasts: list[dict[str, np.ndarray | str]] = []
-    for profile_id, node in sorted(result.final_profiles.items()):
-        pred_stack_scaled = forecaster.forecast(node.profile)
-        y_mean_scaled = np.mean(pred_stack_scaled, axis=0)
-        y_two_sigma_scaled = 2.0 * np.std(pred_stack_scaled, axis=0, ddof=0)
-        y_dsigma_dt_scaled = finite_difference(y_two_sigma_scaled, order=derivative_order, dt=dt)
-
-        y_mean = _descale_targets_from_stats(scaling_stats, y_mean_scaled)
-        y_two_sigma = _descale_uncertainty_widths_from_stats(scaling_stats, y_two_sigma_scaled)
-
-        t_series = np.asarray(node.profile.t, dtype=np.float32)
-        u_series = np.asarray(node.profile.theta_deg, dtype=np.float32)
-
-        # Branching workflow has no measured truth series; duplicate mean for x_true fields
-        # to keep schema compatible with existing ensemble plotting utilities.
-        # NOTE: y_mean / y_2sigma are descaled physical values; dx_sigma_dt is kept scaled.
-        table = np.column_stack([t_series, u_series, y_mean, y_mean, y_two_sigma]).astype(np.float32)
-        forecasts.append({
-            "profile": profile_id,
-            "table": table,
-            # Keep uncertainty derivative in scaled units.
-            "dx_sigma_dt": y_dsigma_dt_scaled.astype(np.float32),
-        })
-
-    forecast_h5 = output_dir / "ensemble_forecasts.h5"
-    _save_ensemble_rolling_forecasts_hdf5(
-        forecasts,
-        output_path=forecast_h5,
-        target_names=target_names,
-    )
-    return forecast_h5
 
 
 def _run_single_recursive_branching_workflow(
@@ -502,11 +442,12 @@ def _run_single_recursive_branching_workflow(
     forecast_h5 = _save_branching_ensemble_forecasts(
         result=result,
         forecaster=forecaster,
-        output_dir=run_output_dir,
+        output_path=run_output_dir / "ensemble_forecasts.h5",
         target_names=target_names,
         derivative_order=config.finite_difference_order,
         dt=config.dt,
         scaling_stats=scaling_stats,
+        profile_ids=["profile_00000"] if config.root_only_forecast else None,
     )
     process_elapsed_seconds = perf_counter() - process_start
 
@@ -728,6 +669,11 @@ def parse_args() -> argparse.Namespace:
         help="Whether to generate PNG/PDF visualizations (1=yes, 0=no).",
     )
     parser.add_argument(
+        "--root-only-forecast",
+        action="store_true",
+        help="Save the ensemble forecast and uncertainty derivative only for profile_00000.",
+    )
+    parser.add_argument(
         "--weights-npy",
         type=Path,
         default=None,
@@ -750,6 +696,7 @@ def main() -> None:
         baseline_angle_deg=args.baseline_angle_deg,
         seed=_resolve_seed(args),
         visualize=bool(args.visualize),
+        root_only_forecast=bool(args.root_only_forecast),
         lookback=args.lookback,
         n_features=args.n_features,
         state_dim=args.state_dim,

@@ -600,6 +600,7 @@ def _run_recursive_branching_internal(
         target_weights=_resolve_branching_target_weights(cfg.branching_target_weights),
         branch_time_min=float(cfg.branching.get("branch_time_min", 25.0)),
         branch_time_max=float(cfg.branching.get("branch_time_max", 175.0)),
+        plot_root_forecasts=bool(cfg.branching.get("plot_root_forecasts", True)),
         device=str(cfg.branching.get("device", "cpu")),
         config_path=Path(cfg.config_py_path),
     )
@@ -1916,6 +1917,8 @@ def main() -> None:
         branching_seed = int(base_seed + cycle * branching_root_count)
         cycle_start = perf_counter()
         step_times: dict[str, float] = {}
+        branching_artifacts_manifest: Path | None = None
+        branching_artifacts: list[dict[str, Any]] = []
         cycle_input_batches = list(known_batches)
         cycle_dir = run_dir / f"cycle_{cycle + 1:02d}"
         cycle_dir.mkdir(parents=True, exist_ok=True)
@@ -2155,6 +2158,19 @@ def main() -> None:
                     variography_root=var_root,
                 )
                 step_times["profile_generation_sec"] = perf_counter() - t0
+                branching_artifacts_manifest = Path(var_batch) / "branching_artifacts_manifest.json"
+                if branching_artifacts_manifest.exists():
+                    loaded_artifacts = json.loads(branching_artifacts_manifest.read_text(encoding="utf-8"))
+                    if not isinstance(loaded_artifacts, list):
+                        raise RuntimeError(
+                            f"Invalid branching artifacts manifest; expected a list: {branching_artifacts_manifest}"
+                        )
+                    branching_artifacts = loaded_artifacts
+                elif bool(cfg.branching.get("plot_root_forecasts", True)):
+                    raise RuntimeError(
+                        "Recursive branching was configured to plot root forecasts, but the artifact manifest "
+                        f"was not created: {branching_artifacts_manifest}"
+                    )
                 pymola_mode = "branched_mat"
                 _print_step_result(cycle + 1, "Recursive branching profile generation complete", f"Profiles dir: {var_batch}")
             else:
@@ -2284,6 +2300,10 @@ def main() -> None:
                     [] if test_difficulty_result is None else test_difficulty_result.get("artifacts", [])
                 ),
                 "new_variography_batch": None if var_batch is None else str(var_batch),
+                "branching_artifacts_manifest": (
+                    None if branching_artifacts_manifest is None else str(branching_artifacts_manifest)
+                ),
+                "branching_artifacts": branching_artifacts,
                 "new_sim_batch": sim_batch,
                 "timing": step_times,
             }
