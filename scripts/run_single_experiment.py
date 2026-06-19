@@ -422,7 +422,14 @@ def _tune(scaled_h5: Path, out_dir: Path, seed: int, grid: dict[str, Any]) -> tu
     return best, method
 
 
-def _sample_random_profiles(batch_dir: Path, *, n_profiles: int, seed: int, variography_params: dict[str, Any]) -> None:
+def _sample_random_profiles(
+    batch_dir: Path,
+    *,
+    n_profiles: int,
+    seed: int,
+    variography_params: dict[str, Any],
+    start_index: int = 0,
+) -> None:
     duration = float(variography_params["T_GRID_DURATION"])
     intervals = int(variography_params["T_GRID_INTERVALS"])
     if intervals < 1:
@@ -451,7 +458,7 @@ def _sample_random_profiles(batch_dir: Path, *, n_profiles: int, seed: int, vari
         seed=seed,
     )
     for idx, p in enumerate(profiles):
-        p.save_mat(str(batch_dir / f"drum_profile_{idx:05d}.mat"))
+        p.save_mat(str(batch_dir / f"drum_profile_{start_index + idx:05d}.mat"))
 
 
 def _expected_new_profiles(nr: int, nk: int, nb: int) -> int:
@@ -2342,6 +2349,7 @@ def main() -> None:
 
         profile_generation_requested_count: int | None = None
         profile_generation_strategy = cfg.strategy if cycle < cfg.retrain_cycles - 1 else None
+        random_profile_start_index: int | None = None
 
         # No need to generate/simulate new data after last training cycle.
         if cycle < cfg.retrain_cycles - 1:
@@ -2390,12 +2398,14 @@ def main() -> None:
                     )
                 )
                 profile_generation_requested_count = n_new
+                random_profile_start_index = _find_latest_global_result_index(sim_root) + 1
                 var_batch = _next_batch_dir(var_root)
                 _sample_random_profiles(
                     var_batch,
                     n_profiles=n_new,
                     seed=cycle_seed,
                     variography_params=variography_params,
+                    start_index=random_profile_start_index,
                 )
                 step_times["profile_generation_sec"] = perf_counter() - t0
                 pymola_mode = "flat_mat"
@@ -2498,6 +2508,10 @@ def main() -> None:
                 "rolling_forecast_metrics_json": str(rolling_forecast_metrics_json),
                 "profile_generation_strategy": profile_generation_strategy,
                 "profile_generation_requested_count": profile_generation_requested_count,
+                "random_profile_start_index": random_profile_start_index,
+                "random_profile_generation_count": (
+                    profile_generation_requested_count if cfg.strategy == "random" else None
+                ),
                 "test_difficulty_dir": (
                     None if test_difficulty_result is None else test_difficulty_result.get("out_dir")
                 ),
@@ -2542,6 +2556,7 @@ def main() -> None:
                 cycle_seed_info["random_profiles_per_cycle"] = (
                     None if cfg.random_profiles_per_cycle is None else int(cfg.random_profiles_per_cycle)
                 )
+                cycle_seed_info["random_profile_start_index"] = random_profile_start_index
                 cycle_seed_info["random_profile_generation_count"] = (
                     int(cfg.random_profiles_per_cycle)
                     if cfg.random_profiles_per_cycle is not None
