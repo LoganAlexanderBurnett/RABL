@@ -252,7 +252,7 @@ def _plot_bag_distribution_overlap(
     control_channel: int = 0,
     target_names: list[str] | None = None,
 ) -> Path | None:
-    """Plot theta/rho/n/time density overlap across bagged train splits."""
+    """Plot theta/rho/n/time count overlap across bagged train splits."""
     if target_names is None:
         target_names = list(TARGET_NAMES)
     if "rho_dollars" not in target_names or "n" not in target_names:
@@ -305,7 +305,17 @@ def _plot_bag_distribution_overlap(
             pad = max(1.0, abs(lo) * 0.01)
             lo -= pad
             hi += pad
-        bins = np.linspace(lo, hi, 80)
+        if summary_name == "t":
+            unique_t = np.unique(combined[np.isfinite(combined)])
+            if unique_t.size >= 2:
+                dt = float(np.median(np.diff(unique_t)))
+                if not np.isfinite(dt) or dt <= 0.0:
+                    dt = float((hi - lo) / max(1, unique_t.size - 1))
+                bins = np.concatenate([[unique_t[0] - dt / 2.0], unique_t + dt / 2.0])
+            else:
+                bins = np.linspace(lo, hi, 80)
+        else:
+            bins = np.linspace(lo, hi, 80)
         for bag_idx, (bag_name, bag_data) in enumerate(bag_values.items()):
             values = bag_data[summary_name]
             if not values.size:
@@ -313,7 +323,7 @@ def _plot_bag_distribution_overlap(
             ax.hist(
                 values,
                 bins=bins,
-                density=True,
+                density=False,
                 histtype="step",
                 linewidth=1.4,
                 alpha=0.9,
@@ -322,7 +332,7 @@ def _plot_bag_distribution_overlap(
             )
         ax.set_title(label)
         ax.set_xlabel(label)
-        ax.set_ylabel("Density")
+        ax.set_ylabel("Count")
         ax.grid(alpha=0.3)
 
     handles, labels = axes[0].get_legend_handles_labels()
