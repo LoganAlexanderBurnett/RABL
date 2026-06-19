@@ -1689,7 +1689,7 @@ def _forecast_plot_selection_path(*, cfg: ExperimentConfig, run_dir: Path) -> Pa
     return run_dir / "forecast_plot_profile_selection.json"
 
 
-def _read_forecast_profile_angle_summary(group: h5py.Group, *, profile_name: str) -> dict[str, float] | None:
+def _read_forecast_profile_angle_summary(group: h5py.Group, *, profile_name: str) -> dict[str, Any] | None:
     if "data" not in group:
         warnings.warn(f"Forecast profile {profile_name!r} is missing dataset 'data'; skipping angle-bin selection.")
         return None
@@ -1717,11 +1717,39 @@ def _read_forecast_profile_angle_summary(group: h5py.Group, *, profile_name: str
             f"Forecast profile {profile_name!r} has no finite 'u(t)' values; skipping angle-bin selection."
         )
         return None
+    mae = _forecast_profile_mae(table=table, columns=columns)
     return {
         "angle_mean": float(np.mean(finite)),
         "angle_min": float(np.min(finite)),
         "angle_max": float(np.max(finite)),
+        "u_series": finite.astype(float),
+        "mae": mae,
     }
+
+
+def _forecast_profile_mae(*, table: np.ndarray, columns: list[str]) -> float | None:
+    true_cols = [col for col in columns if col.startswith("x_true(t)_")]
+    pred_cols = [col for col in columns if col.startswith("x_mean(t)_")]
+    if not true_cols or not pred_cols:
+        true_cols = [col for col in columns if col.startswith("x(t)_")]
+        pred_cols = [col for col in columns if col.startswith("x^~(t)_")]
+    if not true_cols or not pred_cols:
+        return None
+    target_names = [col.split(")_", 1)[1] for col in true_cols]
+    paired_cols = [
+        (true_col, pred_col)
+        for true_col, pred_col in (
+            (true_col, f"x_mean(t)_{name}") for true_col, name in zip(true_cols, target_names, strict=True)
+        )
+        if pred_col in columns
+    ]
+    if not paired_cols and pred_cols:
+        paired_cols = list(zip(true_cols, pred_cols, strict=False))
+    if not paired_cols:
+        return None
+    y_true = np.column_stack([table[:, columns.index(true_col)] for true_col, _pred_col in paired_cols])
+    y_pred = np.column_stack([table[:, columns.index(pred_col)] for _true_col, pred_col in paired_cols])
+    return float(np.mean(np.abs(y_true - y_pred)))
 
 
 def _select_angle_binned_forecast_profiles(
@@ -1731,7 +1759,7 @@ def _select_angle_binned_forecast_profiles(
     profiles_per_bin: int,
     seed: int | None,
 ) -> dict[str, Any]:
-    """Select forecast profiles by binning profiles on mean drum angle/control angle."""
+    """Select forecast profiles by bins spanned by each profile's angle trajectory."""
     bins = int(bins)
     profiles_per_bin = int(profiles_per_bin)
     if bins < 1:
@@ -1753,7 +1781,7 @@ def _select_angle_binned_forecast_profiles(
         return {
             "forecast_h5": str(forecast_h5_path),
             "selection_seed": seed,
-            "angle_summary": "mean_u(t)",
+            "angle_summary": "coverage_u(t)",
             "bins_requested": bins,
             "bins_effective": 0,
             "profiles_per_bin_requested": profiles_per_bin,
@@ -1765,36 +1793,47 @@ def _select_angle_binned_forecast_profiles(
             "bin_metadata": [],
         }
 
-    summaries = np.asarray([row["angle_mean"] for row in profile_summaries], dtype=float)
     angle_min = float(np.min([row["angle_min"] for row in profile_summaries]))
     angle_max = float(np.max([row["angle_max"] for row in profile_summaries]))
     if np.isclose(angle_min, angle_max):
         # Degenerate range: keep one effective bin and record duplicate edges for transparency.
         bin_edges = np.asarray([angle_min, angle_max], dtype=float)
         effective_bins = 1
-        bin_indices = np.zeros(len(profile_summaries), dtype=int)
     else:
         bin_edges = np.linspace(angle_min, angle_max, bins + 1, dtype=float)
         effective_bins = bins
-        # Right edge belongs to the final bin.
-        bin_indices = np.searchsorted(bin_edges, summaries, side="right") - 1
-        bin_indices = np.clip(bin_indices, 0, effective_bins - 1)
 
     rng = np.random.default_rng(seed)
     by_bin: dict[int, list[dict[str, Any]]] = {idx: [] for idx in range(effective_bins)}
-    profile_bins: dict[str, dict[str, Any]] = {}
-    for profile_summary, bin_idx in zip(profile_summaries, bin_indices, strict=True):
-        idx = int(bin_idx)
+    profile_bins: dict[str, list[dict[str, Any]]] = {}
+    for profile_summary in profile_summaries:
         profile_name = str(profile_summary["profile_name"])
-        by_bin[idx].append(profile_summary)
-        profile_bins[profile_name] = {
-            "bin_index": idx,
-            "angle_mean": float(profile_summary["angle_mean"]),
-            "angle_min": float(profile_summary["angle_min"]),
-            "angle_max": float(profile_summary["angle_max"]),
-        }
+        u_series = np.asarray(profile_summary["u_series"], dtype=float)
+        profile_bins[profile_name] = []
+        for bin_idx in range(effective_bins):
+            lo = float(bin_edges[bin_idx])
+            hi = float(bin_edges[bin_idx + 1])
+            if bin_idx == effective_bins - 1:
+                in_bin = (u_series >= lo) & (u_series <= hi)
+                interval_label = f"[{lo:.3g}, {hi:.3g}]"
+            else:
+                in_bin = (u_series >= lo) & (u_series < hi)
+                interval_label = f"[{lo:.3g}, {hi:.3g})"
+            if np.any(in_bin):
+                by_bin[bin_idx].append(profile_summary)
+                profile_bins[profile_name].append(
+                    {
+                        "bin_index": bin_idx,
+                        "angle_range": [lo, hi],
+                        "angle_range_label": interval_label,
+                        "angle_mean": float(profile_summary["angle_mean"]),
+                        "angle_min": float(profile_summary["angle_min"]),
+                        "angle_max": float(profile_summary["angle_max"]),
+                    }
+                )
 
     selected_profiles: list[str] = []
+    selected_entries: list[dict[str, Any]] = []
     bin_metadata: list[dict[str, Any]] = []
     for bin_idx in range(effective_bins):
         candidates = sorted(
@@ -1811,6 +1850,25 @@ def _select_angle_binned_forecast_profiles(
         selected_profiles.extend(selected_for_bin)
         lo = float(bin_edges[bin_idx])
         hi = float(bin_edges[bin_idx + 1])
+        right_bracket = "]" if bin_idx == effective_bins - 1 else ")"
+        angle_range_label = f"[{lo:.3g}, {hi:.3g}{right_bracket}"
+        for profile_name in selected_for_bin:
+            candidate = next(item for item in candidates if str(item["profile_name"]) == profile_name)
+            mae = candidate.get("mae")
+            finite_mae = None if mae is None or not np.isfinite(float(mae)) else float(mae)
+            mae_label = "n/a" if finite_mae is None else f"{finite_mae:.4g}"
+            selected_entries.append(
+                {
+                    "profile_name": profile_name,
+                    "bin_index": bin_idx,
+                    "angle_range": [lo, hi],
+                    "angle_range_label": angle_range_label,
+                    "mae": finite_mae,
+                    "plot_title": (
+                        f"{profile_name} | angle bin {bin_idx} {angle_range_label} deg | MAE={mae_label}"
+                    ),
+                }
+            )
         bin_metadata.append(
             {
                 "bin_index": bin_idx,
@@ -1825,7 +1883,8 @@ def _select_angle_binned_forecast_profiles(
     return {
         "forecast_h5": str(forecast_h5_path),
         "selection_seed": seed,
-        "angle_summary": "mean_u(t)",
+        "angle_summary": "coverage_u(t)",
+        "selection_mode": "angle_coverage",
         "bins_requested": bins,
         "bins_effective": effective_bins,
         "profiles_per_bin_requested": profiles_per_bin,
@@ -1833,7 +1892,8 @@ def _select_angle_binned_forecast_profiles(
         "angle_max": angle_max,
         "bin_edges": [float(edge) for edge in bin_edges.tolist()],
         "selected_profiles": selected_profiles,
-        "profile_bins": {name: profile_bins[name] for name in selected_profiles if name in profile_bins},
+        "selected_entries": selected_entries,
+        "profile_bins": {name: profile_bins[name] for name in set(selected_profiles) if name in profile_bins},
         "bin_metadata": bin_metadata,
     }
 
@@ -1869,6 +1929,9 @@ def _load_or_create_forecast_plot_selection(
     selected_profiles = selection.get("selected_profiles")
     if not isinstance(selected_profiles, list):
         raise ValueError(f"Forecast plot profile selection is missing list field 'selected_profiles': {selection_path}")
+    selected_entries = selection.get("selected_entries")
+    if selected_entries is not None and not isinstance(selected_entries, list):
+        raise ValueError(f"Forecast plot profile selection field 'selected_entries' must be a list: {selection_path}")
     return selection
 
 
@@ -1876,24 +1939,38 @@ def _save_forecast_pdf_subset(
     *,
     forecast_h5_path: Path,
     output_pdf_path: Path,
-    profile_names: list[str],
+    profile_names: list[str] | None = None,
+    profile_entries: list[dict[str, Any]] | None = None,
     include_ensemble_members: bool = True,
 ) -> list[str]:
     subset_h5 = output_pdf_path.with_suffix(".subset_tmp.h5")
     plotted_names: list[str] = []
     try:
         with h5py.File(forecast_h5_path, "r") as src:
-            for name in profile_names:
-                if name in src:
-                    plotted_names.append(str(name))
-                else:
-                    warnings.warn(f"Selected forecast profile {name!r} is missing from {forecast_h5_path}; skipping.")
+            if profile_entries is None:
+                profile_entries = [{"profile_name": str(name)} for name in (profile_names or [])]
+            with h5py.File(subset_h5, "w") as dst:
+                for entry_idx, entry in enumerate(profile_entries):
+                    name = str(entry.get("profile_name", ""))
+                    if name in src:
+                        alias = str(entry.get("alias", f"{name}__selection_{entry_idx:04d}"))
+                        src.copy(name, dst, name=alias)
+                        dst_group = dst[alias]
+                        dst_group.attrs["source_profile_name"] = name
+                        if "plot_title" in entry:
+                            dst_group.attrs["plot_title"] = str(entry["plot_title"])
+                        if "bin_index" in entry:
+                            dst_group.attrs["plot_bin_index"] = int(entry["bin_index"])
+                        if "angle_range" in entry:
+                            dst_group.attrs["plot_angle_range"] = np.asarray(entry["angle_range"], dtype=np.float32)
+                        if entry.get("mae") is not None:
+                            dst_group.attrs["plot_mae"] = float(entry["mae"])
+                        plotted_names.append(name)
+                    else:
+                        warnings.warn(f"Selected forecast profile {name!r} is missing from {forecast_h5_path}; skipping.")
             if not plotted_names:
                 print("[step] No selected forecast profiles are present for PDF; skipping PDF generation.")
                 return []
-            with h5py.File(subset_h5, "w") as dst:
-                for name in plotted_names:
-                    src.copy(name, dst)
             save_forecast_profiles_pdf(
                 forecast_h5_path=subset_h5,
                 output_pdf_path=output_pdf_path,
@@ -2222,10 +2299,14 @@ def main() -> None:
             ),
         )
         selected_forecast_profiles = [str(name) for name in forecast_plot_selection.get("selected_profiles", [])]
+        selected_forecast_entries = [
+            entry for entry in forecast_plot_selection.get("selected_entries", []) if isinstance(entry, dict)
+        ]
         plotted_forecast_profiles = _save_forecast_pdf_subset(
             forecast_h5_path=forecast_h5,
             output_pdf_path=forecast_pdf,
             profile_names=selected_forecast_profiles,
+            profile_entries=selected_forecast_entries or None,
             include_ensemble_members=bool(cfg.plot_individual_ensemble_forecasts),
         )
         step_times["forecast_pdf_render_sec"] = perf_counter() - t0
@@ -2385,6 +2466,7 @@ def main() -> None:
                 "plot_individual_ensemble_forecasts": bool(cfg.plot_individual_ensemble_forecasts),
                 "forecast_plot_selection_path": str(forecast_plot_selection_path),
                 "forecast_plot_selected_profiles": selected_forecast_profiles,
+                "forecast_plot_selected_entries": selected_forecast_entries,
                 "forecast_plot_plotted_profiles": plotted_forecast_profiles,
                 "forecast_plot_bin_metadata": forecast_plot_selection.get("bin_metadata", []),
                 "forecast_plot_selection_metadata": {

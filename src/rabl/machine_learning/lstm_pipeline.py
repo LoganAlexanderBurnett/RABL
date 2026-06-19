@@ -1968,6 +1968,7 @@ def save_forecast_profiles_pdf(
             group = h5f[profile_name]
             if "data" not in group:
                 raise KeyError(f"Profile '{profile_name}' is missing required dataset 'data'.")
+            profile_title = str(group.attrs.get("plot_title", f"Rolling Forecast - {profile_name}"))
 
             table = group["data"][...].astype(np.float32)
             if table.ndim != 2 or table.shape[1] < 4:
@@ -2047,7 +2048,7 @@ def save_forecast_profiles_pdf(
                     y_true=y_true,
                     y_pred=y_pred_or_mean,
                     target_names=target_names,
-                    title=f"Rolling Forecast - {profile_name}",
+                    title=profile_title,
                     save_path=None,
                     control_name=control_name,
                     state_dim=state_dim,
@@ -2063,7 +2064,7 @@ def save_forecast_profiles_pdf(
                     y_dsigma_dt=y_dsigma_dt,
                     y_members=y_members,
                     target_names=target_names,
-                    title=f"Rolling Forecast - {profile_name}",
+                    title=profile_title,
                     control_name=control_name,
                     state_dim=state_dim,
                     control_channel=control_channel,
