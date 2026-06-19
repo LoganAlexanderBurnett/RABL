@@ -2238,7 +2238,7 @@ def main() -> None:
             t0 = perf_counter()
             test_difficulty_result = evaluate_testset_difficulty(
                 scaled_h5=scaled_h5,
-                model_paths=[Path(path) for path in model_paths],
+                forecast_h5=forecast_h5,
                 out_dir=cycle_dir / "ensemble" / "test_difficulty",
                 n_bins=int(cfg.test_difficulty_bins),
                 config_path=cfg_py,

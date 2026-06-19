@@ -72,6 +72,34 @@ def _read_test_profile_names(h5_path: Path) -> list[str]:
         return sorted(h5f["test"]["files"].keys())
 
 
+def _decode_h5_strings(value: Any) -> list[str]:
+    arr = np.asarray(value)
+    if arr.ndim == 0:
+        item = arr.item()
+        return [item.decode("utf-8") if isinstance(item, bytes) else str(item)]
+    return [item.decode("utf-8") if isinstance(item, bytes) else str(item) for item in arr.tolist()]
+
+
+def _forecast_columns_for_targets(
+    *,
+    forecast_h5: Path,
+    profile_name: str,
+    columns: list[str],
+) -> tuple[list[int], list[int], int]:
+    missing = ["t", "u(t)"]
+    missing.extend(f"x_true(t)_{name}" for name in TARGET_NAMES if f"x_true(t)_{name}" not in columns)
+    missing.extend(f"x_mean(t)_{name}" for name in TARGET_NAMES if f"x_mean(t)_{name}" not in columns)
+    missing = [name for name in missing if name not in columns]
+    if missing:
+        raise ValueError(
+            f"Forecast profile {profile_name!r} in {forecast_h5} is missing required columns: {missing}"
+        )
+    control_idx = columns.index("u(t)")
+    true_indices = [columns.index(f"x_true(t)_{name}") for name in TARGET_NAMES]
+    pred_indices = [columns.index(f"x_mean(t)_{name}") for name in TARGET_NAMES]
+    return true_indices, pred_indices, control_idx
+
+
 def _infer_checkpoint_arch(model_path: Path) -> dict[str, Any]:
     import torch
 
@@ -354,6 +382,7 @@ def evaluate_testset_difficulty(
     *,
     scaled_h5: Path,
     out_dir: Path,
+    forecast_h5: Path | None = None,
     model_paths: list[Path] | None = None,
     model_path: Path | None = None,
     ensemble_dir: Path | None = None,
@@ -371,7 +400,14 @@ def evaluate_testset_difficulty(
     if not scaled_h5.exists():
         raise FileNotFoundError(f"Scaled dataset not found: {scaled_h5}")
 
-    if model_paths is None:
+    forecast_h5 = Path(forecast_h5) if forecast_h5 is not None else None
+    if forecast_h5 is not None:
+        if not forecast_h5.exists():
+            raise FileNotFoundError(f"Forecast HDF5 not found: {forecast_h5}")
+        if model_paths is not None or model_path is not None or ensemble_dir is not None:
+            raise ValueError("forecast_h5 is mutually exclusive with model_paths/model_path/ensemble_dir.")
+        model_paths = []
+    elif model_paths is None:
         model_paths = _resolve_model_paths(model_path, ensemble_dir)
     else:
         if model_path is not None or ensemble_dir is not None:
@@ -387,18 +423,22 @@ def evaluate_testset_difficulty(
     if not test_profile_names:
         raise ValueError("No test profiles found in scaled dataset.")
 
-    profile_ds = ProfileDataset(scaled_h5, test_profile_names, "test")
-    first_profile_name, first_x, _first_y = next(iter(profile_ds))
-    timesteps = int(first_x.numpy().shape[1])
-    print(f"Loaded first test profile: {first_profile_name} (timesteps={timesteps})")
-
-    models = [_load_single_model(path, timesteps=timesteps) for path in model_paths]
     scaling_stats = _load_scaling_stats(scaled_h5)
     steady_state = _load_steady_state(Path(config_path))
 
     state_dim = len(STATE_COLUMNS)
     rho_idx = TARGET_NAMES.index("rho_dollars")
     control_idx = state_dim  # first control channel (drumAngleDeg)
+
+    models = []
+    if forecast_h5 is None:
+        profile_ds = ProfileDataset(scaled_h5, test_profile_names, "test")
+        first_profile_name, first_x, _first_y = next(iter(profile_ds))
+        timesteps = int(first_x.numpy().shape[1])
+        print(f"Loaded first test profile: {first_profile_name} (timesteps={timesteps})")
+        models = [_load_single_model(path, timesteps=timesteps) for path in model_paths]
+    else:
+        print(f"Reusing existing test forecasts: {forecast_h5}")
 
     def _evaluate_one(profile_name: str, x_tensor: Any, y_tensor: Any) -> dict[str, Any]:
         x_scaled = x_tensor.numpy()
@@ -440,19 +480,70 @@ def evaluate_testset_difficulty(
 
         return row
 
+    def _evaluate_one_forecast(profile_name: str, table: np.ndarray, columns: list[str]) -> dict[str, Any]:
+        true_indices, pred_indices, forecast_control_idx = _forecast_columns_for_targets(
+            forecast_h5=forecast_h5 if forecast_h5 is not None else Path("<unknown>"),
+            profile_name=profile_name,
+            columns=columns,
+        )
+        y_true = table[:, true_indices]
+        y_pred = table[:, pred_indices]
+        drum = table[:, forecast_control_idx]
+        rho = y_true[:, rho_idx]
+
+        v_theta = np.gradient(drum, float(dt))
+        drho_dt = np.gradient(rho, float(dt))
+        descriptors = {
+            "theta_peak": _signed_peak(drum, float(steady_state[CONTROL_COLUMN])),
+            "rho_peak": _signed_peak(rho, float(steady_state["rho_dollars"])),
+            "dtheta_dt_peak": _signed_peak(v_theta, 0.0),
+            "drho_dt_peak": _signed_peak(drho_dt, 0.0),
+        }
+
+        abs_err = np.abs(y_true - y_pred)
+        sq_err = (y_true - y_pred) ** 2
+        row: dict[str, Any] = {
+            "profile_id": str(profile_name),
+            "MAE": float(np.mean(abs_err)),
+            "MSE": float(np.mean(sq_err)),
+            **descriptors,
+        }
+
+        if include_per_target:
+            for idx, tgt in enumerate(TARGET_NAMES):
+                row[f"MAE_{tgt}"] = float(np.mean(abs_err[:, idx]))
+                row[f"MSE_{tgt}"] = float(np.mean(sq_err[:, idx]))
+
+        return row
+
     per_profile_rows: list[dict[str, Any]] = []
-    entries = list(ProfileDataset(scaled_h5, test_profile_names, "test"))
-    if int(num_workers) <= 1:
-        for profile_name, x_tensor, y_tensor in entries:
-            per_profile_rows.append(_evaluate_one(profile_name, x_tensor, y_tensor))
+    if forecast_h5 is not None:
+        import h5py
+
+        with h5py.File(forecast_h5, "r") as h5f:
+            missing_profiles = [name for name in test_profile_names if name not in h5f]
+            if missing_profiles:
+                raise ValueError(
+                    f"Forecast HDF5 {forecast_h5} is missing test profiles: {missing_profiles[:10]}"
+                )
+            for profile_name in test_profile_names:
+                group = h5f[profile_name]
+                table = group["data"][...].astype(np.float64)
+                columns = _decode_h5_strings(group.attrs.get("columns", []))
+                per_profile_rows.append(_evaluate_one_forecast(profile_name, table, columns))
     else:
-        with ThreadPoolExecutor(max_workers=int(num_workers)) as executor:
-            futures = [
-                executor.submit(_evaluate_one, profile_name, x_tensor, y_tensor)
-                for profile_name, x_tensor, y_tensor in entries
-            ]
-            for fut in as_completed(futures):
-                per_profile_rows.append(fut.result())
+        entries = list(ProfileDataset(scaled_h5, test_profile_names, "test"))
+        if int(num_workers) <= 1:
+            for profile_name, x_tensor, y_tensor in entries:
+                per_profile_rows.append(_evaluate_one(profile_name, x_tensor, y_tensor))
+        else:
+            with ThreadPoolExecutor(max_workers=int(num_workers)) as executor:
+                futures = [
+                    executor.submit(_evaluate_one, profile_name, x_tensor, y_tensor)
+                    for profile_name, x_tensor, y_tensor in entries
+                ]
+                for fut in as_completed(futures):
+                    per_profile_rows.append(fut.result())
 
     per_profile_csv = out_dir / "per_profile_metrics_and_difficulty.csv"
     fieldnames = list(per_profile_rows[0].keys())
@@ -541,7 +632,12 @@ def evaluate_testset_difficulty(
 
     manifest = {
         "dataset_path": str(scaled_h5),
-        "model_id": "ensemble" if len(model_paths) > 1 else Path(model_paths[0]).stem,
+        "forecast_h5": None if forecast_h5 is None else str(forecast_h5),
+        "model_id": (
+            "existing_forecast"
+            if forecast_h5 is not None
+            else ("ensemble" if len(model_paths) > 1 else Path(model_paths[0]).stem)
+        ),
         "checkpoint_paths": [str(path) for path in model_paths],
         "binning": {
             "mode": "fixed_equal_width",
@@ -566,6 +662,12 @@ def evaluate_testset_difficulty(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate test-set forecast errors by transient difficulty bins.")
     parser.add_argument("--scaled-h5", type=Path, required=True, help="Scaled/split dataset path containing test split.")
+    parser.add_argument(
+        "--forecast-h5",
+        type=Path,
+        default=None,
+        help="Optional existing rolling_forecasts.h5 to reuse instead of rerunning model inference.",
+    )
     parser.add_argument("--model-path", type=Path, default=None, help="Single model checkpoint (.pt).")
     parser.add_argument("--ensemble-dir", type=Path, default=None, help="Directory containing ensemble checkpoints (.pt).")
     parser.add_argument("--out-dir", type=Path, required=True, help="Output directory for CSV/plots/manifest.")
@@ -577,6 +679,7 @@ def main() -> None:
     args = parser.parse_args()
     evaluate_testset_difficulty(
         scaled_h5=args.scaled_h5,
+        forecast_h5=args.forecast_h5,
         model_path=args.model_path,
         ensemble_dir=args.ensemble_dir,
         out_dir=args.out_dir,
