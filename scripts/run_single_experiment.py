@@ -120,6 +120,7 @@ class ExperimentConfig:
     branching: dict[str, Any]
     dymola: dict[str, Any]
     training_seed: int | None = None
+    random_profiles_per_cycle: int | None = None
     dataset_build_verbose: bool = False
     skip_hyperparameter_tuning: bool = False
     plot_bag_distributions: bool = True
@@ -2060,6 +2061,8 @@ def main() -> None:
     _resolve_branching_target_weights(cfg.branching_target_weights)
     if cfg.strategy not in {"branching", "random"}:
         raise SystemExit("strategy must be branching or random.")
+    if cfg.random_profiles_per_cycle is not None and int(cfg.random_profiles_per_cycle) < 1:
+        raise SystemExit("random_profiles_per_cycle must be a positive integer when provided.")
 
     output_root = resolve_output_root(cfg.output_root)
     base_output_dir = args.base_output_dir.resolve() if args.base_output_dir else output_root / "experiments"
@@ -2337,11 +2340,17 @@ def main() -> None:
         else:
             step_times["test_difficulty_eval_sec"] = 0.0
 
+        profile_generation_requested_count: int | None = None
+        profile_generation_strategy = cfg.strategy if cycle < cfg.retrain_cycles - 1 else None
+
         # No need to generate/simulate new data after last training cycle.
         if cycle < cfg.retrain_cycles - 1:
             if cfg.strategy == "branching":
                 _print_step_banner(cycle + 1, "Generate new profiles via recursive branching")
                 t0 = perf_counter()
+                profile_generation_requested_count = _expected_new_profiles(
+                    int(cfg.branching["N_r"]), int(cfg.branching["N_k"]), int(cfg.branching["N_b"])
+                )
                 var_batch = _run_recursive_branching_internal(
                     cfg=cfg,
                     variography_params=variography_params,
@@ -2373,9 +2382,14 @@ def main() -> None:
             else:
                 _print_step_banner(cycle + 1, "Generate new random profiles")
                 t0 = perf_counter()
-                n_new = _expected_new_profiles(
-                    int(cfg.branching["N_r"]), int(cfg.branching["N_k"]), int(cfg.branching["N_b"])
+                n_new = (
+                    int(cfg.random_profiles_per_cycle)
+                    if cfg.random_profiles_per_cycle is not None
+                    else _expected_new_profiles(
+                        int(cfg.branching["N_r"]), int(cfg.branching["N_k"]), int(cfg.branching["N_b"])
+                    )
                 )
+                profile_generation_requested_count = n_new
                 var_batch = _next_batch_dir(var_root)
                 _sample_random_profiles(
                     var_batch,
@@ -2482,6 +2496,8 @@ def main() -> None:
                 "ensemble_test_metrics": metrics,
                 "ensemble_metrics_json": str(metrics_json),
                 "rolling_forecast_metrics_json": str(rolling_forecast_metrics_json),
+                "profile_generation_strategy": profile_generation_strategy,
+                "profile_generation_requested_count": profile_generation_requested_count,
                 "test_difficulty_dir": (
                     None if test_difficulty_result is None else test_difficulty_result.get("out_dir")
                 ),
@@ -2523,6 +2539,16 @@ def main() -> None:
             else:
                 cycle_seed_info["profile_generation_seed"] = cycle_seed
                 cycle_seed_info["random_profile_generation_seed"] = cycle_seed
+                cycle_seed_info["random_profiles_per_cycle"] = (
+                    None if cfg.random_profiles_per_cycle is None else int(cfg.random_profiles_per_cycle)
+                )
+                cycle_seed_info["random_profile_generation_count"] = (
+                    int(cfg.random_profiles_per_cycle)
+                    if cfg.random_profiles_per_cycle is not None
+                    else _expected_new_profiles(
+                        int(cfg.branching["N_r"]), int(cfg.branching["N_k"]), int(cfg.branching["N_b"])
+                    )
+                )
         seed_manifest["cycles"].append(cycle_seed_info)
 
     metrics_plots_dir = run_dir / "metrics_plots"

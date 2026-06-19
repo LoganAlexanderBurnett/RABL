@@ -3,6 +3,7 @@
   "strategy": "branching",
   "seed": 789,
   "training_seed": 123,
+  "random_profiles_per_cycle": null,
   "dataset_build_verbose": false,
   "skip_hyperparameter_tuning": false,
   "retrain_cycles": 10,
