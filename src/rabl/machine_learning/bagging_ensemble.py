@@ -52,6 +52,7 @@ class BaggingEnsembleConfig:
     n_fc: int = 1
     fc_hidden: tuple[int, ...] = (64,)
     prefer_gpu: bool = True
+    use_tqdm: bool = True
     verbose: int = 1
     plot_bag_distributions: bool = True
 
@@ -970,6 +971,7 @@ def run_bagging_ensemble(
     fc_hidden: tuple[int, ...] = (64,),
     prefer_gpu: bool = True,
     preload_val_to_device: bool = True,
+    use_tqdm: bool = True,
     verbose: int = 1,
     forecast_num_workers: int = 4,
     plot_bag_distributions: bool = True,
@@ -993,6 +995,7 @@ def run_bagging_ensemble(
         n_fc=n_fc,
         fc_hidden=fc_hidden,
         prefer_gpu=prefer_gpu,
+        use_tqdm=use_tqdm,
         verbose=verbose,
         plot_bag_distributions=plot_bag_distributions,
     )
@@ -1061,6 +1064,7 @@ def run_bagging_ensemble(
             early_stopping_patience=config.early_stopping_patience,
             early_stopping_min_delta=config.early_stopping_min_delta,
             restore_best_weights=True,
+            use_tqdm=config.use_tqdm,
             save_training_curves=False,
         )
 

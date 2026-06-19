@@ -23,6 +23,7 @@
   "bag_fraction": 0.7,
   "bag_split_mode": "sample",
   "prefer_gpu": true,
+  "ensemble_use_tqdm": true,
   "plot_bag_distributions": true,
   "save_individual_ensemble_forecasts": true,
   "plot_individual_ensemble_forecasts": true,

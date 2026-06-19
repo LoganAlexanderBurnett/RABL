@@ -131,6 +131,7 @@ class ExperimentConfig:
     test_difficulty_num_workers: int = 4
     branching_target_weights: dict[str, float] | None = None
     bag_split_mode: str = "profile"
+    ensemble_use_tqdm: bool = True
     ensemble_forecast_num_workers: int = 4
     forecast_plot_bins: int = 5
     forecast_plot_profiles_per_bin: int = 2
@@ -2174,6 +2175,7 @@ def main() -> None:
             step_lr_gamma=float(cfg.hp_grid.get("step_lr_gamma", 0.5)),
             prefer_gpu=cfg.prefer_gpu,
             preload_val_to_device=bool(cfg.hp_grid.get("preload_val_to_device", True)),
+            use_tqdm=bool(cfg.ensemble_use_tqdm),
             verbose=int(cfg.hp_grid.get("verbose", 1)),
             forecast_num_workers=int(cfg.ensemble_forecast_num_workers),
             plot_bag_distributions=bool(cfg.plot_bag_distributions),
