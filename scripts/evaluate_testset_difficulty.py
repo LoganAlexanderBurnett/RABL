@@ -267,8 +267,12 @@ def _set_log_y_if_positive(ax, values: Any) -> None:
     arr = np.asarray(flat, dtype=float)
     positive = arr[np.isfinite(arr) & (arr > 0.0)]
     if positive.size:
+        lower = max(float(np.min(positive)) * 0.5, 1e-12)
+        upper = float(np.max(positive)) * 1.25
+        if upper <= lower:
+            upper = lower * 10.0
         ax.set_yscale("log")
-        ax.set_ylim(bottom=max(float(np.min(positive)) * 0.5, 1e-12))
+        ax.set_ylim(bottom=lower, top=upper)
 
 def _plot_summary_grid(
     *,
@@ -318,9 +322,9 @@ def _plot_summary_grid(
                 ax.set_ylabel(f"Mean {metric_name}")
                 ax.set_xlabel(f"{descriptor_latex[descriptor]} bins")
                 ax.set_title(f"{metric_name} by {descriptor_latex[descriptor]} bin")
-                _set_log_y_if_positive(ax, means)
                 ax.grid(alpha=0.25, axis="y")
                 ax.set_axisbelow(True)
+                scale_values: list[Any] = [means]
 
                 trans = transforms.blended_transform_factory(ax.transData, ax.transAxes)
 
@@ -341,6 +345,7 @@ def _plot_summary_grid(
                     metric_overlay = target_overlay.get(descriptor, {}).get(metric_name, {})
                     for target_name, target_vals in metric_overlay.items():
                         if len(target_vals) == len(x):
+                            scale_values.append(target_vals)
                             ax.plot(
                                 x,
                                 target_vals,
@@ -352,6 +357,7 @@ def _plot_summary_grid(
                             )
                     if row_idx == 0 and col_idx == 0 and metric_overlay:
                         ax.legend(loc="upper left", fontsize=6, ncol=2, frameon=True)
+                _set_log_y_if_positive(ax, scale_values)
             else:
                 labels = [str(r["bin"]) for r in mae_rows]
                 display_map = {str(r["bin"]): str(r.get("bin_display", r["bin"])) for r in mae_rows}
