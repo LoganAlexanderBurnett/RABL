@@ -100,6 +100,17 @@ def _forecast_columns_for_targets(
     return true_indices, pred_indices, control_idx
 
 
+def _scale_targets_from_stats(stats: dict[str, Any], values: np.ndarray) -> np.ndarray:
+    """Scale descaled target values using the dataset's target scaling stats."""
+    scaling_type = stats["type"]
+    y_stats = stats["y"]
+    if scaling_type == "standard":
+        return (values - y_stats["mean"]) / y_stats["std"]
+    if scaling_type == "minmax":
+        return (values - y_stats["min"]) / y_stats["span"]
+    raise ValueError(f"Unsupported scaling type: {scaling_type}")
+
+
 def _infer_checkpoint_arch(model_path: Path) -> dict[str, Any]:
     import torch
 
@@ -493,7 +504,6 @@ def evaluate_testset_difficulty(
         y_pred_scaled = np.mean(np.stack(pred_stack, axis=0), axis=0)
 
         y_true = _descale_targets_from_stats(scaling_stats, y_scaled)
-        y_pred = _descale_targets_from_stats(scaling_stats, y_pred_scaled)
 
         drum_scaled = x_scaled[:, -1, control_idx]
         drum = _descale_feature_from_stats(scaling_stats, drum_scaled, control_idx)
@@ -508,8 +518,8 @@ def evaluate_testset_difficulty(
             "drho_dt_peak": _signed_peak(drho_dt, 0.0),
         }
 
-        abs_err = np.abs(y_true - y_pred)
-        sq_err = (y_true - y_pred) ** 2
+        abs_err = np.abs(y_scaled - y_pred_scaled)
+        sq_err = (y_scaled - y_pred_scaled) ** 2
         row: dict[str, Any] = {
             "profile_id": str(profile_name),
             "MAE": float(np.mean(abs_err)),
@@ -544,8 +554,10 @@ def evaluate_testset_difficulty(
             "drho_dt_peak": _signed_peak(drho_dt, 0.0),
         }
 
-        abs_err = np.abs(y_true - y_pred)
-        sq_err = (y_true - y_pred) ** 2
+        y_true_scaled = _scale_targets_from_stats(scaling_stats, y_true)
+        y_pred_scaled = _scale_targets_from_stats(scaling_stats, y_pred)
+        abs_err = np.abs(y_true_scaled - y_pred_scaled)
+        sq_err = (y_true_scaled - y_pred_scaled) ** 2
         row: dict[str, Any] = {
             "profile_id": str(profile_name),
             "MAE": float(np.mean(abs_err)),
@@ -698,6 +710,7 @@ def evaluate_testset_difficulty(
             "mode": "fixed_equal_width",
             "n_bins": int(n_bins),
         },
+        "error_metric_target_space": "scaled",
         "artifacts": generated_paths,
     }
     manifest_path = out_dir / "evaluation_manifest.json"
