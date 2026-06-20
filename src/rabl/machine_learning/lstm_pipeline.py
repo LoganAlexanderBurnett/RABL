@@ -2088,6 +2088,7 @@ def save_forecast_profiles_pdf(
 def compute_and_save_rolling_forecast_metrics(
     forecast_h5_path: Path,
     output_json_path: Path,
+    scaled_h5: Path | None = None,
 ) -> dict[str, Any]:
     """
     Compute forecast metrics from rolling_forecasts.h5 for either:
@@ -2098,6 +2099,7 @@ def compute_and_save_rolling_forecast_metrics(
     output_json_path = Path(output_json_path)
     output_json_path.parent.mkdir(parents=True, exist_ok=True)
 
+    scaling_stats = _load_scaling_stats(scaled_h5) if scaled_h5 is not None else None
     y_true_all: list[np.ndarray] = []
     y_pred_all: list[np.ndarray] = []
     y_2sigma_all: list[np.ndarray] = []
@@ -2124,8 +2126,20 @@ def compute_and_save_rolling_forecast_metrics(
             y_true_all.append(y_true)
             y_pred_all.append(y_pred)
             err = y_pred - y_true
-            horizon_rmse_chunks.append(np.sqrt(np.mean(err**2, axis=1)))
-            horizon_mae_chunks.append(np.mean(np.abs(err), axis=1))
+            horizon_err = err
+            if scaling_stats is not None:
+                profile_target_names = [c.split(")_", 1)[1] for c in truth_cols]
+                target_indices = [TARGET_NAMES.index(name) for name in profile_target_names]
+                y_stats = scaling_stats["y"]
+                if scaling_stats["type"] == "standard":
+                    scale = np.asarray(y_stats["std"], dtype=float)[target_indices]
+                elif scaling_stats["type"] == "minmax":
+                    scale = np.asarray(y_stats["span"], dtype=float)[target_indices]
+                else:
+                    raise ValueError(f"Unsupported scaling type: {scaling_stats['type']}")
+                horizon_err = err / scale
+            horizon_rmse_chunks.append(np.sqrt(np.mean(horizon_err**2, axis=1)))
+            horizon_mae_chunks.append(np.mean(np.abs(horizon_err), axis=1))
             if sigma_cols:
                 y_2sigma = np.column_stack([table[:, cols.index(c)] for c in sigma_cols])
                 y_2sigma_all.append(y_2sigma)
@@ -2141,6 +2155,17 @@ def compute_and_save_rolling_forecast_metrics(
     rmse_per_target = np.sqrt(np.mean(err**2, axis=0))
     mae_per_target = np.mean(abs_err, axis=0)
     bias_per_target = np.mean(err, axis=0)
+    horizon_mae_per_target = mae_per_target
+    if scaling_stats is not None:
+        target_indices = [TARGET_NAMES.index(name) for name in target_names]
+        y_stats = scaling_stats["y"]
+        if scaling_stats["type"] == "standard":
+            target_scale = np.asarray(y_stats["std"], dtype=float)[target_indices]
+        elif scaling_stats["type"] == "minmax":
+            target_scale = np.asarray(y_stats["span"], dtype=float)[target_indices]
+        else:
+            raise ValueError(f"Unsupported scaling type: {scaling_stats['type']}")
+        horizon_mae_per_target = mae_per_target / target_scale
     with np.errstate(divide="ignore", invalid="ignore"):
         y_range = np.nanmax(y_true_cat, axis=0) - np.nanmin(y_true_cat, axis=0)
         nrmse_per_target = np.where(y_range > 0, rmse_per_target / y_range, np.nan)
@@ -2163,11 +2188,12 @@ def compute_and_save_rolling_forecast_metrics(
         "per_target_mae": {n: float(v) for n, v in zip(target_names, mae_per_target, strict=True)},
         "per_target_smape": {n: float(v) for n, v in zip(target_names, smape_per_target, strict=True)},
         "per_target_nrmse": {n: float(v) for n, v in zip(target_names, nrmse_per_target, strict=True)},
-        "per_target_horizon_mean_mae": {n: float(v) for n, v in zip(target_names, mae_per_target, strict=True)},
+        "per_target_horizon_mean_mae": {n: float(v) for n, v in zip(target_names, horizon_mae_per_target, strict=True)},
         "per_target_bias": {n: float(v) for n, v in zip(target_names, bias_per_target, strict=True)},
         "per_target_r2": {n: float(v) for n, v in zip(target_names, r2_per_target, strict=True)},
         "horizon_mean_rmse": horizon_rmse.tolist(),
         "horizon_mean_mae": horizon_mae.tolist(),
+        "horizon_error_target_space": "scaled" if scaling_stats is not None else "descaled",
     }
 
     if schema_mode == "ensemble" and y_2sigma_all:

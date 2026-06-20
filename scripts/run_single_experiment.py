@@ -51,6 +51,7 @@ from rabl.machine_learning.lstm_pipeline import (
     TARGET_NAMES,
     compute_and_save_rolling_forecast_metrics,
     save_forecast_profiles_pdf,
+    _load_scaling_stats,
 )
 from rabl.machine_learning.recursive_branching import (
     RecursiveBranchingBatchConfig,
@@ -988,9 +989,47 @@ def _target_name_from_column(column_name: str) -> str:
     return column_name.split(")_", 1)[1] if ")_" in column_name else column_name.rsplit("_", 1)[-1]
 
 
-def _summarize_forecasts(forecast_h5: Path) -> dict[str, Any]:
+def _target_scaling_vectors(
+    scaling_stats: dict[str, Any],
+    target_names: list[str],
+) -> tuple[np.ndarray, np.ndarray]:
+    target_indices = [TARGET_NAMES.index(name) for name in target_names]
+    y_stats = scaling_stats["y"]
+    if scaling_stats["type"] == "standard":
+        offset = np.asarray(y_stats["mean"], dtype=float)[target_indices]
+        scale = np.asarray(y_stats["std"], dtype=float)[target_indices]
+    elif scaling_stats["type"] == "minmax":
+        offset = np.asarray(y_stats["min"], dtype=float)[target_indices]
+        scale = np.asarray(y_stats["span"], dtype=float)[target_indices]
+    else:
+        raise ValueError(f"Unsupported scaling type: {scaling_stats['type']}")
+    return offset, scale
+
+
+def _scale_forecast_targets(
+    values: np.ndarray,
+    *,
+    target_names: list[str],
+    scaling_stats: dict[str, Any],
+) -> np.ndarray:
+    offset, scale = _target_scaling_vectors(scaling_stats, target_names)
+    return (values - offset) / scale
+
+
+def _scale_forecast_widths(
+    values: np.ndarray,
+    *,
+    target_names: list[str],
+    scaling_stats: dict[str, Any],
+) -> np.ndarray:
+    _offset, scale = _target_scaling_vectors(scaling_stats, target_names)
+    return values / scale
+
+
+def _summarize_forecasts(forecast_h5: Path, *, scaled_h5: Path | None = None) -> dict[str, Any]:
     all_err: list[np.ndarray] = []
     per_target_err: dict[str, list[np.ndarray]] = {}
+    scaling_stats = _load_scaling_stats(scaled_h5) if scaled_h5 is not None else None
     with h5py.File(forecast_h5, "r") as h5f:
         for profile_name in h5f.keys():
             grp = h5f[profile_name]
@@ -1001,13 +1040,24 @@ def _summarize_forecasts(forecast_h5: Path) -> dict[str, Any]:
             pred_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_mean(t)_")]
             if not true_cols or len(true_cols) != len(pred_cols):
                 continue
-            err = table[:, pred_cols] - table[:, true_cols]
+            target_names = [_target_name_from_column(cols[idx]) for idx in true_cols]
+            y_true = table[:, true_cols]
+            y_pred = table[:, pred_cols]
+            if scaling_stats is not None:
+                y_true = _scale_forecast_targets(y_true, target_names=target_names, scaling_stats=scaling_stats)
+                y_pred = _scale_forecast_targets(y_pred, target_names=target_names, scaling_stats=scaling_stats)
+            err = y_pred - y_true
             all_err.append(err)
-            for local_idx, true_idx in enumerate(true_cols):
-                target_name = _target_name_from_column(cols[true_idx])
+            for local_idx, target_name in enumerate(target_names):
                 per_target_err.setdefault(target_name, []).append(err[:, local_idx])
     if not all_err:
-        return {"rmse": float("nan"), "mae": float("nan"), "max_abs": float("nan"), "per_target": {}}
+        return {
+            "rmse": float("nan"),
+            "mae": float("nan"),
+            "max_abs": float("nan"),
+            "per_target": {},
+            "target_space": "scaled" if scaling_stats is not None else "descaled",
+        }
     cat = np.concatenate(all_err, axis=0)
     per_target = {}
     for target_name, chunks in per_target_err.items():
@@ -1022,10 +1072,11 @@ def _summarize_forecasts(forecast_h5: Path) -> dict[str, Any]:
         "mae": float(np.mean(np.abs(cat))),
         "max_abs": float(np.max(np.abs(cat))),
         "per_target": per_target,
+        "target_space": "scaled" if scaling_stats is not None else "descaled",
     }
 
 
-def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
+def _compute_uncertainty_metrics(forecast_h5: Path, *, scaled_h5: Path | None = None) -> dict[str, Any]:
     z_by_level = {
         "50": 0.67448975,
         "80": 1.28155157,
@@ -1034,6 +1085,7 @@ def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
     all_err: list[np.ndarray] = []
     all_sigma95: list[np.ndarray] = []
     target_names: list[str] = []
+    scaling_stats = _load_scaling_stats(scaled_h5) if scaled_h5 is not None else None
     with h5py.File(forecast_h5, "r") as h5f:
         for profile_name in h5f.keys():
             grp = h5f[profile_name]
@@ -1047,9 +1099,14 @@ def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
                 continue
             if not target_names:
                 target_names = [_target_name_from_column(cols[idx]) for idx in true_cols]
+            current_target_names = [_target_name_from_column(cols[idx]) for idx in true_cols]
             y_true = table[:, true_cols]
             y_mean = table[:, mean_cols]
             sigma95 = table[:, sigma_cols]
+            if scaling_stats is not None:
+                y_true = _scale_forecast_targets(y_true, target_names=current_target_names, scaling_stats=scaling_stats)
+                y_mean = _scale_forecast_targets(y_mean, target_names=current_target_names, scaling_stats=scaling_stats)
+                sigma95 = _scale_forecast_widths(sigma95, target_names=current_target_names, scaling_stats=scaling_stats)
             all_err.append(np.abs(y_mean - y_true))
             all_sigma95.append(sigma95)
 
@@ -1059,6 +1116,7 @@ def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
             "interval_width": {"50": float("nan"), "80": float("nan"), "95": float("nan")},
             "calibration_error": float("nan"),
             "per_target": {},
+            "target_space": "scaled" if scaling_stats is not None else "descaled",
         }
 
     err = np.concatenate(all_err, axis=0)
@@ -1093,6 +1151,7 @@ def _compute_uncertainty_metrics(forecast_h5: Path) -> dict[str, Any]:
         "interval_width": width,
         "calibration_error": float(np.mean(cal_terms)),
         "per_target": per_target,
+        "target_space": "scaled" if scaling_stats is not None else "descaled",
     }
 
 
@@ -2339,8 +2398,8 @@ def main() -> None:
         bag_distribution_overlap_plot = ensemble.get("bag_distribution_overlap_plot")
         ensemble_training_curves_plot = ensemble.get("training_curves_plot")
         t0 = perf_counter()
-        point_metrics = _summarize_forecasts(forecast_h5)
-        unc_metrics = _compute_uncertainty_metrics(forecast_h5)
+        point_metrics = _summarize_forecasts(forecast_h5, scaled_h5=scaled_h5)
+        unc_metrics = _compute_uncertainty_metrics(forecast_h5, scaled_h5=scaled_h5)
         step_times["ensemble_metrics_compute_sec"] = perf_counter() - t0
         metrics = {
             "forecast_quality": point_metrics,
@@ -2348,7 +2407,11 @@ def main() -> None:
         }
         t0 = perf_counter()
         rolling_forecast_metrics_json = cycle_dir / "ensemble" / "rolling_forecast_metrics.json"
-        compute_and_save_rolling_forecast_metrics(forecast_h5, rolling_forecast_metrics_json)
+        compute_and_save_rolling_forecast_metrics(
+            forecast_h5,
+            rolling_forecast_metrics_json,
+            scaled_h5=scaled_h5,
+        )
         step_times["rolling_forecast_metrics_compute_sec"] = perf_counter() - t0
         print(f"[cycle {cycle + 1}] Saved rolling forecast metrics JSON: {rolling_forecast_metrics_json}")
         print(
