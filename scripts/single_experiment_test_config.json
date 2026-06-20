@@ -27,6 +27,7 @@
   "ensemble_use_tqdm": true,
   "use_single_model_test_eval": false,
   "single_model_seed_count": 1,
+  "single_model_seeds": null,
   "plot_bag_distributions": true,
   "save_individual_ensemble_forecasts": true,
   "plot_individual_ensemble_forecasts": true,

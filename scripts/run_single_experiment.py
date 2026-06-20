@@ -139,6 +139,7 @@ class ExperimentConfig:
     ensemble_use_tqdm: bool = True
     use_single_model_test_eval: bool = False
     single_model_seed_count: int = 1
+    single_model_seeds: list[int] | None = None
     ensemble_forecast_num_workers: int = 4
     forecast_plot_bins: int = 5
     forecast_plot_profiles_per_bin: int = 2
@@ -2241,8 +2242,13 @@ def _train_single_model_for_test_eval(
 
     import torch
 
-    for seed_idx in range(int(cfg.single_model_seed_count)):
-        model_seed = int(base_training_seed + seed_idx)
+    model_seeds = (
+        [int(seed) for seed in cfg.single_model_seeds]
+        if cfg.single_model_seeds is not None
+        else [int(base_training_seed + seed_idx) for seed_idx in range(int(cfg.single_model_seed_count))]
+    )
+
+    for seed_idx, model_seed in enumerate(model_seeds):
         model_dir = out_dir / f"seed_{seed_idx:02d}_{model_seed}"
         model_dir.mkdir(parents=True, exist_ok=True)
         datasets = build_datasets(scaled_h5, batch_size=best.batch_size, seed=model_seed)
@@ -2310,6 +2316,7 @@ def _train_single_model_for_test_eval(
         "best_model_path": Path(str(best_record["model_path"])),
         "best_seed": int(best_record["seed"]),
         "best_val_loss": float(best_record["best_val_loss"]),
+        "requested_seeds": model_seeds,
         "seed_records": seed_records,
     }
 
@@ -2350,6 +2357,13 @@ def main() -> None:
         raise SystemExit("random_profiles_per_cycle must be a positive integer when provided.")
     if bool(cfg.use_single_model_test_eval) and int(cfg.single_model_seed_count) < 1:
         raise SystemExit("single_model_seed_count must be a positive integer when use_single_model_test_eval is true.")
+    if bool(cfg.use_single_model_test_eval) and cfg.single_model_seeds is not None:
+        if not isinstance(cfg.single_model_seeds, list) or not cfg.single_model_seeds:
+            raise SystemExit("single_model_seeds must be a non-empty list of integers when provided.")
+        try:
+            [int(seed) for seed in cfg.single_model_seeds]
+        except (TypeError, ValueError) as exc:
+            raise SystemExit("single_model_seeds must contain only integers.") from exc
     if bool(cfg.use_single_model_test_eval) and cfg.strategy == "branching" and int(cfg.retrain_cycles) > 1:
         raise SystemExit(
             "use_single_model_test_eval=true is not compatible with multi-cycle branching, because recursive branching "
@@ -2784,6 +2798,7 @@ def main() -> None:
                 **new_batch_budget,
                 "evaluation_mode": evaluation_mode,
                 "single_model_seed_count": int(cfg.single_model_seed_count) if evaluation_mode == "single_model" else None,
+                "single_model_requested_seeds": ensemble.get("requested_seeds", []) if evaluation_mode == "single_model" else [],
                 "single_model_best_seed": ensemble.get("best_seed") if evaluation_mode == "single_model" else None,
                 "single_model_best_val_loss": ensemble.get("best_val_loss") if evaluation_mode == "single_model" else None,
                 "single_model_seed_records": ensemble.get("seed_records", []) if evaluation_mode == "single_model" else [],
