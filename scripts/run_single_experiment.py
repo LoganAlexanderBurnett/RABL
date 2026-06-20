@@ -49,8 +49,11 @@ from rabl.machine_learning.tuner import GridSearchConfig, run_grid_search, run_h
 from rabl.machine_learning.bagging_ensemble import run_bagging_ensemble
 from rabl.machine_learning.lstm_pipeline import (
     TARGET_NAMES,
+    build_datasets,
     compute_and_save_rolling_forecast_metrics,
     save_forecast_profiles_pdf,
+    test_and_save_forecasts,
+    train_with_fallback,
     _load_scaling_stats,
 )
 from rabl.machine_learning.recursive_branching import (
@@ -134,6 +137,8 @@ class ExperimentConfig:
     branching_target_weights: dict[str, float] | None = None
     bag_split_mode: str = "profile"
     ensemble_use_tqdm: bool = True
+    use_single_model_test_eval: bool = False
+    single_model_seed_count: int = 1
     ensemble_forecast_num_workers: int = 4
     forecast_plot_bins: int = 5
     forecast_plot_profiles_per_bin: int = 2
@@ -1039,6 +1044,9 @@ def _summarize_forecasts(forecast_h5: Path, *, scaled_h5: Path | None = None) ->
             true_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_true(t)_")]
             pred_cols = [idx for idx, c in enumerate(cols) if c.startswith("x_mean(t)_")]
             if not true_cols or len(true_cols) != len(pred_cols):
+                true_cols = [idx for idx, c in enumerate(cols) if c.startswith("x(t)_")]
+                pred_cols = [idx for idx, c in enumerate(cols) if c.startswith("x^~(t)_")]
+            if not true_cols or len(true_cols) != len(pred_cols):
                 continue
             target_names = [_target_name_from_column(cols[idx]) for idx in true_cols]
             y_true = table[:, true_cols]
@@ -1086,8 +1094,10 @@ def _compute_uncertainty_metrics(forecast_h5: Path, *, scaled_h5: Path | None = 
     all_sigma95: list[np.ndarray] = []
     target_names: list[str] = []
     scaling_stats = _load_scaling_stats(scaled_h5) if scaled_h5 is not None else None
+    has_forecast_profiles = False
     with h5py.File(forecast_h5, "r") as h5f:
         for profile_name in h5f.keys():
+            has_forecast_profiles = True
             grp = h5f[profile_name]
             table = np.asarray(grp["data"][()], dtype=float)
             cols_raw = grp.attrs.get("columns", [])
@@ -1117,6 +1127,8 @@ def _compute_uncertainty_metrics(forecast_h5: Path, *, scaled_h5: Path | None = 
             "calibration_error": float("nan"),
             "per_target": {},
             "target_space": "scaled" if scaling_stats is not None else "descaled",
+            "available": False,
+            "reason": "no_ensemble_uncertainty_columns" if has_forecast_profiles else "no_forecast_profiles",
         }
 
     err = np.concatenate(all_err, axis=0)
@@ -1152,6 +1164,7 @@ def _compute_uncertainty_metrics(forecast_h5: Path, *, scaled_h5: Path | None = 
         "calibration_error": float(np.mean(cal_terms)),
         "per_target": per_target,
         "target_space": "scaled" if scaling_stats is not None else "descaled",
+        "available": True,
     }
 
 
@@ -1231,13 +1244,21 @@ def _plot_metrics_over_cycles(
     cumulative_train_samples = [int(np.sum(train_samples[: idx + 1])) for idx in range(len(train_samples))]
     rmse = [float(m["forecast_quality"]["rmse"]) for m in cycle_metrics]
     mae = [float(m["forecast_quality"]["mae"]) for m in cycle_metrics]
-    cal = [float(m["uncertainty_quality"]["calibration_error"]) for m in cycle_metrics]
-    cov50 = [float(m["uncertainty_quality"]["coverage"]["50"]) for m in cycle_metrics]
-    cov80 = [float(m["uncertainty_quality"]["coverage"]["80"]) for m in cycle_metrics]
-    cov95 = [float(m["uncertainty_quality"]["coverage"]["95"]) for m in cycle_metrics]
+    include_uncertainty = any(
+        bool(m.get("uncertainty_quality", {}).get("available", True)) for m in cycle_metrics
+    )
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-    ax = axes[0, 0]
+    if include_uncertainty:
+        cal = [float(m["uncertainty_quality"]["calibration_error"]) for m in cycle_metrics]
+        cov50 = [float(m["uncertainty_quality"]["coverage"]["50"]) for m in cycle_metrics]
+        cov80 = [float(m["uncertainty_quality"]["coverage"]["80"]) for m in cycle_metrics]
+        cov95 = [float(m["uncertainty_quality"]["coverage"]["95"]) for m in cycle_metrics]
+
+    if include_uncertainty:
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+        ax = axes[0, 0]
+    else:
+        fig, ax = plt.subplots(1, 1, figsize=(7, 4))
     ax.plot(cycles, rmse, marker="o", label="RMSE")
     ax.plot(cycles, mae, marker="o", label="MAE")
     ax.set_title("Forecast error vs cycle")
@@ -1247,28 +1268,29 @@ def _plot_metrics_over_cycles(
     ax.grid(alpha=0.3)
     ax.legend()
 
-    ax = axes[0, 1]
-    ax.plot(cycles, cov50, marker="o", label="50%")
-    ax.plot(cycles, cov80, marker="o", label="80%")
-    ax.plot(cycles, cov95, marker="o", label="95%")
-    ax.set_title("Empirical coverage vs cycle")
-    ax.set_xlabel("Cycle")
-    ax.set_ylim(0, 1)
-    ax.grid(alpha=0.3)
-    ax.legend()
+    if include_uncertainty:
+        ax = axes[0, 1]
+        ax.plot(cycles, cov50, marker="o", label="50%")
+        ax.plot(cycles, cov80, marker="o", label="80%")
+        ax.plot(cycles, cov95, marker="o", label="95%")
+        ax.set_title("Empirical coverage vs cycle")
+        ax.set_xlabel("Cycle")
+        ax.set_ylim(0, 1)
+        ax.grid(alpha=0.3)
+        ax.legend()
 
-    ax = axes[1, 0]
-    ax.plot(cycles, cal, marker="o", color="C3")
-    ax.set_title("Calibration error vs cycle")
-    ax.set_xlabel("Cycle")
-    ax.grid(alpha=0.3)
+        ax = axes[1, 0]
+        ax.plot(cycles, cal, marker="o", color="C3")
+        ax.set_title("Calibration error vs cycle")
+        ax.set_xlabel("Cycle")
+        ax.grid(alpha=0.3)
 
-    ax = axes[1, 1]
-    sharp95 = [float(m["uncertainty_quality"]["interval_width"]["95"]) for m in cycle_metrics]
-    ax.plot(cycles, sharp95, marker="o", color="C2")
-    ax.set_title("95% interval width (sharpness) vs cycle")
-    ax.set_xlabel("Cycle")
-    ax.grid(alpha=0.3)
+        ax = axes[1, 1]
+        sharp95 = [float(m["uncertainty_quality"]["interval_width"]["95"]) for m in cycle_metrics]
+        ax.plot(cycles, sharp95, marker="o", color="C2")
+        ax.set_title("95% interval width (sharpness) vs cycle")
+        ax.set_xlabel("Cycle")
+        ax.grid(alpha=0.3)
 
     fig.tight_layout()
     fig.savefig(out_dir / f"metrics_vs_cycle{filename_suffix}.png", dpi=150)
@@ -1276,20 +1298,25 @@ def _plot_metrics_over_cycles(
 
     x_values = cumulative_train_samples if len(set(train_samples)) != len(train_samples) else train_samples
     x_label = "Cumulative train samples" if x_values == cumulative_train_samples else "Train samples"
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    axes[0].plot(x_values, rmse, marker="o", label="RMSE")
-    axes[0].plot(x_values, mae, marker="o", label="MAE")
-    axes[0].set_title("Forecast error vs data budget")
-    axes[0].set_xlabel(x_label)
+    if include_uncertainty:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+        error_ax = axes[0]
+    else:
+        fig, error_ax = plt.subplots(1, 1, figsize=(7, 4))
+    error_ax.plot(x_values, rmse, marker="o", label="RMSE")
+    error_ax.plot(x_values, mae, marker="o", label="MAE")
+    error_ax.set_title("Forecast error vs data budget")
+    error_ax.set_xlabel(x_label)
     if log_scale:
-        _set_log_y_if_positive(axes[0], [rmse, mae])
-    axes[0].grid(alpha=0.3)
-    axes[0].legend()
+        _set_log_y_if_positive(error_ax, [rmse, mae])
+    error_ax.grid(alpha=0.3)
+    error_ax.legend()
 
-    axes[1].plot(x_values, cal, marker="o", color="C3")
-    axes[1].set_title("Calibration error vs data budget")
-    axes[1].set_xlabel(x_label)
-    axes[1].grid(alpha=0.3)
+    if include_uncertainty:
+        axes[1].plot(x_values, cal, marker="o", color="C3")
+        axes[1].set_title("Calibration error vs data budget")
+        axes[1].set_xlabel(x_label)
+        axes[1].grid(alpha=0.3)
 
     fig.tight_layout()
     fig.savefig(out_dir / f"metrics_vs_train_samples{filename_suffix}.png", dpi=150)
@@ -1300,7 +1327,11 @@ def _plot_metrics_over_cycles(
         return
 
     target_colors = _target_color_map(targets)
-    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    if include_uncertainty:
+        fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+        error_ax = axes[0, 0]
+    else:
+        fig, error_ax = plt.subplots(1, 1, figsize=(8, 5))
     error_values: list[list[float]] = []
     for idx, target in enumerate(targets):
         color = target_colors[target]
@@ -1309,56 +1340,64 @@ def _plot_metrics_over_cycles(
         target_rmse = [_metric_float(values, "rmse") for values in forecast_series]
         target_mae = [_metric_float(values, "mae") for values in forecast_series]
         error_values.extend([target_rmse, target_mae])
-        axes[0, 0].plot(cycles, target_rmse, marker="o", color=color, label=target)
-        axes[0, 0].plot(cycles, target_mae, marker="o", linestyle="--", color=color, alpha=0.8)
-        axes[0, 1].plot(
-            cycles,
-            [_metric_float(values.get("coverage", {}), "95") if isinstance(values, dict) else float("nan") for values in uncertainty_series],
-            marker="o",
-            color=color,
-            label=target,
-        )
-        axes[1, 0].plot(
-            cycles,
-            [_metric_float(values, "calibration_error") for values in uncertainty_series],
-            marker="o",
-            color=color,
-            label=target,
-        )
-        axes[1, 1].plot(
-            cycles,
-            [
-                _metric_float(values.get("interval_width", {}), "95") if isinstance(values, dict) else float("nan")
-                for values in uncertainty_series
-            ],
-            marker="o",
-            color=color,
-            label=target,
-        )
+        error_ax.plot(cycles, target_rmse, marker="o", color=color, label=target)
+        error_ax.plot(cycles, target_mae, marker="o", linestyle="--", color=color, alpha=0.8)
+        if include_uncertainty:
+            axes[0, 1].plot(
+                cycles,
+                [_metric_float(values.get("coverage", {}), "95") if isinstance(values, dict) else float("nan") for values in uncertainty_series],
+                marker="o",
+                color=color,
+                label=target,
+            )
+            axes[1, 0].plot(
+                cycles,
+                [_metric_float(values, "calibration_error") for values in uncertainty_series],
+                marker="o",
+                color=color,
+                label=target,
+            )
+            axes[1, 1].plot(
+                cycles,
+                [
+                    _metric_float(values.get("interval_width", {}), "95") if isinstance(values, dict) else float("nan")
+                    for values in uncertainty_series
+                ],
+                marker="o",
+                color=color,
+                label=target,
+            )
 
-    axes[0, 0].set_title("Per-target forecast error vs cycle (solid=RMSE, dashed=MAE)")
-    axes[0, 0].set_xlabel("Cycle")
+    error_ax.set_title("Per-target forecast error vs cycle (solid=RMSE, dashed=MAE)")
+    error_ax.set_xlabel("Cycle")
     if log_scale:
-        _set_log_y_if_positive(axes[0, 0], error_values)
-    axes[0, 0].grid(alpha=0.3)
-    axes[0, 1].axhline(0.95, linestyle="--", linewidth=1.0, color="0.4")
-    axes[0, 1].set_ylim(0.0, 1.05)
-    axes[0, 1].set_title("Per-target empirical coverage (95%) vs cycle")
-    axes[0, 1].set_xlabel("Cycle")
-    axes[0, 1].grid(alpha=0.3)
-    axes[1, 0].set_title("Per-target calibration error vs cycle")
-    axes[1, 0].set_xlabel("Cycle")
-    axes[1, 0].grid(alpha=0.3)
-    axes[1, 1].set_title("Per-target 95% interval width vs cycle")
-    axes[1, 1].set_xlabel("Cycle")
-    axes[1, 1].grid(alpha=0.3)
-    handles, labels = axes[0, 1].get_legend_handles_labels()
+        _set_log_y_if_positive(error_ax, error_values)
+    error_ax.grid(alpha=0.3)
+    if include_uncertainty:
+        axes[0, 1].axhline(0.95, linestyle="--", linewidth=1.0, color="0.4")
+        axes[0, 1].set_ylim(0.0, 1.05)
+        axes[0, 1].set_title("Per-target empirical coverage (95%) vs cycle")
+        axes[0, 1].set_xlabel("Cycle")
+        axes[0, 1].grid(alpha=0.3)
+        axes[1, 0].set_title("Per-target calibration error vs cycle")
+        axes[1, 0].set_xlabel("Cycle")
+        axes[1, 0].grid(alpha=0.3)
+        axes[1, 1].set_title("Per-target 95% interval width vs cycle")
+        axes[1, 1].set_xlabel("Cycle")
+        axes[1, 1].grid(alpha=0.3)
+        handles, labels = axes[0, 1].get_legend_handles_labels()
+    else:
+        handles, labels = error_ax.get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=min(5, max(1, len(labels))), fontsize=7)
     fig.tight_layout(rect=[0, 0.08, 1, 1])
     fig.savefig(out_dir / f"metrics_vs_cycle_per-target{filename_suffix}.png", dpi=150)
     plt.close(fig)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    if include_uncertainty:
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        error_ax = axes[0]
+    else:
+        fig, error_ax = plt.subplots(1, 1, figsize=(8, 5))
     error_values = []
     for idx, target in enumerate(targets):
         color = target_colors[target]
@@ -1367,24 +1406,28 @@ def _plot_metrics_over_cycles(
         target_rmse = [_metric_float(values, "rmse") for values in forecast_series]
         target_mae = [_metric_float(values, "mae") for values in forecast_series]
         error_values.extend([target_rmse, target_mae])
-        axes[0].plot(x_values, target_rmse, marker="o", color=color, label=target)
-        axes[0].plot(x_values, target_mae, marker="o", linestyle="--", color=color, alpha=0.8)
-        axes[1].plot(
-            x_values,
-            [_metric_float(values, "calibration_error") for values in uncertainty_series],
-            marker="o",
-            color=color,
-            label=target,
-        )
-    axes[0].set_title("Per-target forecast error vs data budget (solid=RMSE, dashed=MAE)")
-    axes[0].set_xlabel(x_label)
+        error_ax.plot(x_values, target_rmse, marker="o", color=color, label=target)
+        error_ax.plot(x_values, target_mae, marker="o", linestyle="--", color=color, alpha=0.8)
+        if include_uncertainty:
+            axes[1].plot(
+                x_values,
+                [_metric_float(values, "calibration_error") for values in uncertainty_series],
+                marker="o",
+                color=color,
+                label=target,
+            )
+    error_ax.set_title("Per-target forecast error vs data budget (solid=RMSE, dashed=MAE)")
+    error_ax.set_xlabel(x_label)
     if log_scale:
-        _set_log_y_if_positive(axes[0], error_values)
-    axes[0].grid(alpha=0.3)
-    axes[1].set_title("Per-target calibration error vs data budget")
-    axes[1].set_xlabel(x_label)
-    axes[1].grid(alpha=0.3)
-    handles, labels = axes[1].get_legend_handles_labels()
+        _set_log_y_if_positive(error_ax, error_values)
+    error_ax.grid(alpha=0.3)
+    if include_uncertainty:
+        axes[1].set_title("Per-target calibration error vs data budget")
+        axes[1].set_xlabel(x_label)
+        axes[1].grid(alpha=0.3)
+        handles, labels = axes[1].get_legend_handles_labels()
+    else:
+        handles, labels = error_ax.get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=min(5, max(1, len(labels))), fontsize=7)
     fig.tight_layout(rect=[0, 0.12, 1, 1])
     fig.savefig(out_dir / f"metrics_vs_train_samples_per-target{filename_suffix}.png", dpi=150)
@@ -1555,15 +1598,35 @@ def _plot_rolling_forecast_metrics_comparison_per_target(
 
     x = np.arange(len(labels))
     target_colors = _target_color_map(target_names)
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharex=False)
-
+    include_uncertainty = any(
+        any(
+            isinstance(data.get(key), dict) and data.get(key)
+            for key in (
+                "per_target_calibration_error_95",
+                "per_target_empirical_coverage_95",
+                "per_target_interval_width_95_mean",
+            )
+        )
+        for data in datasets
+    )
+    base_specs = [
+        ("per_target_smape", "sMAPE", True),
+        ("per_target_nrmse", "NRMSE", True),
+        ("per_target_horizon_mean_mae", "Horizon Mean MAE", True),
+    ]
+    uncertainty_specs = [
+        ("per_target_calibration_error_95", "Calibration Error (95%)", False),
+        ("per_target_empirical_coverage_95", "Empirical Coverage (95%)", False),
+        ("per_target_interval_width_95_mean", "Mean 95% Interval Width", False),
+    ]
+    active_specs = base_specs + (uncertainty_specs if include_uncertainty else [])
+    ncols = 3
+    nrows = int(np.ceil(len(active_specs) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 4.5 * nrows), sharex=False)
+    axes_flat = np.atleast_1d(axes).ravel()
     plot_specs = [
-        (axes[0, 0], "per_target_smape", "sMAPE", True),
-        (axes[0, 1], "per_target_nrmse", "NRMSE", True),
-        (axes[0, 2], "per_target_calibration_error_95", "Calibration Error (95%)", False),
-        (axes[1, 0], "per_target_empirical_coverage_95", "Empirical Coverage (95%)", False),
-        (axes[1, 1], "per_target_interval_width_95_mean", "Mean 95% Interval Width", False),
-        (axes[1, 2], "per_target_horizon_mean_mae", "Horizon Mean MAE", True),
+        (axes_flat[idx], key, title, panel_log_scale)
+        for idx, (key, title, panel_log_scale) in enumerate(active_specs)
     ]
     for ax, key, title, panel_log_scale in plot_specs:
         plotted_values: list[list[float]] = []
@@ -1583,7 +1646,10 @@ def _plot_rolling_forecast_metrics_comparison_per_target(
         ax.set_xticks(x, labels, rotation=20, ha="right")
         ax.grid(alpha=0.3)
 
-    handles, labels_for_legend = axes[0, 0].get_legend_handles_labels()
+    for ax in axes_flat[len(active_specs) :]:
+        ax.set_visible(False)
+
+    handles, labels_for_legend = axes_flat[0].get_legend_handles_labels()
     fig.legend(
         handles,
         labels_for_legend,
@@ -2073,6 +2139,7 @@ def _save_forecast_pdf_subset(
     profile_names: list[str] | None = None,
     profile_entries: list[dict[str, Any]] | None = None,
     include_ensemble_members: bool = True,
+    mode: str = "ensemble",
 ) -> list[str]:
     subset_h5 = output_pdf_path.with_suffix(".subset_tmp.h5")
     plotted_names: list[str] = []
@@ -2105,7 +2172,7 @@ def _save_forecast_pdf_subset(
             save_forecast_profiles_pdf(
                 forecast_h5_path=subset_h5,
                 output_pdf_path=output_pdf_path,
-                mode="ensemble",
+                mode=mode,
                 include_ensemble_members=include_ensemble_members,
             )
     finally:
@@ -2159,6 +2226,94 @@ def _resolve_scaler_stats_paths(cfg: ExperimentConfig, run_dir: Path) -> tuple[P
     return None, save_path if cfg.save_scaler_stats else None
 
 
+def _train_single_model_for_test_eval(
+    *,
+    scaled_h5: Path,
+    out_dir: Path,
+    best: Any,
+    cfg: ExperimentConfig,
+    base_training_seed: int,
+) -> dict[str, Any]:
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    seed_records: list[dict[str, Any]] = []
+    best_record: dict[str, Any] | None = None
+
+    import torch
+
+    for seed_idx in range(int(cfg.single_model_seed_count)):
+        model_seed = int(base_training_seed + seed_idx)
+        model_dir = out_dir / f"seed_{seed_idx:02d}_{model_seed}"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        datasets = build_datasets(scaled_h5, batch_size=best.batch_size, seed=model_seed)
+        model, history, used_device = train_with_fallback(
+            datasets,
+            epochs=int(cfg.hp_grid.get("epochs", 20)),
+            out_dir=model_dir,
+            n_lstm=best.n_lstm,
+            lstm_hidden=best.hidden_lstm,
+            lstm_dropout=float(cfg.hp_grid.get("lstm_dropout", 0.0)),
+            n_fc=best.n_fc,
+            fc_hidden=tuple([best.hidden_fc] * int(best.n_fc)),
+            learning_rate=best.learning_rate,
+            step_lr_step_size=int(cfg.hp_grid.get("step_lr_step_size", 30)),
+            step_lr_gamma=float(cfg.hp_grid.get("step_lr_gamma", 0.5)),
+            verbose=int(cfg.hp_grid.get("verbose", 1)),
+            prefer_gpu=cfg.prefer_gpu,
+            preload_train_to_device=bool(cfg.hp_grid.get("preload_train_to_device", False)),
+            preload_val_to_device=bool(cfg.hp_grid.get("preload_val_to_device", True)),
+            deterministic_seed=model_seed,
+            early_stopping_patience=_optional_int(cfg.hp_grid, "early_stopping_patience"),
+            early_stopping_min_delta=float(cfg.hp_grid.get("early_stopping_min_delta", 0.0)),
+            restore_best_weights=True,
+            use_tqdm=bool(cfg.ensemble_use_tqdm),
+            save_training_curves=True,
+        )
+        model_path = model_dir / "model.pt"
+        torch.save(model.state_dict(), model_path)
+        val_losses = [float(v) for v in history.get("val_loss", [])]
+        record = {
+            "seed": model_seed,
+            "model_dir": str(model_dir),
+            "model_path": str(model_path),
+            "best_val_loss": float(min(val_losses)) if val_losses else float("inf"),
+            "final_val_loss": float(val_losses[-1]) if val_losses else float("inf"),
+            "used_device": str(used_device),
+            "history": history,
+            "model": model,
+        }
+        seed_records.append({k: v for k, v in record.items() if k != "model"})
+        if best_record is None or float(record["best_val_loss"]) < float(best_record["best_val_loss"]):
+            best_record = record
+
+    if best_record is None:
+        raise RuntimeError("Single-model test evaluation requested, but no single models were trained.")
+
+    datasets = build_datasets(scaled_h5, batch_size=best.batch_size, seed=int(best_record["seed"]))
+    test_and_save_forecasts(
+        best_record["model"],
+        datasets["test_profile_ds"],
+        out_dir=out_dir,
+        h5_path=scaled_h5,
+        state_dim=len(TARGET_NAMES),
+        control_channel=0,
+        target_names=list(TARGET_NAMES),
+        output_name="rolling_forecasts.h5",
+        use_tqdm=bool(cfg.ensemble_use_tqdm),
+        verbose=int(cfg.hp_grid.get("verbose", 1)),
+        num_workers=int(cfg.ensemble_forecast_num_workers),
+    )
+    return {
+        "forecast_output_path": out_dir / "rolling_forecasts.h5",
+        "model_dirs": [Path(str(record["model_dir"])) for record in seed_records],
+        "best_model_dir": Path(str(best_record["model_dir"])),
+        "best_model_path": Path(str(best_record["model_path"])),
+        "best_seed": int(best_record["seed"]),
+        "best_val_loss": float(best_record["best_val_loss"]),
+        "seed_records": seed_records,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run one full experiment starting from sim batch folders.")
     parser.add_argument("--config", type=Path, required=True)
@@ -2193,6 +2348,13 @@ def main() -> None:
         raise SystemExit("strategy must be branching or random.")
     if cfg.random_profiles_per_cycle is not None and int(cfg.random_profiles_per_cycle) < 1:
         raise SystemExit("random_profiles_per_cycle must be a positive integer when provided.")
+    if bool(cfg.use_single_model_test_eval) and int(cfg.single_model_seed_count) < 1:
+        raise SystemExit("single_model_seed_count must be a positive integer when use_single_model_test_eval is true.")
+    if bool(cfg.use_single_model_test_eval) and cfg.strategy == "branching" and int(cfg.retrain_cycles) > 1:
+        raise SystemExit(
+            "use_single_model_test_eval=true is not compatible with multi-cycle branching, because recursive branching "
+            "requires ensemble uncertainty. Use strategy='random', retrain_cycles=1, or disable use_single_model_test_eval."
+        )
 
     output_root = resolve_output_root(cfg.output_root)
     base_output_dir = args.base_output_dir.resolve() if args.base_output_dir else output_root / "experiments"
@@ -2359,42 +2521,54 @@ def main() -> None:
                 ),
             )
 
-        _print_step_banner(cycle + 1, "Train bagged ensemble")
+        evaluation_mode = "single_model" if bool(cfg.use_single_model_test_eval) else "ensemble"
+        _print_step_banner(cycle + 1, "Train single model" if evaluation_mode == "single_model" else "Train bagged ensemble")
         save_member_forecasts_for_cycle = bool(
-            cfg.save_individual_ensemble_forecasts or cfg.plot_individual_ensemble_forecasts
+            evaluation_mode == "ensemble"
+            and (cfg.save_individual_ensemble_forecasts or cfg.plot_individual_ensemble_forecasts)
         )
         t0 = perf_counter()
-        ensemble = run_bagging_ensemble(
-            scaled_h5,
-            out_dir=cycle_dir / "ensemble",
-            n_models=cfg.n_models,
-            bag_fraction=cfg.bag_fraction,
-            bag_split_mode=cfg.bag_split_mode,
-            seed=training_seed,
-            batch_size=best.batch_size,
-            epochs=int(cfg.hp_grid.get("epochs", 20)),
-            learning_rate=best.learning_rate,
-            n_lstm=best.n_lstm,
-            lstm_hidden=best.hidden_lstm,
-            n_fc=best.n_fc,
-            fc_hidden=tuple([best.hidden_fc] * int(best.n_fc)),
-            lstm_dropout=float(cfg.hp_grid.get("lstm_dropout", 0.0)),
-            early_stopping_patience=_optional_int(cfg.hp_grid, "early_stopping_patience"),
-            early_stopping_min_delta=float(cfg.hp_grid.get("early_stopping_min_delta", 0.0)),
-            step_lr_step_size=int(cfg.hp_grid.get("step_lr_step_size", 30)),
-            step_lr_gamma=float(cfg.hp_grid.get("step_lr_gamma", 0.5)),
-            prefer_gpu=cfg.prefer_gpu,
-            preload_val_to_device=bool(cfg.hp_grid.get("preload_val_to_device", True)),
-            use_tqdm=bool(cfg.ensemble_use_tqdm),
-            verbose=int(cfg.hp_grid.get("verbose", 1)),
-            forecast_num_workers=int(cfg.ensemble_forecast_num_workers),
-            plot_bag_distributions=bool(cfg.plot_bag_distributions),
-            save_member_forecasts=save_member_forecasts_for_cycle,
-        )
+        if evaluation_mode == "single_model":
+            ensemble = _train_single_model_for_test_eval(
+                scaled_h5=scaled_h5,
+                out_dir=cycle_dir / "single_model",
+                best=best,
+                cfg=cfg,
+                base_training_seed=training_seed,
+            )
+        else:
+            ensemble = run_bagging_ensemble(
+                scaled_h5,
+                out_dir=cycle_dir / "ensemble",
+                n_models=cfg.n_models,
+                bag_fraction=cfg.bag_fraction,
+                bag_split_mode=cfg.bag_split_mode,
+                seed=training_seed,
+                batch_size=best.batch_size,
+                epochs=int(cfg.hp_grid.get("epochs", 20)),
+                learning_rate=best.learning_rate,
+                n_lstm=best.n_lstm,
+                lstm_hidden=best.hidden_lstm,
+                n_fc=best.n_fc,
+                fc_hidden=tuple([best.hidden_fc] * int(best.n_fc)),
+                lstm_dropout=float(cfg.hp_grid.get("lstm_dropout", 0.0)),
+                early_stopping_patience=_optional_int(cfg.hp_grid, "early_stopping_patience"),
+                early_stopping_min_delta=float(cfg.hp_grid.get("early_stopping_min_delta", 0.0)),
+                step_lr_step_size=int(cfg.hp_grid.get("step_lr_step_size", 30)),
+                step_lr_gamma=float(cfg.hp_grid.get("step_lr_gamma", 0.5)),
+                prefer_gpu=cfg.prefer_gpu,
+                preload_val_to_device=bool(cfg.hp_grid.get("preload_val_to_device", True)),
+                use_tqdm=bool(cfg.ensemble_use_tqdm),
+                verbose=int(cfg.hp_grid.get("verbose", 1)),
+                forecast_num_workers=int(cfg.ensemble_forecast_num_workers),
+                plot_bag_distributions=bool(cfg.plot_bag_distributions),
+                save_member_forecasts=save_member_forecasts_for_cycle,
+            )
         step_times["ensemble_training_sec"] = perf_counter() - t0
         model_paths = [str(Path(d) / "model.pt") for d in ensemble["model_dirs"]]
-        bagged_h5_path = Path(ensemble["bagged_h5_path"])
+        bagged_h5_path = Path(ensemble["bagged_h5_path"]) if "bagged_h5_path" in ensemble else None
         forecast_h5 = Path(ensemble["forecast_output_path"])
+        eval_dir = cycle_dir / ("single_model" if evaluation_mode == "single_model" else "ensemble")
         bag_distribution_overlap_plot = ensemble.get("bag_distribution_overlap_plot")
         ensemble_training_curves_plot = ensemble.get("training_curves_plot")
         t0 = perf_counter()
@@ -2404,9 +2578,10 @@ def main() -> None:
         metrics = {
             "forecast_quality": point_metrics,
             "uncertainty_quality": unc_metrics,
+            "evaluation_mode": evaluation_mode,
         }
         t0 = perf_counter()
-        rolling_forecast_metrics_json = cycle_dir / "ensemble" / "rolling_forecast_metrics.json"
+        rolling_forecast_metrics_json = eval_dir / "rolling_forecast_metrics.json"
         compute_and_save_rolling_forecast_metrics(
             forecast_h5,
             rolling_forecast_metrics_json,
@@ -2415,13 +2590,17 @@ def main() -> None:
         step_times["rolling_forecast_metrics_compute_sec"] = perf_counter() - t0
         print(f"[cycle {cycle + 1}] Saved rolling forecast metrics JSON: {rolling_forecast_metrics_json}")
         print(
-            f"[cycle {cycle + 1}] Ensemble test summary: "
-            f"RMSE={point_metrics['rmse']:.6f}, MAE={point_metrics['mae']:.6f}, MAX_ABS={point_metrics['max_abs']:.6f}, "
-            f"COV50={unc_metrics['coverage']['50']:.4f}, COV80={unc_metrics['coverage']['80']:.4f}, "
-            f"COV95={unc_metrics['coverage']['95']:.4f}, CAL_ERR={unc_metrics['calibration_error']:.4f}"
+            f"[cycle {cycle + 1}] {evaluation_mode} test summary: "
+            f"RMSE={point_metrics['rmse']:.6f}, MAE={point_metrics['mae']:.6f}, MAX_ABS={point_metrics['max_abs']:.6f}"
+            + (
+                f", COV50={unc_metrics['coverage']['50']:.4f}, COV80={unc_metrics['coverage']['80']:.4f}, "
+                f"COV95={unc_metrics['coverage']['95']:.4f}, CAL_ERR={unc_metrics['calibration_error']:.4f}"
+                if bool(unc_metrics.get("available", False))
+                else ""
+            )
         )
 
-        forecast_pdf = cycle_dir / "ensemble" / "ensemble_test_forecasts.pdf"
+        forecast_pdf = eval_dir / ("single_model_test_forecasts.pdf" if evaluation_mode == "single_model" else "ensemble_test_forecasts.pdf")
         t0 = perf_counter()
         forecast_plot_selection = _load_or_create_forecast_plot_selection(
             forecast_h5_path=forecast_h5,
@@ -2445,11 +2624,12 @@ def main() -> None:
             output_pdf_path=forecast_pdf,
             profile_names=selected_forecast_profiles,
             profile_entries=selected_forecast_entries or None,
-            include_ensemble_members=bool(cfg.plot_individual_ensemble_forecasts),
+            include_ensemble_members=bool(evaluation_mode == "ensemble" and cfg.plot_individual_ensemble_forecasts),
+            mode="single" if evaluation_mode == "single_model" else "ensemble",
         )
         step_times["forecast_pdf_render_sec"] = perf_counter() - t0
-        _print_step_result(cycle + 1, "Ensemble training + evaluation complete", f"Forecast PDF: {forecast_pdf}")
-        metrics_json = cycle_dir / "ensemble" / "ensemble_metrics.json"
+        _print_step_result(cycle + 1, "Model training + evaluation complete", f"Forecast PDF: {forecast_pdf}")
+        metrics_json = eval_dir / ("single_model_metrics.json" if evaluation_mode == "single_model" else "ensemble_metrics.json")
         metrics_json.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         print(f"[cycle {cycle + 1}] Saved ensemble metrics JSON: {metrics_json}")
 
@@ -2460,7 +2640,7 @@ def main() -> None:
             test_difficulty_result = evaluate_testset_difficulty(
                 scaled_h5=scaled_h5,
                 forecast_h5=forecast_h5,
-                out_dir=cycle_dir / "ensemble" / "test_difficulty",
+                out_dir=eval_dir / "test_difficulty",
                 n_bins=int(cfg.test_difficulty_bins),
                 config_path=cfg_py,
                 include_per_target=bool(cfg.test_difficulty_include_per_target),
@@ -2602,7 +2782,12 @@ def main() -> None:
                 "saved_scaler_stats_path": None if cycle_save_scaler_stats_path is None else str(cycle_save_scaler_stats_path),
                 **split_budget,
                 **new_batch_budget,
-                "bagged_h5_path": str(bagged_h5_path),
+                "evaluation_mode": evaluation_mode,
+                "single_model_seed_count": int(cfg.single_model_seed_count) if evaluation_mode == "single_model" else None,
+                "single_model_best_seed": ensemble.get("best_seed") if evaluation_mode == "single_model" else None,
+                "single_model_best_val_loss": ensemble.get("best_val_loss") if evaluation_mode == "single_model" else None,
+                "single_model_seed_records": ensemble.get("seed_records", []) if evaluation_mode == "single_model" else [],
+                "bagged_h5_path": None if bagged_h5_path is None else str(bagged_h5_path),
                 "bag_distribution_overlap_plot": (
                     None if bag_distribution_overlap_plot is None else str(bag_distribution_overlap_plot)
                 ),

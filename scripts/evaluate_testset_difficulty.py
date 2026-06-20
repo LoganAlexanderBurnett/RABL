@@ -87,16 +87,21 @@ def _forecast_columns_for_targets(
     columns: list[str],
 ) -> tuple[list[int], list[int], int]:
     missing = ["t", "u(t)"]
-    missing.extend(f"x_true(t)_{name}" for name in TARGET_NAMES if f"x_true(t)_{name}" not in columns)
-    missing.extend(f"x_mean(t)_{name}" for name in TARGET_NAMES if f"x_mean(t)_{name}" not in columns)
+    truth_prefix = "x_true(t)_"
+    pred_prefix = "x_mean(t)_"
+    if not all(f"{truth_prefix}{name}" in columns for name in TARGET_NAMES):
+        truth_prefix = "x(t)_"
+        pred_prefix = "x^~(t)_"
+    missing.extend(f"{truth_prefix}{name}" for name in TARGET_NAMES if f"{truth_prefix}{name}" not in columns)
+    missing.extend(f"{pred_prefix}{name}" for name in TARGET_NAMES if f"{pred_prefix}{name}" not in columns)
     missing = [name for name in missing if name not in columns]
     if missing:
         raise ValueError(
             f"Forecast profile {profile_name!r} in {forecast_h5} is missing required columns: {missing}"
         )
     control_idx = columns.index("u(t)")
-    true_indices = [columns.index(f"x_true(t)_{name}") for name in TARGET_NAMES]
-    pred_indices = [columns.index(f"x_mean(t)_{name}") for name in TARGET_NAMES]
+    true_indices = [columns.index(f"{truth_prefix}{name}") for name in TARGET_NAMES]
+    pred_indices = [columns.index(f"{pred_prefix}{name}") for name in TARGET_NAMES]
     return true_indices, pred_indices, control_idx
 
 
