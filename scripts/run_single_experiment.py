@@ -1138,7 +1138,34 @@ def _cycle_metric_target_names(cycle_metrics: list[dict[str, Any]]) -> list[str]
     return _ordered_target_names(names)
 
 
-def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path) -> None:
+def _target_color_map(target_names: list[str]) -> dict[str, Any]:
+    temperature_targets = {"TN2", "Tm", "Thp", "Tf", "Tsg"}
+    steam_targets = {"T_steam_out", "x_steam_out"}
+    neutronic_targets = {"c[1]", "c[2]", "c[3]", "c[4]", "c[5]", "c[6]", "n", "rho_dollars"}
+    groups = [
+        (temperature_targets, plt.colormaps.get_cmap("YlOrRd")),
+        (steam_targets, plt.colormaps.get_cmap("PuBu")),
+        (neutronic_targets, plt.colormaps.get_cmap("YlGn")),
+    ]
+    colors: dict[str, Any] = {}
+    for group_targets, cmap in groups:
+        present = [name for name in target_names if name in group_targets]
+        for idx, name in enumerate(present):
+            frac = 0.35 + 0.55 * (idx / max(1, len(present) - 1))
+            colors[name] = cmap(frac)
+    fallback = plt.colormaps.get_cmap("tab20")
+    for idx, name in enumerate(target_names):
+        colors.setdefault(name, fallback(idx % fallback.N))
+    return colors
+
+
+def _plot_metrics_over_cycles(
+    cycle_metrics: list[dict[str, Any]],
+    out_dir: Path,
+    *,
+    log_scale: bool = True,
+    filename_suffix: str = "",
+) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     cycles = [int(m["cycle"]) for m in cycle_metrics]
     train_samples = [int(m.get("train_sample_count", 0)) for m in cycle_metrics]
@@ -1156,7 +1183,8 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     ax.plot(cycles, mae, marker="o", label="MAE")
     ax.set_title("Forecast error vs cycle")
     ax.set_xlabel("Cycle")
-    _set_log_y_if_positive(ax, [rmse, mae])
+    if log_scale:
+        _set_log_y_if_positive(ax, [rmse, mae])
     ax.grid(alpha=0.3)
     ax.legend()
 
@@ -1184,7 +1212,7 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     ax.grid(alpha=0.3)
 
     fig.tight_layout()
-    fig.savefig(out_dir / "metrics_vs_cycle.png", dpi=150)
+    fig.savefig(out_dir / f"metrics_vs_cycle{filename_suffix}.png", dpi=150)
     plt.close(fig)
 
     x_values = cumulative_train_samples if len(set(train_samples)) != len(train_samples) else train_samples
@@ -1194,7 +1222,8 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     axes[0].plot(x_values, mae, marker="o", label="MAE")
     axes[0].set_title("Forecast error vs data budget")
     axes[0].set_xlabel(x_label)
-    _set_log_y_if_positive(axes[0], [rmse, mae])
+    if log_scale:
+        _set_log_y_if_positive(axes[0], [rmse, mae])
     axes[0].grid(alpha=0.3)
     axes[0].legend()
 
@@ -1204,18 +1233,18 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     axes[1].grid(alpha=0.3)
 
     fig.tight_layout()
-    fig.savefig(out_dir / "metrics_vs_train_samples.png", dpi=150)
+    fig.savefig(out_dir / f"metrics_vs_train_samples{filename_suffix}.png", dpi=150)
     plt.close(fig)
 
     targets = _cycle_metric_target_names(cycle_metrics)
     if not targets:
         return
 
-    cmap = plt.colormaps.get_cmap("tab20")
+    target_colors = _target_color_map(targets)
     fig, axes = plt.subplots(2, 2, figsize=(14, 9))
     error_values: list[list[float]] = []
     for idx, target in enumerate(targets):
-        color = cmap(idx % cmap.N)
+        color = target_colors[target]
         forecast_series = [m.get("forecast_quality", {}).get("per_target", {}).get(target, {}) for m in cycle_metrics]
         uncertainty_series = [m.get("uncertainty_quality", {}).get("per_target", {}).get(target, {}) for m in cycle_metrics]
         target_rmse = [_metric_float(values, "rmse") for values in forecast_series]
@@ -1250,7 +1279,8 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
 
     axes[0, 0].set_title("Per-target forecast error vs cycle (solid=RMSE, dashed=MAE)")
     axes[0, 0].set_xlabel("Cycle")
-    _set_log_y_if_positive(axes[0, 0], error_values)
+    if log_scale:
+        _set_log_y_if_positive(axes[0, 0], error_values)
     axes[0, 0].grid(alpha=0.3)
     axes[0, 1].axhline(0.95, linestyle="--", linewidth=1.0, color="0.4")
     axes[0, 1].set_ylim(0.0, 1.05)
@@ -1266,13 +1296,13 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     handles, labels = axes[0, 1].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=min(5, max(1, len(labels))), fontsize=7)
     fig.tight_layout(rect=[0, 0.08, 1, 1])
-    fig.savefig(out_dir / "metrics_vs_cycle_per-target.png", dpi=150)
+    fig.savefig(out_dir / f"metrics_vs_cycle_per-target{filename_suffix}.png", dpi=150)
     plt.close(fig)
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     error_values = []
     for idx, target in enumerate(targets):
-        color = cmap(idx % cmap.N)
+        color = target_colors[target]
         forecast_series = [m.get("forecast_quality", {}).get("per_target", {}).get(target, {}) for m in cycle_metrics]
         uncertainty_series = [m.get("uncertainty_quality", {}).get("per_target", {}).get(target, {}) for m in cycle_metrics]
         target_rmse = [_metric_float(values, "rmse") for values in forecast_series]
@@ -1289,7 +1319,8 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
         )
     axes[0].set_title("Per-target forecast error vs data budget (solid=RMSE, dashed=MAE)")
     axes[0].set_xlabel(x_label)
-    _set_log_y_if_positive(axes[0], error_values)
+    if log_scale:
+        _set_log_y_if_positive(axes[0], error_values)
     axes[0].grid(alpha=0.3)
     axes[1].set_title("Per-target calibration error vs data budget")
     axes[1].set_xlabel(x_label)
@@ -1297,7 +1328,7 @@ def _plot_metrics_over_cycles(cycle_metrics: list[dict[str, Any]], out_dir: Path
     handles, labels = axes[1].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=min(5, max(1, len(labels))), fontsize=7)
     fig.tight_layout(rect=[0, 0.12, 1, 1])
-    fig.savefig(out_dir / "metrics_vs_train_samples_per-target.png", dpi=150)
+    fig.savefig(out_dir / f"metrics_vs_train_samples_per-target{filename_suffix}.png", dpi=150)
     plt.close(fig)
 
 
@@ -1421,6 +1452,7 @@ def _plot_rolling_forecast_metrics_comparison_per_target(
     *,
     cycle_rows: list[dict[str, Any]],
     output_path: Path,
+    use_log_scale: bool = True,
 ) -> Path | None:
     """Plot per-target rolling forecast summaries for experiment cycles."""
     rows_with_metrics = [
@@ -1463,7 +1495,7 @@ def _plot_rolling_forecast_metrics_comparison_per_target(
         return None
 
     x = np.arange(len(labels))
-    cmap = plt.colormaps.get_cmap("tab20")
+    target_colors = _target_color_map(target_names)
     fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharex=False)
 
     plot_specs = [
@@ -1474,7 +1506,7 @@ def _plot_rolling_forecast_metrics_comparison_per_target(
         (axes[1, 1], "per_target_interval_width_95_mean", "Mean 95% Interval Width", False),
         (axes[1, 2], "per_target_horizon_mean_mae", "Horizon Mean MAE", True),
     ]
-    for ax, key, title, log_scale in plot_specs:
+    for ax, key, title, panel_log_scale in plot_specs:
         plotted_values: list[list[float]] = []
         for idx, target in enumerate(target_names):
             values = [
@@ -1482,11 +1514,11 @@ def _plot_rolling_forecast_metrics_comparison_per_target(
                 for data in datasets
             ]
             plotted_values.append(values)
-            ax.plot(x, values, marker="o", linewidth=1.4, color=cmap(idx % cmap.N), label=target)
+            ax.plot(x, values, marker="o", linewidth=1.4, color=target_colors[target], label=target)
         if key == "per_target_empirical_coverage_95":
             ax.axhline(0.95, linestyle="--", linewidth=1.0, color="0.4", label="ideal 0.95")
             ax.set_ylim(0.0, 1.05)
-        if log_scale:
+        if use_log_scale and panel_log_scale:
             _set_log_y_if_positive(ax, plotted_values)
         ax.set_title(title)
         ax.set_xticks(x, labels, rotation=20, ha="right")
@@ -1943,6 +1975,38 @@ def _load_or_create_forecast_plot_selection(
     return selection
 
 
+def _refresh_forecast_selection_entry_metrics(selection: dict[str, Any], forecast_h5_path: Path) -> dict[str, Any]:
+    selected_entries = selection.get("selected_entries")
+    if not isinstance(selected_entries, list):
+        return selection
+    refreshed_entries: list[dict[str, Any]] = []
+    with h5py.File(forecast_h5_path, "r") as h5f:
+        for entry in selected_entries:
+            if not isinstance(entry, dict):
+                continue
+            refreshed = dict(entry)
+            profile_name = str(refreshed.get("profile_name", ""))
+            if profile_name in h5f:
+                group = h5f[profile_name]
+                if "data" in group:
+                    table = np.asarray(group["data"][()], dtype=float)
+                    columns = _decode_h5_strings(group.attrs.get("columns", []))
+                    if table.ndim == 2 and len(columns) == table.shape[1]:
+                        mae = _forecast_profile_mae(table=table, columns=columns)
+                        finite_mae = None if mae is None or not np.isfinite(float(mae)) else float(mae)
+                        refreshed["mae"] = finite_mae
+                        mae_label = "n/a" if finite_mae is None else f"{finite_mae:.4g}"
+                        bin_idx = refreshed.get("bin_index", "n/a")
+                        angle_range_label = refreshed.get("angle_range_label", "")
+                        refreshed["plot_title"] = (
+                            f"{profile_name} | angle bin {bin_idx} {angle_range_label} deg | MAE={mae_label}"
+                        )
+            refreshed_entries.append(refreshed)
+    selection = dict(selection)
+    selection["selected_entries"] = refreshed_entries
+    return selection
+
+
 def _save_forecast_pdf_subset(
     *,
     forecast_h5_path: Path,
@@ -2308,6 +2372,7 @@ def main() -> None:
                 else base_seed
             ),
         )
+        forecast_plot_selection = _refresh_forecast_selection_entry_metrics(forecast_plot_selection, forecast_h5)
         selected_forecast_profiles = [str(name) for name in forecast_plot_selection.get("selected_profiles", [])]
         selected_forecast_entries = [
             entry for entry in forecast_plot_selection.get("selected_entries", []) if isinstance(entry, dict)
@@ -2524,6 +2589,9 @@ def main() -> None:
                 "test_difficulty_summary_plot": (
                     None if test_difficulty_result is None else test_difficulty_result.get("summary_plot")
                 ),
+                "test_difficulty_summary_plot_linear": (
+                    None if test_difficulty_result is None else test_difficulty_result.get("summary_plot_linear")
+                ),
                 "test_difficulty_artifacts": (
                     [] if test_difficulty_result is None else test_difficulty_result.get("artifacts", [])
                 ),
@@ -2567,16 +2635,20 @@ def main() -> None:
         seed_manifest["cycles"].append(cycle_seed_info)
 
     metrics_plots_dir = run_dir / "metrics_plots"
+    cycle_metric_rows = [
+        {
+            "cycle": row["cycle"],
+            "train_sample_count": row.get("train_sample_count", 0),
+            **row["ensemble_test_metrics"],
+        }
+        for row in metadata["cycles"]
+    ]
+    _plot_metrics_over_cycles(cycle_metric_rows, out_dir=metrics_plots_dir, log_scale=True)
     _plot_metrics_over_cycles(
-        [
-            {
-                "cycle": row["cycle"],
-                "train_sample_count": row.get("train_sample_count", 0),
-                **row["ensemble_test_metrics"],
-            }
-            for row in metadata["cycles"]
-        ],
+        cycle_metric_rows,
         out_dir=metrics_plots_dir,
+        log_scale=False,
+        filename_suffix="_linear",
     )
     cycle_colored_plot_path = metrics_plots_dir / "profiles_by_cycle_color.png"
     _plot_cycle_colored_batches(
@@ -2599,15 +2671,25 @@ def main() -> None:
     rolling_forecast_metrics_comparison_per_target_path = _plot_rolling_forecast_metrics_comparison_per_target(
         cycle_rows=metadata["cycles"],
         output_path=metrics_plots_dir / "rolling_forecast_metrics_comparison_per-target.png",
+        use_log_scale=True,
+    )
+    rolling_forecast_metrics_comparison_per_target_linear_path = _plot_rolling_forecast_metrics_comparison_per_target(
+        cycle_rows=metadata["cycles"],
+        output_path=metrics_plots_dir / "rolling_forecast_metrics_comparison_per-target_linear.png",
+        use_log_scale=False,
     )
     metadata["postprocess_timing"] = {
         "rolling_forecast_metrics_compare_sec": perf_counter() - t0,
     }
     metadata["metrics_plots"] = {
         "metrics_vs_cycle": str(metrics_plots_dir / "metrics_vs_cycle.png"),
+        "metrics_vs_cycle_linear": str(metrics_plots_dir / "metrics_vs_cycle_linear.png"),
         "metrics_vs_cycle_per_target": str(metrics_plots_dir / "metrics_vs_cycle_per-target.png"),
+        "metrics_vs_cycle_per_target_linear": str(metrics_plots_dir / "metrics_vs_cycle_per-target_linear.png"),
         "metrics_vs_train_samples": str(metrics_plots_dir / "metrics_vs_train_samples.png"),
+        "metrics_vs_train_samples_linear": str(metrics_plots_dir / "metrics_vs_train_samples_linear.png"),
         "metrics_vs_train_samples_per_target": str(metrics_plots_dir / "metrics_vs_train_samples_per-target.png"),
+        "metrics_vs_train_samples_per_target_linear": str(metrics_plots_dir / "metrics_vs_train_samples_per-target_linear.png"),
         "profiles_by_cycle_color": str(cycle_colored_plot_path),
         "training_distribution_theta_rho_n_by_cycle": (
             None if training_distribution_plot_path is None else str(training_distribution_plot_path)
@@ -2621,6 +2703,11 @@ def main() -> None:
             None
             if rolling_forecast_metrics_comparison_per_target_path is None
             else str(rolling_forecast_metrics_comparison_per_target_path)
+        ),
+        "rolling_forecast_metrics_comparison_per_target_linear": (
+            None
+            if rolling_forecast_metrics_comparison_per_target_linear_path is None
+            else str(rolling_forecast_metrics_comparison_per_target_linear_path)
         ),
     }
 

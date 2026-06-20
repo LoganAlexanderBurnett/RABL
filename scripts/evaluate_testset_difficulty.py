@@ -274,6 +274,32 @@ def _set_log_y_if_positive(ax, values: Any) -> None:
         ax.set_yscale("log")
         ax.set_ylim(bottom=lower, top=upper)
 
+def _ordered_target_names(names: Any) -> list[str]:
+    unique = {str(name) for name in names}
+    ordered = [name for name in TARGET_NAMES if name in unique]
+    ordered.extend(sorted(unique.difference(ordered)))
+    return ordered
+
+def _target_color_map(target_names: list[str]) -> dict[str, Any]:
+    temperature_targets = {"TN2", "Tm", "Thp", "Tf", "Tsg"}
+    steam_targets = {"T_steam_out", "x_steam_out"}
+    neutronic_targets = {"c[1]", "c[2]", "c[3]", "c[4]", "c[5]", "c[6]", "n", "rho_dollars"}
+    groups = [
+        (temperature_targets, plt.colormaps.get_cmap("YlOrRd")),
+        (steam_targets, plt.colormaps.get_cmap("PuBu")),
+        (neutronic_targets, plt.colormaps.get_cmap("YlGn")),
+    ]
+    colors: dict[str, Any] = {}
+    for group_targets, cmap in groups:
+        present = [name for name in target_names if name in group_targets]
+        for idx, name in enumerate(present):
+            frac = 0.35 + 0.55 * (idx / max(1, len(present) - 1))
+            colors[name] = cmap(frac)
+    fallback = plt.colormaps.get_cmap("tab20")
+    for idx, name in enumerate(target_names):
+        colors.setdefault(name, fallback(idx % fallback.N))
+    return colors
+
 def _plot_summary_grid(
     *,
     per_profile_rows: list[dict[str, Any]],
@@ -281,6 +307,7 @@ def _plot_summary_grid(
     target_overlay: dict[str, dict[str, dict[str, list[float]]]],
     include_per_target: bool,
     output_path: Path,
+    log_scale: bool = True,
 ) -> None:
     descriptors = ["theta_peak", "dtheta_dt_peak", "rho_peak", "drho_dt_peak"]
     columns = ["MAE_hist", "MSE_hist", "MAE_box"]
@@ -296,6 +323,13 @@ def _plot_summary_grid(
         "rho_peak": "#F28E2B",
         "drho_dt_peak": "#B07AA1",
     }
+    overlay_target_names = _ordered_target_names(
+        name
+        for descriptor_payload in target_overlay.values()
+        for metric_payload in descriptor_payload.values()
+        for name in metric_payload
+    )
+    target_colors = _target_color_map(overlay_target_names)
 
     fig, axes = plt.subplots(len(descriptors), len(columns), figsize=(18, 18))
 
@@ -353,11 +387,13 @@ def _plot_summary_grid(
                                 alpha=0.85,
                                 marker="o",
                                 markersize=2.5,
+                                color=target_colors.get(target_name),
                                 label=target_name,
                             )
                     if row_idx == 0 and col_idx == 0 and metric_overlay:
                         ax.legend(loc="upper left", fontsize=6, ncol=2, frameon=True)
-                _set_log_y_if_positive(ax, scale_values)
+                if log_scale:
+                    _set_log_y_if_positive(ax, scale_values)
             else:
                 labels = [str(r["bin"]) for r in mae_rows]
                 display_map = {str(r["bin"]): str(r.get("bin_display", r["bin"])) for r in mae_rows}
@@ -372,7 +408,8 @@ def _plot_summary_grid(
                 ax.set_xlabel(f"{descriptor_latex[descriptor]} bins")
                 ax.set_ylabel("MAE")
                 ax.set_title(f"MAE distribution by {descriptor_latex[descriptor]} bin")
-                _set_log_y_if_positive(ax, values)
+                if log_scale:
+                    _set_log_y_if_positive(ax, values)
                 ax.tick_params(axis="x", rotation=25, labelsize=8)
                 ax.grid(alpha=0.25, axis="y")
                 ax.set_axisbelow(True)
@@ -456,6 +493,7 @@ def evaluate_testset_difficulty(
         y_pred_scaled = np.mean(np.stack(pred_stack, axis=0), axis=0)
 
         y_true = _descale_targets_from_stats(scaling_stats, y_scaled)
+        y_pred = _descale_targets_from_stats(scaling_stats, y_pred_scaled)
 
         drum_scaled = x_scaled[:, -1, control_idx]
         drum = _descale_feature_from_stats(scaling_stats, drum_scaled, control_idx)
@@ -470,8 +508,8 @@ def evaluate_testset_difficulty(
             "drho_dt_peak": _signed_peak(drho_dt, 0.0),
         }
 
-        abs_err = np.abs(y_scaled - y_pred_scaled)
-        sq_err = (y_scaled - y_pred_scaled) ** 2
+        abs_err = np.abs(y_true - y_pred)
+        sq_err = (y_true - y_pred) ** 2
         row: dict[str, Any] = {
             "profile_id": str(profile_name),
             "MAE": float(np.mean(abs_err)),
@@ -630,8 +668,19 @@ def evaluate_testset_difficulty(
         target_overlay=target_overlay,
         include_per_target=bool(include_per_target),
         output_path=combined_plot,
+        log_scale=True,
     )
     generated_paths.append(str(combined_plot))
+    combined_plot_linear = out_dir / "difficulty_4x3_summary_linear.png"
+    _plot_summary_grid(
+        per_profile_rows=per_profile_rows,
+        descriptor_metrics=descriptor_metric_rows,
+        target_overlay=target_overlay,
+        include_per_target=bool(include_per_target),
+        output_path=combined_plot_linear,
+        log_scale=False,
+    )
+    generated_paths.append(str(combined_plot_linear))
 
     # Persist per-profile table with bin labels included.
     _write_csv(per_profile_csv, list(per_profile_rows[0].keys()), per_profile_rows)
@@ -661,6 +710,7 @@ def evaluate_testset_difficulty(
         "manifest": str(manifest_path),
         "per_profile_csv": str(per_profile_csv),
         "summary_plot": str(combined_plot),
+        "summary_plot_linear": str(combined_plot_linear),
         "artifacts": generated_paths,
     }
 

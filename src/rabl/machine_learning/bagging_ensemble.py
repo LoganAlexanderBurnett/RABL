@@ -337,8 +337,15 @@ def _plot_bag_distribution_overlap(
 
     handles, labels = axes[0].get_legend_handles_labels()
     if handles:
-        fig.legend(handles, labels, loc="upper center", ncol=min(4, len(handles)), frameon=False)
-    fig.tight_layout()
+        fig.legend(
+            handles,
+            labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.995),
+            ncol=min(4, len(handles)),
+            frameon=False,
+        )
+    fig.tight_layout(rect=[0, 0, 1, 0.90])
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return output_path
