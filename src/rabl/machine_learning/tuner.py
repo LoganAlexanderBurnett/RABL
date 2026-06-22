@@ -24,8 +24,10 @@ from rabl.machine_learning.lstm_pipeline import (
     build_datasets,
     build_model,
     cleanup_cuda,
+    TARGET_NAMES,
     test_and_save_forecasts,
     train_with_fallback,
+    _load_scaling_stats,
 )
 
 
@@ -297,9 +299,11 @@ def _save_timing_summary(
     return out_path
 
 
-def _compute_forecast_quality_metrics(forecast_h5: Path) -> dict[str, Any]:
+def _compute_forecast_quality_metrics(forecast_h5: Path, *, scaled_h5: Path) -> dict[str, Any]:
     import h5py
     import numpy as np
+
+    scaling_stats = _load_scaling_stats(scaled_h5)
 
     y_true_profiles: list[np.ndarray] = []
     y_pred_profiles: list[np.ndarray] = []
@@ -335,7 +339,7 @@ def _compute_forecast_quality_metrics(forecast_h5: Path) -> dict[str, Any]:
             y_pred_profiles.append(table[:, pred_cols])
 
     if not y_true_profiles or target_names is None:
-        return {"per_target": {}, "aggregated": {"smape": float("nan"), "nrmse": float("nan")}}
+        return {"per_target": {}, "aggregated": {"scaled_mae": float("nan"), "scaled_rmse": float("nan")}}
 
     y_true_cat = np.concatenate(y_true_profiles, axis=0)
     y_pred_cat = np.concatenate(y_pred_profiles, axis=0)
@@ -344,22 +348,40 @@ def _compute_forecast_quality_metrics(forecast_h5: Path) -> dict[str, Any]:
 
     rmse_by_target = np.sqrt(np.mean(err_cat**2, axis=0))
     mae_by_target = np.mean(abs_err_cat, axis=0)
-    target_range = np.max(y_true_cat, axis=0) - np.min(y_true_cat, axis=0)
-    nrmse_by_target = np.where(target_range > 0.0, rmse_by_target / target_range, np.nan)
-    denom = np.abs(y_true_cat) + np.abs(y_pred_cat)
-    smape = float(np.mean(200.0 * abs_err_cat / np.maximum(denom, 1e-12)))
+    target_indices = [TARGET_NAMES.index(name) for name in target_names]
+    y_stats = scaling_stats["y"]
+    if scaling_stats["type"] == "standard":
+        target_scale = np.asarray(y_stats["std"], dtype=float)[target_indices]
+    elif scaling_stats["type"] == "minmax":
+        target_scale = np.asarray(y_stats["span"], dtype=float)[target_indices]
+    else:
+        raise ValueError(f"Unsupported scaling type: {scaling_stats['type']}")
+    if target_scale.shape[-1] != len(target_names):
+        raise ValueError(f"Target scale length mismatch: expected {len(target_names)}, got shape {target_scale.shape}.")
+    if not np.all(np.isfinite(target_scale)) or not np.all(target_scale > 0.0):
+        raise ValueError(f"Target scales must all be finite and positive. Got: {target_scale!r}")
+    err_scaled = err_cat / target_scale
+    scaled_mae_by_target = np.nanmean(np.abs(err_scaled), axis=0)
+    scaled_rmse_by_target = np.sqrt(np.nanmean(err_scaled**2, axis=0))
+    scaled_mae = float(np.nanmean(scaled_mae_by_target))
+    scaled_rmse = float(np.nanmean(scaled_rmse_by_target))
+    if not np.isclose(scaled_mae, float(np.nanmean(scaled_mae_by_target)), rtol=1e-12, atol=1e-12):
+        raise AssertionError("Aggregate scaled_mae does not equal the mean of per-target scaled MAE values.")
+    if not np.isclose(scaled_rmse, float(np.nanmean(scaled_rmse_by_target)), rtol=1e-12, atol=1e-12):
+        raise AssertionError("Aggregate scaled_rmse does not equal the mean of per-target scaled RMSE values.")
 
     per_target: dict[str, dict[str, float]] = {}
     for idx, target_name in enumerate(target_names):
         per_target[target_name] = {
             "rmse": float(rmse_by_target[idx]),
             "mae": float(mae_by_target[idx]),
-            "nrmse": float(nrmse_by_target[idx]),
+            "scaled_mae": float(scaled_mae_by_target[idx]),
+            "scaled_rmse": float(scaled_rmse_by_target[idx]),
         }
 
     return {
         "per_target": per_target,
-        "aggregated": {"smape": smape, "nrmse": float(np.nanmean(nrmse_by_target))},
+        "aggregated": {"scaled_mae": scaled_mae, "scaled_rmse": scaled_rmse},
     }
 
 
@@ -947,7 +969,7 @@ def test_best_model(config: GridSearchConfig, best_result: TrialResult) -> dict[
     )
     forecast_h5 = test_out_dir / "rolling_forecasts.h5"
     if forecast_h5.exists():
-        forecast_quality = _compute_forecast_quality_metrics(forecast_h5)
+        forecast_quality = _compute_forecast_quality_metrics(forecast_h5, scaled_h5=datasets["h5_path"])
         per_target = forecast_quality.get("per_target", {})
         target_rmse_values = [float(per_target[name]["rmse"]) for name in per_target]
         target_mae_values = [float(per_target[name]["mae"]) for name in per_target]
@@ -960,8 +982,8 @@ def test_best_model(config: GridSearchConfig, best_result: TrialResult) -> dict[
         print(
             "BEST MODEL TEST SUMMARY: "
             f"mean_target_RMSE={mean_target_rmse:.6f}, mean_target_MAE={mean_target_mae:.6f}, "
-            f"sMAPE={forecast_quality['aggregated']['smape']:.4f}%, "
-            f"NRMSE={forecast_quality['aggregated']['nrmse']:.6f}"
+            f"scaled_MAE={forecast_quality['aggregated']['scaled_mae']:.6f}, "
+            f"scaled_RMSE={forecast_quality['aggregated']['scaled_rmse']:.6f}"
         )
         metrics_payload = {
             "forecast_quality": forecast_quality,

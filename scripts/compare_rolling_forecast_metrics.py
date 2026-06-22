@@ -86,8 +86,8 @@ def main() -> None:
     datasets: list[dict[str, Any]] = [_load_metrics(p) for p in args.metrics_json]
     series_labels = [_label_for(p, i, labels) for i, p in enumerate(args.metrics_json)]
 
-    smape = [_nan_if_missing(d, "smape") for d in datasets]
-    nrmse = [_nan_if_missing(d, "nrmse") for d in datasets]
+    scaled_mae = [_nan_if_missing(d, "scaled_mae") for d in datasets]
+    scaled_rmse = [_nan_if_missing(d, "scaled_rmse") for d in datasets]
 
     cov95 = [_nan_if_missing(d, "empirical_coverage_95") for d in datasets]
     cal95 = [_nan_if_missing(d, "calibration_error_95") for d in datasets]
@@ -98,13 +98,13 @@ def main() -> None:
     x = np.arange(len(series_labels))
 
     # Scalar metric bars
-    axes[0, 0].bar(x, smape, color="C0")
-    axes[0, 0].set_title("sMAPE")
+    axes[0, 0].bar(x, scaled_mae, color="C0")
+    axes[0, 0].set_title("Scaled MAE")
     axes[0, 0].set_xticks(x, series_labels, rotation=20, ha="right")
     axes[0, 0].grid(alpha=0.3)
 
-    axes[0, 1].bar(x, nrmse, color="C1")
-    axes[0, 1].set_title("NRMSE")
+    axes[0, 1].bar(x, scaled_rmse, color="C1")
+    axes[0, 1].set_title("Scaled RMSE")
     axes[0, 1].set_xticks(x, series_labels, rotation=20, ha="right")
     axes[0, 1].grid(alpha=0.3)
 
@@ -137,13 +137,13 @@ def main() -> None:
     cmap = plt.cm.get_cmap("plasma")
 
     for label, d, train_count in zip(series_labels, datasets, train_profile_counts, strict=True):
-        mae_h = np.asarray(d.get("horizon_mean_mae", []), dtype=float)
+        mae_h = np.asarray(d.get("horizon_mean_scaled_mae", []), dtype=float)
         if mae_h.size:
             line_color = cmap(color_norm(train_count))
             ax.plot(np.arange(mae_h.size), mae_h, label=label, linewidth=1.6, color=line_color)
-    ax.set_title("Horizon-wise MAE")
+    ax.set_title("Horizon-wise Scaled MAE")
     ax.set_xlabel("Horizon step")
-    ax.set_ylabel("Mean Absolute Error")
+    ax.set_ylabel("Scaled Mean Absolute Error")
     ax.grid(alpha=0.3)
     ax.legend(fontsize=8)
     sm = plt.cm.ScalarMappable(norm=color_norm, cmap=cmap)

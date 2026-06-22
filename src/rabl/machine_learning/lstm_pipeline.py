@@ -2091,15 +2091,42 @@ def compute_and_save_rolling_forecast_metrics(
     scaled_h5: Path | None = None,
 ) -> dict[str, Any]:
     """
-    Compute forecast metrics from rolling_forecasts.h5 for either:
+    Compute scaled forecast metrics from rolling_forecasts.h5 for either:
       - single-model schema: x(t)_*, x^~(t)_*
       - ensemble schema: x_true(t)_*, x_mean(t)_*, x_2sigma(t)_*
+
+    Scaled MAE/RMSE metrics use physical/descaled forecast values divided by
+    fixed per-target scaling factors from ``scaled_h5``. Evaluation-set ranges
+    are not used for normalization.
     """
     forecast_h5_path = Path(forecast_h5_path)
     output_json_path = Path(output_json_path)
     output_json_path.parent.mkdir(parents=True, exist_ok=True)
 
-    scaling_stats = _load_scaling_stats(scaled_h5) if scaled_h5 is not None else None
+    if scaled_h5 is None:
+        raise ValueError(
+            "compute_and_save_rolling_forecast_metrics requires scaled_h5 so scaled MAE/RMSE can use "
+            "fixed target scaling factors; refusing to fall back to evaluation-set ranges."
+        )
+    scaling_stats = _load_scaling_stats(scaled_h5)
+
+    def _target_scale_for(target_name_list: list[str]) -> np.ndarray:
+        target_indices = [TARGET_NAMES.index(name) for name in target_name_list]
+        y_stats = scaling_stats["y"]
+        if scaling_stats["type"] == "standard":
+            scale = np.asarray(y_stats["std"], dtype=float)[target_indices]
+        elif scaling_stats["type"] == "minmax":
+            scale = np.asarray(y_stats["span"], dtype=float)[target_indices]
+        else:
+            raise ValueError(f"Unsupported scaling type: {scaling_stats['type']}")
+        if scale.shape[-1] != len(target_name_list):
+            raise ValueError(
+                f"Target scale length mismatch: expected {len(target_name_list)} values, got shape {scale.shape}."
+            )
+        if not np.all(np.isfinite(scale)) or not np.all(scale > 0.0):
+            raise ValueError(f"Target scales must all be finite and positive. Got: {scale!r}")
+        return scale
+
     y_true_all: list[np.ndarray] = []
     y_pred_all: list[np.ndarray] = []
     y_2sigma_all: list[np.ndarray] = []
@@ -2126,18 +2153,8 @@ def compute_and_save_rolling_forecast_metrics(
             y_true_all.append(y_true)
             y_pred_all.append(y_pred)
             err = y_pred - y_true
-            horizon_err = err
-            if scaling_stats is not None:
-                profile_target_names = [c.split(")_", 1)[1] for c in truth_cols]
-                target_indices = [TARGET_NAMES.index(name) for name in profile_target_names]
-                y_stats = scaling_stats["y"]
-                if scaling_stats["type"] == "standard":
-                    scale = np.asarray(y_stats["std"], dtype=float)[target_indices]
-                elif scaling_stats["type"] == "minmax":
-                    scale = np.asarray(y_stats["span"], dtype=float)[target_indices]
-                else:
-                    raise ValueError(f"Unsupported scaling type: {scaling_stats['type']}")
-                horizon_err = err / scale
+            profile_target_names = [c.split(")_", 1)[1] for c in truth_cols]
+            horizon_err = err / _target_scale_for(profile_target_names)
             horizon_rmse_chunks.append(np.sqrt(np.mean(horizon_err**2, axis=1)))
             horizon_mae_chunks.append(np.mean(np.abs(horizon_err), axis=1))
             if sigma_cols:
@@ -2155,21 +2172,16 @@ def compute_and_save_rolling_forecast_metrics(
     rmse_per_target = np.sqrt(np.mean(err**2, axis=0))
     mae_per_target = np.mean(abs_err, axis=0)
     bias_per_target = np.mean(err, axis=0)
-    horizon_mae_per_target = mae_per_target
-    if scaling_stats is not None:
-        target_indices = [TARGET_NAMES.index(name) for name in target_names]
-        y_stats = scaling_stats["y"]
-        if scaling_stats["type"] == "standard":
-            target_scale = np.asarray(y_stats["std"], dtype=float)[target_indices]
-        elif scaling_stats["type"] == "minmax":
-            target_scale = np.asarray(y_stats["span"], dtype=float)[target_indices]
-        else:
-            raise ValueError(f"Unsupported scaling type: {scaling_stats['type']}")
-        horizon_mae_per_target = mae_per_target / target_scale
-    with np.errstate(divide="ignore", invalid="ignore"):
-        y_range = np.nanmax(y_true_cat, axis=0) - np.nanmin(y_true_cat, axis=0)
-        nrmse_per_target = np.where(y_range > 0, rmse_per_target / y_range, np.nan)
-        smape_per_target = 200.0 * np.nanmean(abs_err / (np.abs(y_true_cat) + np.abs(y_pred_cat) + 1e-12), axis=0)
+    target_scale = _target_scale_for(target_names)
+    err_scaled = err / target_scale
+    scaled_mae_per_target = np.nanmean(np.abs(err_scaled), axis=0)
+    scaled_rmse_per_target = np.sqrt(np.nanmean(err_scaled**2, axis=0))
+    scaled_mae = float(np.nanmean(scaled_mae_per_target))
+    scaled_rmse = float(np.nanmean(scaled_rmse_per_target))
+    if not np.isclose(scaled_mae, float(np.nanmean(scaled_mae_per_target)), rtol=1e-12, atol=1e-12):
+        raise AssertionError("Aggregate scaled_mae does not equal the mean of per-target scaled MAE values.")
+    if not np.isclose(scaled_rmse, float(np.nanmean(scaled_rmse_per_target)), rtol=1e-12, atol=1e-12):
+        raise AssertionError("Aggregate scaled_rmse does not equal the mean of per-target scaled RMSE values.")
 
     ss_res = np.sum((y_true_cat - y_pred_cat) ** 2, axis=0)
     y_mean = np.mean(y_true_cat, axis=0)
@@ -2182,18 +2194,21 @@ def compute_and_save_rolling_forecast_metrics(
     result: dict[str, Any] = {
         "schema_mode": schema_mode,
         "targets": target_names,
-        "smape": float(np.nanmean(smape_per_target)),
-        "nrmse": float(np.nanmean(nrmse_per_target)),
+        "scaled_mae": scaled_mae,
+        "scaled_rmse": scaled_rmse,
         "per_target_rmse": {n: float(v) for n, v in zip(target_names, rmse_per_target, strict=True)},
         "per_target_mae": {n: float(v) for n, v in zip(target_names, mae_per_target, strict=True)},
-        "per_target_smape": {n: float(v) for n, v in zip(target_names, smape_per_target, strict=True)},
-        "per_target_nrmse": {n: float(v) for n, v in zip(target_names, nrmse_per_target, strict=True)},
-        "per_target_horizon_mean_mae": {n: float(v) for n, v in zip(target_names, horizon_mae_per_target, strict=True)},
+        "per_target_scaled_mae": {n: float(v) for n, v in zip(target_names, scaled_mae_per_target, strict=True)},
+        "per_target_scaled_rmse": {n: float(v) for n, v in zip(target_names, scaled_rmse_per_target, strict=True)},
+        "per_target_horizon_mean_scaled_mae": {
+            n: float(v) for n, v in zip(target_names, scaled_mae_per_target, strict=True)
+        },
         "per_target_bias": {n: float(v) for n, v in zip(target_names, bias_per_target, strict=True)},
         "per_target_r2": {n: float(v) for n, v in zip(target_names, r2_per_target, strict=True)},
-        "horizon_mean_rmse": horizon_rmse.tolist(),
-        "horizon_mean_mae": horizon_mae.tolist(),
-        "horizon_error_target_space": "scaled" if scaling_stats is not None else "descaled",
+        "horizon_mean_scaled_rmse": horizon_rmse.tolist(),
+        "horizon_mean_scaled_mae": horizon_mae.tolist(),
+        "horizon_error_target_space": "scaled",
+        "scaled_metric_target_space": "scaled",
     }
 
     if schema_mode == "ensemble" and y_2sigma_all:

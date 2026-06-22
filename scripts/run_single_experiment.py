@@ -1481,8 +1481,8 @@ def _plot_rolling_forecast_metrics_comparison(
         print("[warn] No readable rolling forecast metrics JSON files found for comparison plot; skipping.")
         return None
 
-    smape = [_metric_float(data, "smape") for data in datasets]
-    nrmse = [_metric_float(data, "nrmse") for data in datasets]
+    scaled_mae = [_metric_float(data, "scaled_mae") for data in datasets]
+    scaled_rmse = [_metric_float(data, "scaled_rmse") for data in datasets]
     cov95 = [_metric_float(data, "empirical_coverage_95") for data in datasets]
     cal95 = [_metric_float(data, "calibration_error_95") for data in datasets]
     w95 = [_metric_float(data, "interval_width_95_mean") for data in datasets]
@@ -1490,16 +1490,16 @@ def _plot_rolling_forecast_metrics_comparison(
     fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharex=False)
     x = np.arange(len(labels))
 
-    axes[0, 0].bar(x, smape, color="C0")
-    axes[0, 0].set_title("sMAPE")
+    axes[0, 0].bar(x, scaled_mae, color="C0")
+    axes[0, 0].set_title("Scaled MAE")
     axes[0, 0].set_xticks(x, labels, rotation=20, ha="right")
-    _set_log_y_if_positive(axes[0, 0], smape)
+    _set_log_y_if_positive(axes[0, 0], scaled_mae)
     axes[0, 0].grid(alpha=0.3)
 
-    axes[0, 1].bar(x, nrmse, color="C1")
-    axes[0, 1].set_title("NRMSE")
+    axes[0, 1].bar(x, scaled_rmse, color="C1")
+    axes[0, 1].set_title("Scaled RMSE")
     axes[0, 1].set_xticks(x, labels, rotation=20, ha="right")
-    _set_log_y_if_positive(axes[0, 1], nrmse)
+    _set_log_y_if_positive(axes[0, 1], scaled_rmse)
     axes[0, 1].grid(alpha=0.3)
 
     axes[0, 2].bar(x, cal95, color="C3")
@@ -1527,7 +1527,7 @@ def _plot_rolling_forecast_metrics_comparison(
         color_norm = plt.Normalize(vmin=0, vmax=max(1, train_profile_counts[0]))
     cmap = plt.colormaps.get_cmap("plasma")
     for label, data, train_count in zip(labels, datasets, train_profile_counts, strict=True):
-        mae_h = np.asarray(data.get("horizon_mean_mae", []), dtype=float)
+        mae_h = np.asarray(data.get("horizon_mean_scaled_mae", []), dtype=float)
         if mae_h.size:
             ax.plot(
                 np.arange(mae_h.size),
@@ -1536,10 +1536,10 @@ def _plot_rolling_forecast_metrics_comparison(
                 linewidth=1.6,
                 color=cmap(color_norm(train_count)),
             )
-    ax.set_title("Horizon-wise MAE")
+    ax.set_title("Horizon-wise Scaled MAE")
     ax.set_xlabel("Horizon step")
-    ax.set_ylabel("Mean Absolute Error")
-    _set_log_y_if_positive(ax, [np.asarray(data.get("horizon_mean_mae", []), dtype=float) for data in datasets])
+    ax.set_ylabel("Scaled Mean Absolute Error")
+    _set_log_y_if_positive(ax, [np.asarray(data.get("horizon_mean_scaled_mae", []), dtype=float) for data in datasets])
     ax.grid(alpha=0.3)
     ax.legend(fontsize=8)
     sm = plt.cm.ScalarMappable(norm=color_norm, cmap=cmap)
@@ -1587,12 +1587,12 @@ def _plot_rolling_forecast_metrics_comparison_per_target(
         name
         for data in datasets
         for key in (
-            "per_target_smape",
-            "per_target_nrmse",
+            "per_target_scaled_mae",
+            "per_target_scaled_rmse",
             "per_target_calibration_error_95",
             "per_target_empirical_coverage_95",
             "per_target_interval_width_95_mean",
-            "per_target_horizon_mean_mae",
+            "per_target_horizon_mean_scaled_mae",
         )
         if isinstance(data.get(key), dict)
         for name in data[key]
@@ -1615,9 +1615,9 @@ def _plot_rolling_forecast_metrics_comparison_per_target(
         for data in datasets
     )
     base_specs = [
-        ("per_target_smape", "sMAPE", True),
-        ("per_target_nrmse", "NRMSE", True),
-        ("per_target_horizon_mean_mae", "Horizon Mean MAE", True),
+        ("per_target_scaled_mae", "Scaled MAE", True),
+        ("per_target_scaled_rmse", "Scaled RMSE", True),
+        ("per_target_horizon_mean_scaled_mae", "Horizon Mean Scaled MAE", True),
     ]
     uncertainty_specs = [
         ("per_target_calibration_error_95", "Calibration Error (95%)", False),
@@ -1714,8 +1714,8 @@ def _plot_rolling_forecast_metrics_comparison(
         print("[warn] No readable rolling forecast metrics JSON files found for comparison plot; skipping.")
         return None
 
-    smape = [_metric_float(data, "smape") for data in datasets]
-    nrmse = [_metric_float(data, "nrmse") for data in datasets]
+    scaled_mae = [_metric_float(data, "scaled_mae") for data in datasets]
+    scaled_rmse = [_metric_float(data, "scaled_rmse") for data in datasets]
     cov95 = [_metric_float(data, "empirical_coverage_95") for data in datasets]
     cal95 = [_metric_float(data, "calibration_error_95") for data in datasets]
     w95 = [_metric_float(data, "interval_width_95_mean") for data in datasets]
@@ -1723,13 +1723,13 @@ def _plot_rolling_forecast_metrics_comparison(
     fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharex=False)
     x = np.arange(len(labels))
 
-    axes[0, 0].bar(x, smape, color="C0")
-    axes[0, 0].set_title("sMAPE")
+    axes[0, 0].bar(x, scaled_mae, color="C0")
+    axes[0, 0].set_title("Scaled MAE")
     axes[0, 0].set_xticks(x, labels, rotation=20, ha="right")
     axes[0, 0].grid(alpha=0.3)
 
-    axes[0, 1].bar(x, nrmse, color="C1")
-    axes[0, 1].set_title("NRMSE")
+    axes[0, 1].bar(x, scaled_rmse, color="C1")
+    axes[0, 1].set_title("Scaled RMSE")
     axes[0, 1].set_xticks(x, labels, rotation=20, ha="right")
     axes[0, 1].grid(alpha=0.3)
 
@@ -1758,7 +1758,7 @@ def _plot_rolling_forecast_metrics_comparison(
         color_norm = plt.Normalize(vmin=0, vmax=max(1, train_profile_counts[0]))
     cmap = plt.colormaps.get_cmap("plasma")
     for label, data, train_count in zip(labels, datasets, train_profile_counts, strict=True):
-        mae_h = np.asarray(data.get("horizon_mean_mae", []), dtype=float)
+        mae_h = np.asarray(data.get("horizon_mean_scaled_mae", []), dtype=float)
         if mae_h.size:
             ax.plot(
                 np.arange(mae_h.size),
@@ -1767,9 +1767,9 @@ def _plot_rolling_forecast_metrics_comparison(
                 linewidth=1.6,
                 color=cmap(color_norm(train_count)),
             )
-    ax.set_title("Horizon-wise MAE")
+    ax.set_title("Horizon-wise Scaled MAE")
     ax.set_xlabel("Horizon step")
-    ax.set_ylabel("Mean Absolute Error")
+    ax.set_ylabel("Scaled Mean Absolute Error")
     ax.grid(alpha=0.3)
     ax.legend(fontsize=8)
     sm = plt.cm.ScalarMappable(norm=color_norm, cmap=cmap)
