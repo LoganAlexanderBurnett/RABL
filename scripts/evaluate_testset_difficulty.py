@@ -314,6 +314,10 @@ def _target_color_map(target_names: list[str]) -> dict[str, Any]:
     fallback = plt.colormaps.get_cmap("tab20")
     for idx, name in enumerate(target_names):
         colors.setdefault(name, fallback(idx % fallback.N))
+    if "rho_dollars" in target_names:
+        colors["rho_dollars"] = "#E377C2"
+    if "n" in target_names:
+        colors["n"] = "#000000"
     return colors
 
 def _plot_summary_grid(
