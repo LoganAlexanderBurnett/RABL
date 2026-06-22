@@ -112,7 +112,9 @@ class LSTMDatasetScalerSplitter:
                 print("[scale] Computing scaler statistics from the current training split.")
                 train_stats = self._compute_stats(files_group, split_payload["train"])
 
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             if self.save_stats_path is not None:
+                self.save_stats_path.parent.mkdir(parents=True, exist_ok=True)
                 write_scaler_stats_json(
                     self.save_stats_path,
                     scaling_type=self.scaling_type,

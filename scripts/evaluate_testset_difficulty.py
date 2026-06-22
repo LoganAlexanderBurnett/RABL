@@ -116,6 +116,37 @@ def _scale_targets_from_stats(stats: dict[str, Any], values: np.ndarray) -> np.n
     raise ValueError(f"Unsupported scaling type: {scaling_type}")
 
 
+def _scaled_error_metrics(
+    y_true_scaled: np.ndarray,
+    y_pred_scaled: np.ndarray,
+) -> tuple[float, float, np.ndarray, np.ndarray]:
+    """Compute equal-target-weighted scaled MAE/RMSE metrics."""
+    err = np.asarray(y_pred_scaled, dtype=float) - np.asarray(y_true_scaled, dtype=float)
+    if err.ndim != 2:
+        raise ValueError(f"Expected 2D [timesteps, targets] error array, got shape {err.shape}.")
+    if err.shape[-1] != len(TARGET_NAMES):
+        raise ValueError(f"Expected {len(TARGET_NAMES)} target columns, got shape {err.shape}.")
+    abs_err = np.abs(err)
+    sq_err = err**2
+    scaled_mae_per_target = np.nanmean(abs_err, axis=0)
+    scaled_rmse_per_target = np.sqrt(np.nanmean(sq_err, axis=0))
+    scaled_mae = float(np.nanmean(scaled_mae_per_target))
+    scaled_rmse = float(np.nanmean(scaled_rmse_per_target))
+    if not np.isclose(scaled_mae, float(np.nanmean(scaled_mae_per_target)), rtol=1e-12, atol=1e-12):
+        raise AssertionError("Aggregate scaled_mae does not equal the mean of per-target scaled MAE values.")
+    if not np.isclose(scaled_rmse, float(np.nanmean(scaled_rmse_per_target)), rtol=1e-12, atol=1e-12):
+        raise AssertionError("Aggregate scaled_rmse does not equal the mean of per-target scaled RMSE values.")
+    return scaled_mae, scaled_rmse, scaled_mae_per_target, scaled_rmse_per_target
+
+
+def _metric_display_name(metric: str) -> str:
+    if metric == "scaled_mae":
+        return "Scaled MAE"
+    if metric == "scaled_rmse":
+        return "Scaled RMSE"
+    return metric.replace("_", " ").title()
+
+
 def _infer_checkpoint_arch(model_path: Path) -> dict[str, Any]:
     import torch
 
@@ -330,7 +361,7 @@ def _plot_summary_grid(
     log_scale: bool = True,
 ) -> None:
     descriptors = ["theta_peak", "dtheta_dt_peak", "rho_peak", "drho_dt_peak"]
-    columns = ["MAE_hist", "MSE_hist", "MAE_box"]
+    columns = ["scaled_mae_hist", "scaled_rmse_hist", "scaled_mae_box"]
     descriptor_latex = {
         "theta_peak": r"$\theta_{\mathrm{peak}}$",
         "dtheta_dt_peak": r"$\left(\frac{d\theta}{dt}\right)_{\mathrm{peak}}$",
@@ -355,27 +386,28 @@ def _plot_summary_grid(
 
     for row_idx, descriptor in enumerate(descriptors):
         bin_col = f"{descriptor}_bin"
-        mae_rows = descriptor_metrics[descriptor]["MAE"]
-        mse_rows = descriptor_metrics[descriptor]["MSE"]
+        mae_rows = descriptor_metrics[descriptor]["scaled_mae"]
+        mse_rows = descriptor_metrics[descriptor]["scaled_rmse"]
 
         for col_idx, panel in enumerate(columns):
             ax = axes[row_idx, col_idx]
 
-            if panel in {"MAE_hist", "MSE_hist"}:
-                metric_rows = mae_rows if panel == "MAE_hist" else mse_rows
-                metric_name = "MAE" if panel == "MAE_hist" else "MSE"
+            if panel in {"scaled_mae_hist", "scaled_rmse_hist"}:
+                metric_rows = mae_rows if panel == "scaled_mae_hist" else mse_rows
+                metric_name = "scaled_mae" if panel == "scaled_mae_hist" else "scaled_rmse"
                 labels = [str(r["bin"]) for r in metric_rows]
                 display_labels = [str(r.get("bin_display", r["bin"])) for r in metric_rows]
                 means = [float(r["mean"]) for r in metric_rows]
                 counts = [int(r["count"]) for r in metric_rows]
                 x = np.arange(len(labels))
+                metric_label = _metric_display_name(metric_name)
 
                 bars = ax.bar(x, means, color=descriptor_colors[descriptor], alpha=0.9, edgecolor="black", linewidth=0.4)
                 ax.set_xticks(x)
                 ax.set_xticklabels(display_labels, rotation=25, ha="right", fontsize=8)
-                ax.set_ylabel(f"Mean {metric_name}")
+                ax.set_ylabel(f"Mean {metric_label}")
                 ax.set_xlabel(f"{descriptor_latex[descriptor]} bins")
-                ax.set_title(f"{metric_name} by {descriptor_latex[descriptor]} bin")
+                ax.set_title(f"{metric_label} by {descriptor_latex[descriptor]} bin")
                 ax.grid(alpha=0.25, axis="y")
                 ax.set_axisbelow(True)
                 scale_values: list[Any] = [means]
@@ -418,7 +450,7 @@ def _plot_summary_grid(
                 labels = [str(r["bin"]) for r in mae_rows]
                 display_map = {str(r["bin"]): str(r.get("bin_display", r["bin"])) for r in mae_rows}
                 values = [
-                    [float(r["MAE"]) for r in per_profile_rows if str(r[bin_col]) == label]
+                    [float(r["scaled_mae"]) for r in per_profile_rows if str(r[bin_col]) == label]
                     for label in labels
                 ]
                 bp = ax.boxplot(values, labels=[display_map[l] for l in labels], showfliers=False, patch_artist=True)
@@ -426,8 +458,8 @@ def _plot_summary_grid(
                     patch.set_facecolor(descriptor_colors[descriptor])
                     patch.set_alpha(0.45)
                 ax.set_xlabel(f"{descriptor_latex[descriptor]} bins")
-                ax.set_ylabel("MAE")
-                ax.set_title(f"MAE distribution by {descriptor_latex[descriptor]} bin")
+                ax.set_ylabel("Scaled MAE")
+                ax.set_title(f"Scaled MAE distribution by {descriptor_latex[descriptor]} bin")
                 if log_scale:
                     _set_log_y_if_positive(ax, values)
                 ax.tick_params(axis="x", rotation=25, labelsize=8)
@@ -527,19 +559,21 @@ def evaluate_testset_difficulty(
             "drho_dt_peak": _signed_peak(drho_dt, 0.0),
         }
 
-        abs_err = np.abs(y_scaled - y_pred_scaled)
-        sq_err = (y_scaled - y_pred_scaled) ** 2
+        scaled_mae, scaled_rmse, scaled_mae_per_target, scaled_rmse_per_target = _scaled_error_metrics(
+            y_scaled,
+            y_pred_scaled,
+        )
         row: dict[str, Any] = {
             "profile_id": str(profile_name),
-            "MAE": float(np.mean(abs_err)),
-            "MSE": float(np.mean(sq_err)),
+            "scaled_mae": scaled_mae,
+            "scaled_rmse": scaled_rmse,
             **descriptors,
         }
 
         if include_per_target:
             for idx, tgt in enumerate(TARGET_NAMES):
-                row[f"MAE_{tgt}"] = float(np.mean(abs_err[:, idx]))
-                row[f"MSE_{tgt}"] = float(np.mean(sq_err[:, idx]))
+                row[f"scaled_mae_{tgt}"] = float(scaled_mae_per_target[idx])
+                row[f"scaled_rmse_{tgt}"] = float(scaled_rmse_per_target[idx])
 
         return row
 
@@ -565,19 +599,21 @@ def evaluate_testset_difficulty(
 
         y_true_scaled = _scale_targets_from_stats(scaling_stats, y_true)
         y_pred_scaled = _scale_targets_from_stats(scaling_stats, y_pred)
-        abs_err = np.abs(y_true_scaled - y_pred_scaled)
-        sq_err = (y_true_scaled - y_pred_scaled) ** 2
+        scaled_mae, scaled_rmse, scaled_mae_per_target, scaled_rmse_per_target = _scaled_error_metrics(
+            y_true_scaled,
+            y_pred_scaled,
+        )
         row: dict[str, Any] = {
             "profile_id": str(profile_name),
-            "MAE": float(np.mean(abs_err)),
-            "MSE": float(np.mean(sq_err)),
+            "scaled_mae": scaled_mae,
+            "scaled_rmse": scaled_rmse,
             **descriptors,
         }
 
         if include_per_target:
             for idx, tgt in enumerate(TARGET_NAMES):
-                row[f"MAE_{tgt}"] = float(np.mean(abs_err[:, idx]))
-                row[f"MSE_{tgt}"] = float(np.mean(sq_err[:, idx]))
+                row[f"scaled_mae_{tgt}"] = float(scaled_mae_per_target[idx])
+                row[f"scaled_rmse_{tgt}"] = float(scaled_rmse_per_target[idx])
 
         return row
 
@@ -633,7 +669,7 @@ def evaluate_testset_difficulty(
         agg_rows: list[dict[str, Any]] = []
         descriptor_metric_rows[descriptor] = {}
         target_overlay[descriptor] = {}
-        for metric in ("MAE", "MSE"):
+        for metric in ("scaled_mae", "scaled_rmse"):
             stats_rows = aggregate_metric_by_bin(per_profile_rows, metric_col=metric, bin_col=bin_col)
             for r in stats_rows:
                 r["metric"] = metric
@@ -752,7 +788,7 @@ def main() -> None:
     parser.add_argument("--n-bins", type=int, default=10, help="Number of equal-width bins per descriptor.")
     parser.add_argument("--dt", type=float, default=1.0, help="Timestep size for velocity estimate.")
     parser.add_argument("--config-path", type=Path, default=REPO_ROOT / "scripts" / "config.py")
-    parser.add_argument("--include-per-target", action="store_true", help="Include per-target MAE/MSE columns.")
+    parser.add_argument("--include-per-target", action="store_true", help="Include per-target scaled MAE/RMSE columns.")
     parser.add_argument("--num-workers", type=int, default=4, help="Number of worker threads for profile evaluation.")
     args = parser.parse_args()
     evaluate_testset_difficulty(

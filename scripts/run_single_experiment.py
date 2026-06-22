@@ -293,6 +293,7 @@ def _scale_with_fixed_manifests(
         frozen_stats_path=frozen_stats_path,
         save_stats_path=save_stats_path,
         output_dir=out_dir,
+        output_name="scaled_split.h5",
     )
     return splitter.run()
 
