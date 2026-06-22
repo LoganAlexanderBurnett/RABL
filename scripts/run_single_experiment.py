@@ -2364,12 +2364,6 @@ def main() -> None:
             [int(seed) for seed in cfg.single_model_seeds]
         except (TypeError, ValueError) as exc:
             raise SystemExit("single_model_seeds must contain only integers.") from exc
-    if bool(cfg.use_single_model_test_eval) and cfg.strategy == "branching" and int(cfg.retrain_cycles) > 1:
-        raise SystemExit(
-            "use_single_model_test_eval=true is not compatible with multi-cycle branching, because recursive branching "
-            "requires ensemble uncertainty. Use strategy='random', retrain_cycles=1, or disable use_single_model_test_eval."
-        )
-
     output_root = resolve_output_root(cfg.output_root)
     base_output_dir = args.base_output_dir.resolve() if args.base_output_dir else output_root / "experiments"
     run_dir = base_output_dir / cfg.experiment_id
@@ -2536,22 +2530,22 @@ def main() -> None:
             )
 
         evaluation_mode = "single_model" if bool(cfg.use_single_model_test_eval) else "ensemble"
-        _print_step_banner(cycle + 1, "Train single model" if evaluation_mode == "single_model" else "Train bagged ensemble")
+        train_ensemble_for_branching = bool(cfg.strategy == "branching" and cycle < cfg.retrain_cycles - 1)
+        train_ensemble_for_eval = bool(evaluation_mode == "ensemble")
+        ensemble_result: dict[str, Any] | None = None
+        single_model_result: dict[str, Any] | None = None
+
         save_member_forecasts_for_cycle = bool(
-            evaluation_mode == "ensemble"
+            train_ensemble_for_eval
             and (cfg.save_individual_ensemble_forecasts or cfg.plot_individual_ensemble_forecasts)
         )
-        t0 = perf_counter()
-        if evaluation_mode == "single_model":
-            ensemble = _train_single_model_for_test_eval(
-                scaled_h5=scaled_h5,
-                out_dir=cycle_dir / "single_model",
-                best=best,
-                cfg=cfg,
-                base_training_seed=training_seed,
+        if train_ensemble_for_branching or train_ensemble_for_eval:
+            _print_step_banner(
+                cycle + 1,
+                "Train bagged ensemble for branching" if train_ensemble_for_branching and evaluation_mode == "single_model" else "Train bagged ensemble",
             )
-        else:
-            ensemble = run_bagging_ensemble(
+            t0 = perf_counter()
+            ensemble_result = run_bagging_ensemble(
                 scaled_h5,
                 out_dir=cycle_dir / "ensemble",
                 n_models=cfg.n_models,
@@ -2578,13 +2572,34 @@ def main() -> None:
                 plot_bag_distributions=bool(cfg.plot_bag_distributions),
                 save_member_forecasts=save_member_forecasts_for_cycle,
             )
-        step_times["ensemble_training_sec"] = perf_counter() - t0
-        model_paths = [str(Path(d) / "model.pt") for d in ensemble["model_dirs"]]
-        bagged_h5_path = Path(ensemble["bagged_h5_path"]) if "bagged_h5_path" in ensemble else None
-        forecast_h5 = Path(ensemble["forecast_output_path"])
+            step_times["ensemble_training_sec"] = perf_counter() - t0
+        else:
+            step_times["ensemble_training_sec"] = 0.0
+
+        if evaluation_mode == "single_model":
+            _print_step_banner(cycle + 1, "Train single model for test evaluation")
+            t0 = perf_counter()
+            single_model_result = _train_single_model_for_test_eval(
+                scaled_h5=scaled_h5,
+                out_dir=cycle_dir / "single_model",
+                best=best,
+                cfg=cfg,
+                base_training_seed=training_seed,
+            )
+            step_times["single_model_training_sec"] = perf_counter() - t0
+        else:
+            step_times["single_model_training_sec"] = 0.0
+
+        eval_result = single_model_result if evaluation_mode == "single_model" else ensemble_result
+        if eval_result is None:
+            raise RuntimeError("No model result is available for test evaluation.")
+        branching_result = ensemble_result if ensemble_result is not None else eval_result
+        model_paths = [str(Path(d) / "model.pt") for d in branching_result["model_dirs"]]
+        bagged_h5_path = Path(branching_result["bagged_h5_path"]) if "bagged_h5_path" in branching_result else None
+        forecast_h5 = Path(eval_result["forecast_output_path"])
         eval_dir = cycle_dir / ("single_model" if evaluation_mode == "single_model" else "ensemble")
-        bag_distribution_overlap_plot = ensemble.get("bag_distribution_overlap_plot")
-        ensemble_training_curves_plot = ensemble.get("training_curves_plot")
+        bag_distribution_overlap_plot = None if ensemble_result is None else ensemble_result.get("bag_distribution_overlap_plot")
+        ensemble_training_curves_plot = None if ensemble_result is None else ensemble_result.get("training_curves_plot")
         t0 = perf_counter()
         point_metrics = _summarize_forecasts(forecast_h5, scaled_h5=scaled_h5)
         unc_metrics = _compute_uncertainty_metrics(forecast_h5, scaled_h5=scaled_h5)
@@ -2645,7 +2660,7 @@ def main() -> None:
         _print_step_result(cycle + 1, "Model training + evaluation complete", f"Forecast PDF: {forecast_pdf}")
         metrics_json = eval_dir / ("single_model_metrics.json" if evaluation_mode == "single_model" else "ensemble_metrics.json")
         metrics_json.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-        print(f"[cycle {cycle + 1}] Saved ensemble metrics JSON: {metrics_json}")
+        print(f"[cycle {cycle + 1}] Saved model metrics JSON: {metrics_json}")
 
         test_difficulty_result: dict[str, Any] | None = None
         if cfg.evaluate_test_difficulty:
@@ -2761,6 +2776,7 @@ def main() -> None:
             "scale_split_dataset_sec",
             "hyperparameter_tuning_sec",
             "ensemble_training_sec",
+            "single_model_training_sec",
             "ensemble_metrics_compute_sec",
             "rolling_forecast_metrics_compute_sec",
             "forecast_pdf_render_sec",
@@ -2798,10 +2814,14 @@ def main() -> None:
                 **new_batch_budget,
                 "evaluation_mode": evaluation_mode,
                 "single_model_seed_count": int(cfg.single_model_seed_count) if evaluation_mode == "single_model" else None,
-                "single_model_requested_seeds": ensemble.get("requested_seeds", []) if evaluation_mode == "single_model" else [],
-                "single_model_best_seed": ensemble.get("best_seed") if evaluation_mode == "single_model" else None,
-                "single_model_best_val_loss": ensemble.get("best_val_loss") if evaluation_mode == "single_model" else None,
-                "single_model_seed_records": ensemble.get("seed_records", []) if evaluation_mode == "single_model" else [],
+                "single_model_requested_seeds": (
+                    [] if single_model_result is None else single_model_result.get("requested_seeds", [])
+                ),
+                "single_model_best_seed": None if single_model_result is None else single_model_result.get("best_seed"),
+                "single_model_best_val_loss": (
+                    None if single_model_result is None else single_model_result.get("best_val_loss")
+                ),
+                "single_model_seed_records": [] if single_model_result is None else single_model_result.get("seed_records", []),
                 "bagged_h5_path": None if bagged_h5_path is None else str(bagged_h5_path),
                 "bag_distribution_overlap_plot": (
                     None if bag_distribution_overlap_plot is None else str(bag_distribution_overlap_plot)
