@@ -435,6 +435,7 @@ def build_dataset(
     k: int,
     batch_ids: list[str],
     *,
+    output_name: str | None = None,
     verbose: bool = False,
 ) -> Path:
     k = _validate_lookback(k)
@@ -462,7 +463,7 @@ def build_dataset(
         by_lineage_key[key] = profile
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"lstm_merged_batches_{formatted_batches}_k{k}.h5"
+    output_path = output_dir / (output_name or f"lstm_merged_batches_{formatted_batches}_k{k}.h5")
 
     with h5py.File(output_path, "w") as h5f:
         h5f.attrs["k_lookback"] = k

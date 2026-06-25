@@ -253,6 +253,7 @@ def _build_from_batches(
         steady_state=cfg["steady_state"],
         k=lookback,
         batch_ids=batch_ids,
+        output_name="unscaled_dataset.h5",
         verbose=verbose,
     )
 
