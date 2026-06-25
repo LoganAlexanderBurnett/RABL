@@ -843,9 +843,8 @@ def _plot_cycle_colored_batches(
 
 
 TRAINING_DISTRIBUTION_VARS = {
-    "theta": "drumAngleDeg",
-    "rho": "rho_dollars",
-    "n": "n",
+    "drumAngleDeg": "drumAngleDeg",
+    **{target_name: target_name for target_name in TARGET_NAMES},
 }
 
 
@@ -905,9 +904,12 @@ def _plot_training_distributions_over_cycles(
     initial_sim_batches: list[str],
     cycle_rows: list[dict[str, Any]],
     output_path: Path,
-) -> Path | None:
-    """Plot compact theta/rho/n distribution summaries for each cumulative training set."""
+    summary_csv_path: Path | None = None,
+) -> dict[str, Path | None]:
+    """Plot control/target distribution summaries for each cumulative training set."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if summary_csv_path is not None:
+        summary_csv_path.parent.mkdir(parents=True, exist_ok=True)
     initial_batches = [_normalize_batch_name(batch) for batch in initial_sim_batches]
 
     entries: list[tuple[str, list[str]]] = []
@@ -933,7 +935,7 @@ def _plot_training_distributions_over_cycles(
 
     if not entries:
         print("[warn] No training batch entries available for distribution plot; skipping.")
-        return None
+        return {"plot": None, "summary_csv": None}
 
     unique_batch_names = sorted({batch_name for _, batch_names in entries for batch_name in batch_names})
     batch_cache: dict[str, dict[str, np.ndarray]] = {}
@@ -949,14 +951,59 @@ def _plot_training_distributions_over_cycles(
         for _, batch_names in entries
     ]
     if not any(any(values.size for values in distribution.values()) for distribution in distributions):
-        print("[warn] No theta/rho/n values found for training distribution plot; skipping.")
-        return None
+        print("[warn] No control/target values found for training distribution plot; skipping.")
+        return {"plot": None, "summary_csv": None}
 
-    fig, axes = plt.subplots(1, 3, figsize=(max(12, 1.3 * len(entries)), 5), sharex=True)
-    axes = np.atleast_1d(axes)
+    if summary_csv_path is not None:
+        fieldnames = ["cycle_label", "variable", "count", "min", "max", "mean", "median", "std"]
+        with summary_csv_path.open("w", newline="", encoding="utf-8") as fp:
+            writer = csv.DictWriter(fp, fieldnames=fieldnames)
+            writer.writeheader()
+            for label, distribution in zip((entry[0] for entry in entries), distributions, strict=True):
+                for summary_name in TRAINING_DISTRIBUTION_VARS:
+                    values = distribution[summary_name]
+                    finite = values[np.isfinite(values)]
+                    if finite.size:
+                        writer.writerow(
+                            {
+                                "cycle_label": label.replace("\n", " "),
+                                "variable": TRAINING_DISTRIBUTION_VARS[summary_name],
+                                "count": int(finite.size),
+                                "min": float(np.min(finite)),
+                                "max": float(np.max(finite)),
+                                "mean": float(np.mean(finite)),
+                                "median": float(np.median(finite)),
+                                "std": float(np.std(finite, ddof=0)),
+                            }
+                        )
+                    else:
+                        writer.writerow(
+                            {
+                                "cycle_label": label.replace("\n", " "),
+                                "variable": TRAINING_DISTRIBUTION_VARS[summary_name],
+                                "count": 0,
+                                "min": "",
+                                "max": "",
+                                "mean": "",
+                                "median": "",
+                                "std": "",
+                            }
+                        )
+        print(f"[step] Saved training distribution min/max summary: {summary_csv_path}")
+
+    n_vars = len(TRAINING_DISTRIBUTION_VARS)
+    ncols = 4
+    nrows = int(np.ceil(n_vars / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(max(16, 1.15 * len(entries) * ncols), 3.7 * nrows),
+        sharex=True,
+    )
+    axes = np.atleast_1d(axes).ravel()
     labels = [label for label, _ in entries]
     positions = np.arange(1, len(entries) + 1)
-    for ax, (summary_name, column_name) in zip(axes, TRAINING_DISTRIBUTION_VARS.items(), strict=True):
+    for ax, (summary_name, column_name) in zip(axes, TRAINING_DISTRIBUTION_VARS.items(), strict=False):
         series = [distribution[summary_name] for distribution in distributions]
         nonempty_positions = [position for position, values in zip(positions, series, strict=True) if values.size]
         nonempty_series = [values for values in series if values.size]
@@ -978,12 +1025,15 @@ def _plot_training_distributions_over_cycles(
         ax.set_xticks(positions)
         ax.set_xticklabels(tick_labels, rotation=35, ha="right")
 
+    for ax in axes[n_vars:]:
+        ax.set_visible(False)
+
     fig.suptitle("Cumulative training distributions by cycle")
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.98))
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
     print(f"[step] Saved training distribution plot: {output_path}")
-    return output_path
+    return {"plot": output_path, "summary_csv": summary_csv_path}
 
 
 def _extract_root_id_from_results_stem(stem: str) -> str:
@@ -2946,11 +2996,12 @@ def main() -> None:
         cycle_rows=metadata["cycles"],
         output_path=cycle_colored_plot_path,
     )
-    training_distribution_plot_path = _plot_training_distributions_over_cycles(
+    training_distribution_artifacts = _plot_training_distributions_over_cycles(
         sim_root=sim_root,
         initial_sim_batches=list(cfg.initial_sim_batches),
         cycle_rows=metadata["cycles"],
-        output_path=metrics_plots_dir / "training_distribution_theta_rho_n_by_cycle.png",
+        output_path=metrics_plots_dir / "training_distribution_control_targets_by_cycle.png",
+        summary_csv_path=metrics_plots_dir / "training_distribution_control_targets_min_max_by_cycle.csv",
     )
     t0 = perf_counter()
     rolling_forecast_metrics_comparison_path = _plot_rolling_forecast_metrics_comparison(
@@ -2980,8 +3031,15 @@ def main() -> None:
         "metrics_vs_train_samples_per_target": str(metrics_plots_dir / "metrics_vs_train_samples_per-target.png"),
         "metrics_vs_train_samples_per_target_linear": str(metrics_plots_dir / "metrics_vs_train_samples_per-target_linear.png"),
         "profiles_by_cycle_color": str(cycle_colored_plot_path),
-        "training_distribution_theta_rho_n_by_cycle": (
-            None if training_distribution_plot_path is None else str(training_distribution_plot_path)
+        "training_distribution_control_targets_by_cycle": (
+            None
+            if training_distribution_artifacts.get("plot") is None
+            else str(training_distribution_artifacts["plot"])
+        ),
+        "training_distribution_control_targets_min_max_by_cycle": (
+            None
+            if training_distribution_artifacts.get("summary_csv") is None
+            else str(training_distribution_artifacts["summary_csv"])
         ),
         "rolling_forecast_metrics_comparison": (
             None
