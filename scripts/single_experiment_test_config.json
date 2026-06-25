@@ -80,6 +80,7 @@
   },
   "branching": {
     "N_r": 12,
+    "root_candidate_count": 24,
     "N_k": 3,
     "N_b": 2,
     "device": "cpu",

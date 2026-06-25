@@ -603,6 +603,7 @@ def _run_recursive_branching_internal(
         Nk=int(cfg.branching["N_k"]),
         Nb=int(cfg.branching["N_b"]),
         Nr=int(cfg.branching["N_r"]),
+        root_candidate_count=int(cfg.branching.get("root_candidate_count", cfg.branching["N_r"])),
         baseline_angle_deg=float(variography_params["BASELINE_ANGLE_DEG"]),
         seed=int(seed),
         lookback=int(cfg.lookback),
@@ -2409,6 +2410,12 @@ def main() -> None:
     _resolve_branching_target_weights(cfg.branching_target_weights)
     if cfg.strategy not in {"branching", "random"}:
         raise SystemExit("strategy must be branching or random.")
+    branching_selected_roots = int(cfg.branching["N_r"])
+    branching_candidate_roots = int(cfg.branching.get("root_candidate_count", branching_selected_roots))
+    if branching_selected_roots < 1:
+        raise SystemExit("branching.N_r must be >= 1.")
+    if branching_candidate_roots < branching_selected_roots:
+        raise SystemExit("branching.root_candidate_count must be >= branching.N_r.")
     if cfg.random_profiles_per_cycle is not None and int(cfg.random_profiles_per_cycle) < 1:
         raise SystemExit("random_profiles_per_cycle must be a positive integer when provided.")
     if bool(cfg.use_single_model_test_eval) and int(cfg.single_model_seed_count) < 1:
@@ -2465,7 +2472,8 @@ def main() -> None:
     for cycle in range(cfg.retrain_cycles):
         cycle_seed = int(cfg.seed + cycle)
         branching_root_count = max(1, int(cfg.branching["N_r"]))
-        branching_seed = int(base_seed + cycle * branching_root_count)
+        branching_candidate_count = max(branching_root_count, int(cfg.branching.get("root_candidate_count", branching_root_count)))
+        branching_seed = int(base_seed + cycle * branching_candidate_count)
         cycle_start = perf_counter()
         step_times: dict[str, float] = {}
         branching_artifacts_manifest: Path | None = None
@@ -2954,8 +2962,10 @@ def main() -> None:
         if cycle < cfg.retrain_cycles - 1:
             if cfg.strategy == "branching":
                 cycle_seed_info["profile_generation_seed"] = branching_seed
-                cycle_seed_info["recursive_branching_root_seeds"] = [
-                    branching_seed + root_idx for root_idx in range(branching_root_count)
+                cycle_seed_info["recursive_branching_selected_root_count"] = branching_root_count
+                cycle_seed_info["recursive_branching_root_candidate_count"] = branching_candidate_count
+                cycle_seed_info["recursive_branching_root_candidate_seeds"] = [
+                    branching_seed + candidate_idx for candidate_idx in range(branching_candidate_count)
                 ]
             else:
                 cycle_seed_info["profile_generation_seed"] = cycle_seed

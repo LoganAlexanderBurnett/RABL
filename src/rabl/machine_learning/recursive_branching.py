@@ -99,6 +99,7 @@ class RecursiveBranchingBatchConfig:
     Nk: int = 3
     Nb: int = 2
     Nr: int = 1
+    root_candidate_count: int | None = None
     baseline_angle_deg: float = 45.0
     seed: int = 123
     lookback: int = 12
@@ -275,6 +276,9 @@ def _append_artifact_manifest(
     branched_profiles_plot: Path,
     root_forecast_h5: Path | None,
     root_forecast_pdf: Path | None,
+    root_candidate_index: int | None = None,
+    root_candidate_seed: int | None = None,
+    root_uncertainty_score: float | None = None,
 ) -> None:
     entries = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else []
     entries.append(
@@ -283,6 +287,9 @@ def _append_artifact_manifest(
             "branched_profiles_plot": str(branched_profiles_plot),
             "root_forecast_h5": None if root_forecast_h5 is None else str(root_forecast_h5),
             "root_forecast_pdf": None if root_forecast_pdf is None else str(root_forecast_pdf),
+            "root_candidate_index": root_candidate_index,
+            "root_candidate_seed": root_candidate_seed,
+            "root_uncertainty_score": root_uncertainty_score,
         }
     )
     manifest_path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
@@ -337,6 +344,60 @@ def generate_root_profile(
         baseline_angle_deg=baseline_angle_deg,
         seed=seed,
     )[0]
+
+
+def _score_root_uncertainty(forecaster: EnsembleForecaster, root_profile: DrumProfile) -> float:
+    """Score a candidate root by mean ensemble 2-sigma width over horizon and targets."""
+    forecasts = forecaster.forecast(root_profile)
+    if forecasts.ndim != 3:
+        raise ValueError(f"Expected forecasts shape (n_models, n_steps, n_targets), got {forecasts.shape}.")
+    uncertainty_2sigma = 2.0 * np.std(forecasts, axis=0, ddof=0)
+    return float(np.nanmean(uncertainty_2sigma))
+
+
+def _select_root_candidates(
+    *,
+    generator: DrumProfileGenerator,
+    forecaster: EnsembleForecaster,
+    t_grid: np.ndarray,
+    baseline_angle_deg: float,
+    seed: int,
+    candidate_count: int,
+    selected_count: int,
+) -> tuple[list[tuple[int, DrumProfile, float]], list[dict[str, float | int | bool]]]:
+    """Generate candidate roots, score uncertainty, and return the top roots."""
+    if selected_count < 1:
+        raise ValueError("selected_count must be >= 1.")
+    if candidate_count < selected_count:
+        raise ValueError(
+            f"root_candidate_count must be >= Nr. Got root_candidate_count={candidate_count}, Nr={selected_count}."
+        )
+
+    candidates: list[tuple[int, DrumProfile, float]] = []
+    for candidate_idx in range(candidate_count):
+        candidate_seed = int(seed + candidate_idx)
+        profile = generate_root_profile(
+            generator,
+            t_grid,
+            baseline_angle_deg=baseline_angle_deg,
+            seed=candidate_seed,
+        )
+        score = _score_root_uncertainty(forecaster, profile)
+        candidates.append((candidate_idx, profile, score))
+
+    ranked = sorted(candidates, key=lambda item: item[2], reverse=True)
+    selected_indices = {candidate_idx for candidate_idx, _profile, _score in ranked[:selected_count]}
+    summary = [
+        {
+            "candidate_index": int(candidate_idx),
+            "candidate_seed": int(seed + candidate_idx),
+            "uncertainty_score": float(score),
+            "rank": int(rank),
+            "selected": bool(candidate_idx in selected_indices),
+        }
+        for rank, (candidate_idx, _profile, score) in enumerate(ranked, start=1)
+    ]
+    return ranked[:selected_count], summary
 
 
 def partition_horizon(t_grid: np.ndarray, n_intervals: int) -> list[Interval]:
@@ -862,6 +923,11 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
     config.output_dir.mkdir(parents=True, exist_ok=True)
     if config.Nr < 1:
         raise ValueError("Nr must be >=1.")
+    root_candidate_count = int(config.root_candidate_count or config.Nr)
+    if root_candidate_count < config.Nr:
+        raise ValueError(
+            f"root_candidate_count must be >= Nr. Got root_candidate_count={root_candidate_count}, Nr={config.Nr}."
+        )
     if not config.model_paths:
         raise ValueError("model_paths must be non-empty.")
 
@@ -939,13 +1005,33 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
 
     next_idx = _find_latest_variography_profile_index(config.output_dir.parents[0]) + 1
     target_names = list(STATE_COLUMNS[:num_targets])
-    for root_idx in range(config.Nr):
-        root = generate_root_profile(
-            generator,
-            t_grid,
-            baseline_angle_deg=config.baseline_angle_deg,
-            seed=config.seed + root_idx,
-        )
+    selected_roots, root_candidate_summary = _select_root_candidates(
+        generator=generator,
+        forecaster=forecaster,
+        t_grid=t_grid,
+        baseline_angle_deg=config.baseline_angle_deg,
+        seed=config.seed,
+        candidate_count=root_candidate_count,
+        selected_count=config.Nr,
+    )
+    candidate_summary_path = config.output_dir / "root_candidate_selection.json"
+    candidate_summary_path.write_text(
+        json.dumps(
+            {
+                "root_candidate_count": root_candidate_count,
+                "selected_root_count": int(config.Nr),
+                "score": "mean_2sigma_uncertainty_over_horizon_and_targets",
+                "candidates": root_candidate_summary,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(
+        f"[root-selection] selected top {config.Nr} of {root_candidate_count} candidate roots by "
+        f"mean ensemble 2-sigma uncertainty. Summary: {candidate_summary_path}"
+    )
+    for root_idx, (candidate_idx, root, candidate_score) in enumerate(selected_roots):
         result = run_recursive_branching(
             forecaster=forecaster,
             generator=generator,
@@ -956,7 +1042,7 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
             finite_difference_order=config.finite_difference_order,
             branch_time_min=config.branch_time_min,
             branch_time_max=config.branch_time_max,
-            seed=config.seed + root_idx,
+            seed=config.seed + int(candidate_idx),
             verbose=True,
         )
         root_group = f"root_{root_idx + 1:03d}"
@@ -1004,6 +1090,14 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
             branched_profiles_plot=branched_profiles_plot,
             root_forecast_h5=root_forecast_h5,
             root_forecast_pdf=root_forecast_pdf,
+            root_candidate_index=int(candidate_idx),
+            root_candidate_seed=int(config.seed + int(candidate_idx)),
+            root_uncertainty_score=float(candidate_score),
         )
+        with h5py.File(profiles_h5, "a") as h5f:
+            root_grp = h5f[root_group]
+            root_grp.attrs["root_candidate_index"] = int(candidate_idx)
+            root_grp.attrs["root_candidate_seed"] = int(config.seed + int(candidate_idx))
+            root_grp.attrs["root_uncertainty_score"] = float(candidate_score)
 
     return config.output_dir
