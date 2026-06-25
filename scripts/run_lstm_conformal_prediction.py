@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -28,73 +29,81 @@ from rabl.machine_learning.lstm_pipeline import (
     cleanup_cuda,
     test_and_save_forecasts,
 )
-from rabl.paths import resolve_output_root
+
+
+@dataclass(frozen=True)
+class LSTMConformalRunConfig:
+    sim_root: str
+    batches: list[str]
+    lookback: int
+    config_py_path: str
+    unscaled_out_dir: str
+    scaled_out_dir: str
+    out_dir: str
+    unscaled_output_name: str | None = None
+    scaled_output_name: str | None = None
+    quiet_dataset_build: bool = False
+    scaling_type: str = "standard"
+    split_mode: str = "profile"
+    train_frac: float = 0.65
+    val_frac: float = 0.15
+    cal_frac: float = 0.05
+    test_frac: float = 0.15
+    test_manifest_path: str | None = None
+    val_manifest_path: str | None = None
+    cal_manifest_path: str | None = None
+    train_profile_limit_with_manifests: int | None = None
+    batch_size: int = 256
+    epochs: int = 100
+    seed: int = 123
+    learning_rate: float = 1e-3
+    n_lstm: int = 1
+    lstm_hidden: int = 64
+    lstm_dropout: float = 0.0
+    n_fc: int = 1
+    fc_hidden: list[int] | tuple[int, ...] = (64,)
+    early_stopping_patience: int | None = 10
+    early_stopping_min_delta: float = 0.0
+    prefer_gpu: bool = True
+    alpha: float = 0.05
+    horizon_mode: str = "per_horizon"
+    max_plots: int = 5
+
+    def __post_init__(self) -> None:
+        if not self.batches:
+            raise ValueError("batches must contain at least one batch id.")
+        if self.lookback < 1:
+            raise ValueError("lookback must be >= 1.")
+        if self.scaling_type not in {"standard", "minmax", "none"}:
+            raise ValueError("scaling_type must be 'standard', 'minmax', or 'none'.")
+        if self.split_mode not in {"profile", "sample"}:
+            raise ValueError("split_mode must be 'profile' or 'sample'.")
+        if self.horizon_mode not in {"per_horizon", "global"}:
+            raise ValueError("horizon_mode must be 'per_horizon' or 'global'.")
+        if len(tuple(self.fc_hidden)) != self.n_fc:
+            raise ValueError("fc_hidden must provide exactly n_fc values.")
 
 
 def parse_args() -> argparse.Namespace:
-    repo_root = Path(__file__).resolve().parents[1]
-    output_root = resolve_output_root()
     parser = argparse.ArgumentParser(
         description=(
-            "Build unscaled/scaled LSTM datasets from batch_XXXX directories, train one LSTM, "
-            "evaluate test forecasts, and run conformal prediction UQ."
+            "Run end-to-end LSTM conformal prediction from a JSON config: build datasets, "
+            "train one LSTM, evaluate test forecasts, and produce conformal UQ."
         ),
     )
-
-    # Dataset construction.
-    parser.add_argument("--sim-root", type=Path, default=output_root / "sim_profiles")
-    parser.add_argument("--batches", type=str, nargs="+", required=True, help="Batch IDs, e.g. --batches 0001 0002.")
-    parser.add_argument("--lookback", type=int, required=True, help="Number of past timesteps in each LSTM input window.")
-    parser.add_argument("--config", type=Path, default=repo_root / "scripts" / "config.py")
-    parser.add_argument("--unscaled-out-dir", type=Path, default=output_root / "datasets" / "unscaled_unsplit")
-    parser.add_argument("--scaled-out-dir", type=Path, default=output_root / "datasets" / "scaled_split")
-    parser.add_argument("--unscaled-output-name", type=str, default=None)
-    parser.add_argument("--scaled-output-name", type=str, default=None)
-    parser.add_argument("--quiet-dataset-build", action="store_true")
-
-    # Scaling/splitting.
-    parser.add_argument("--scaling-type", choices=("standard", "minmax", "none"), default="standard")
-    parser.add_argument("--split-mode", choices=("profile", "sample"), default="profile")
-    parser.add_argument("--train-frac", type=float, default=0.65)
-    parser.add_argument("--val-frac", type=float, default=0.15)
-    parser.add_argument("--cal-frac", type=float, default=0.05)
-    parser.add_argument("--test-frac", type=float, default=0.15)
-    parser.add_argument("--test-manifest", type=Path, default=None, help="JSON with {'test_profiles': [...]}.")
-    parser.add_argument("--val-manifest", type=Path, default=None, help="JSON with {'val_profiles': [...]}.")
-    parser.add_argument("--cal-manifest", type=Path, default=None, help="JSON with {'cal_profiles': [...]}.")
-    parser.add_argument(
-        "--train-profile-limit-with-manifests",
-        type=int,
-        default=None,
-        help="Optional cap on training profiles after fixed val/test/cal manifests are applied.",
-    )
-
-    # Single LSTM hyperparameter configuration.
-    parser.add_argument("--out-dir", type=Path, default=output_root / "ml_results" / "lstm_conformal")
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--seed", type=int, default=123)
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
-    parser.add_argument("--n-lstm", type=int, default=1)
-    parser.add_argument("--lstm-hidden", type=int, default=64)
-    parser.add_argument("--lstm-dropout", type=float, default=0.0)
-    parser.add_argument("--n-fc", type=int, default=1)
-    parser.add_argument("--fc-hidden", type=int, nargs="+", default=(64,))
-    parser.add_argument("--early-stopping-patience", type=int, default=10)
-    parser.add_argument("--early-stopping-min-delta", type=float, default=0.0)
-    parser.add_argument("--prefer-gpu", dest="prefer_gpu", action="store_true", default=True)
-    parser.add_argument("--no-prefer-gpu", dest="prefer_gpu", action="store_false")
-
-    # Conformal UQ.
-    parser.add_argument("--alpha", type=float, default=0.05)
-    parser.add_argument("--horizon-mode", choices=("per_horizon", "global"), default="per_horizon")
-    parser.add_argument(
-        "--max-plots",
-        type=int,
-        default=5,
-        help="Number of test profiles to plot with prediction, ground truth, and conformal uncertainty.",
-    )
+    parser.add_argument("--config", type=Path, required=True, help="Path to LSTM conformal JSON config.")
     return parser.parse_args()
+
+
+def _load_cfg(path: Path) -> LSTMConformalRunConfig:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"Config must be a JSON object: {path}")
+    return LSTMConformalRunConfig(**data)
+
+
+def _optional_path(path: str | None) -> Path | None:
+    return None if path in (None, "") else Path(path)
 
 
 def _json_safe(value: Any) -> Any:
@@ -129,11 +138,11 @@ def _compute_coverage_and_width(forecasts: list[dict[str, Any]], target_names: l
     }
 
 
-def _build_unscaled_dataset(args: argparse.Namespace) -> Path:
-    config = build_lstm_dataset._validate_config(build_lstm_dataset._load_config(args.config))
+def _build_unscaled_dataset(args: LSTMConformalRunConfig) -> Path:
+    config = build_lstm_dataset._validate_config(build_lstm_dataset._load_config(Path(args.config_py_path)))
     return build_lstm_dataset.build_dataset(
-        args.sim_root,
-        args.unscaled_out_dir,
+        Path(args.sim_root),
+        Path(args.unscaled_out_dir),
         config["steady_state"],
         args.lookback,
         args.batches,
@@ -142,7 +151,7 @@ def _build_unscaled_dataset(args: argparse.Namespace) -> Path:
     )
 
 
-def _scale_and_split_dataset(args: argparse.Namespace, unscaled_path: Path) -> Path:
+def _scale_and_split_dataset(args: LSTMConformalRunConfig, unscaled_path: Path) -> Path:
     splitter = LSTMDatasetScalerSplitter(
         input_path=unscaled_path,
         scaling_type=args.scaling_type,
@@ -150,19 +159,19 @@ def _scale_and_split_dataset(args: argparse.Namespace, unscaled_path: Path) -> P
         val_frac=args.val_frac,
         cal_frac=args.cal_frac,
         test_frac=args.test_frac,
-        output_dir=args.scaled_out_dir,
+        output_dir=Path(args.scaled_out_dir),
         output_name=args.scaled_output_name,
         seed=args.seed,
         split_mode=args.split_mode,
-        test_manifest_path=args.test_manifest,
-        val_manifest_path=args.val_manifest,
-        cal_manifest_path=args.cal_manifest,
+        test_manifest_path=_optional_path(args.test_manifest_path),
+        val_manifest_path=_optional_path(args.val_manifest_path),
+        cal_manifest_path=_optional_path(args.cal_manifest_path),
         train_profile_limit_with_manifests=args.train_profile_limit_with_manifests,
     )
     return splitter.run()
 
 
-def _train_model(args: argparse.Namespace, scaled_h5_path: Path) -> tuple[LSTMPipeline, torch.nn.Module, torch.device, Path]:
+def _train_model(args: LSTMConformalRunConfig, scaled_h5_path: Path) -> tuple[LSTMPipeline, torch.nn.Module, torch.device, Path]:
     if len(args.fc_hidden) != args.n_fc:
         raise ValueError("--fc-hidden must provide exactly --n-fc values.")
     config = LSTMPipelineConfig(
@@ -181,19 +190,19 @@ def _train_model(args: argparse.Namespace, scaled_h5_path: Path) -> tuple[LSTMPi
     pipeline.inspect()
     model, _history, used_device = pipeline.train(
         epochs=args.epochs,
-        out_dir=args.out_dir,
+        out_dir=Path(args.out_dir),
         prefer_gpu=args.prefer_gpu,
         early_stopping_patience=args.early_stopping_patience,
         early_stopping_min_delta=args.early_stopping_min_delta,
         restore_best_weights=True,
     )
-    weights_path = pipeline.save_model_pt(model, args.out_dir / "model.pt")
+    weights_path = pipeline.save_model_pt(model, Path(args.out_dir) / "model.pt")
     print(f"Saved trained model weights to: {weights_path}")
     return pipeline, model, used_device, weights_path
 
 
 def _run_conformal_uq(
-    args: argparse.Namespace,
+    args: LSTMConformalRunConfig,
     *,
     pipeline: LSTMPipeline,
     model: torch.nn.Module,
@@ -206,7 +215,7 @@ def _run_conformal_uq(
     cal_profile_ds = datasets.get("cal_profile_ds")
     if cal_profile_ds is None or not datasets.get("cal_profile_names"):
         raise ValueError(
-            f"Scaled HDF5 dataset {scaled_h5_path} has no cal split; provide --cal-manifest or --cal-frac > 0."
+            f"Scaled HDF5 dataset {scaled_h5_path} has no cal split; set cal_manifest_path or cal_frac > 0."
         )
 
     target_shape = datasets["target_shape"]
@@ -245,7 +254,7 @@ def _run_conformal_uq(
     ]
     cal_metrics = _compute_coverage_and_width(cal_forecasts, target_names)
 
-    conformal_out_dir = args.out_dir / "conformal"
+    conformal_out_dir = Path(args.out_dir) / "conformal"
     conformal_out_dir.mkdir(parents=True, exist_ok=True)
     forecasts: list[dict[str, Any]] = []
     for idx, (profile_name, x_profile, y_profile) in enumerate(datasets["test_profile_ds"]):
@@ -312,8 +321,9 @@ def _run_conformal_uq(
 
 
 def main() -> None:
-    args = parse_args()
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    cli_args = parse_args()
+    args = _load_cfg(cli_args.config)
+    Path(args.out_dir).mkdir(parents=True, exist_ok=True)
 
     unscaled_h5_path = _build_unscaled_dataset(args)
     scaled_h5_path = _scale_and_split_dataset(args, unscaled_h5_path)
@@ -325,7 +335,7 @@ def main() -> None:
     test_and_save_forecasts(
         model,
         pipeline.datasets["test_profile_ds"],
-        out_dir=args.out_dir,
+        out_dir=Path(args.out_dir),
         h5_path=scaled_h5_path,
         state_dim=pipeline.config.state_dim,
         control_channel=pipeline.config.control_channel,
@@ -347,9 +357,10 @@ def main() -> None:
         "unscaled_h5_path": str(unscaled_h5_path),
         "scaled_h5_path": str(scaled_h5_path),
         "weights_path": str(weights_path),
-        "args": vars(args),
+        "config_path": str(cli_args.config),
+        "config": args.__dict__,
     }
-    (args.out_dir / "end_to_end_conformal_run_metadata.json").write_text(json.dumps(_json_safe(run_metadata), indent=2))
+    (Path(args.out_dir) / "end_to_end_conformal_run_metadata.json").write_text(json.dumps(_json_safe(run_metadata), indent=2))
 
     if "cuda" in str(used_device).lower():
         cleanup_cuda(model, used_device)
