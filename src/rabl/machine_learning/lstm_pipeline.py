@@ -235,6 +235,11 @@ def clean_cuda(model: nn.Module | None, used_device: torch.device | str | None =
 # HDF5 helpers
 # --------------------------------------------------------------------------------------
 
+def _split_exists(h5_path: Path, split: str) -> bool:
+    with h5py.File(h5_path, "r") as h5f:
+        return split in h5f and "files" in h5f[split]
+
+
 def _get_profile_names(h5_path: Path, split: str) -> list[str]:
     with h5py.File(h5_path, "r") as h5f:
         return sorted(h5f[split]["files"].keys())
@@ -446,6 +451,9 @@ class ProfileDataset(IterableDataset):
         self.profile_names = list(profile_names)
         self.split = split
 
+    def __len__(self) -> int:
+        return len(self.profile_names)
+
     def __iter__(self) -> Iterable[tuple[str, torch.Tensor, torch.Tensor]]:
         for profile_name, x_data, y_data in _profile_generator(self.h5_path, self.profile_names, self.split):
             yield profile_name, torch.from_numpy(x_data), torch.from_numpy(y_data)
@@ -462,6 +470,7 @@ def build_datasets(h5_path: Path, batch_size: int, seed: int) -> dict[str, Any]:
     train_profiles = _get_profile_names(h5_path, "train")
     val_profiles = _get_profile_names(h5_path, "val")
     test_profiles = _get_profile_names(h5_path, "test")
+    cal_profiles = _get_profile_names(h5_path, "cal") if _split_exists(h5_path, "cal") else []
 
     if not train_profiles:
         raise ValueError("No training profiles found in HDF5.")
@@ -472,6 +481,7 @@ def build_datasets(h5_path: Path, batch_size: int, seed: int) -> dict[str, Any]:
     train_num_samples = _count_samples_in_split(h5_path, "train", train_profiles)
     val_num_samples = _count_samples_in_split(h5_path, "val", val_profiles)
     test_num_samples = _count_samples_in_split(h5_path, "test", test_profiles)
+    cal_num_samples = _count_samples_in_split(h5_path, "cal", cal_profiles) if cal_profiles else 0
 
     train_steps = max(1, ceil(train_num_samples / batch_size))
     val_steps = max(1, ceil(val_num_samples / batch_size))
@@ -489,6 +499,7 @@ def build_datasets(h5_path: Path, batch_size: int, seed: int) -> dict[str, Any]:
     # Profile datasets: yields entire profile arrays
     val_profile_ds = ProfileDataset(h5_path, val_profiles, "val")
     test_profile_ds = ProfileDataset(h5_path, test_profiles, "test")
+    cal_profile_ds = ProfileDataset(h5_path, cal_profiles, "cal") if cal_profiles else None
 
     return {
         # datasets
@@ -498,10 +509,12 @@ def build_datasets(h5_path: Path, batch_size: int, seed: int) -> dict[str, Any]:
         "val_sample_ds": val_sample_ds,
         "val_profile_ds": val_profile_ds,
         "test_profile_ds": test_profile_ds,
+        "cal_profile_ds": cal_profile_ds,
         # metadata
         "train_profile_names": train_profiles,
         "val_profile_names": val_profiles,
         "test_profile_names": test_profiles,
+        "cal_profile_names": cal_profiles,
         "sample_shape": x_shape,
         "target_shape": y_shape,
         "batch_size": batch_size,
@@ -509,6 +522,7 @@ def build_datasets(h5_path: Path, batch_size: int, seed: int) -> dict[str, Any]:
         "train_num_samples": train_num_samples,
         "val_num_samples": val_num_samples,
         "test_num_samples": test_num_samples,
+        "cal_num_samples": cal_num_samples,
         "train_steps_per_epoch": train_steps,
         "val_steps": val_steps,
         "h5_path": Path(h5_path),

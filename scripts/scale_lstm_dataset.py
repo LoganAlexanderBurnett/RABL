@@ -42,6 +42,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional JSON manifest with fixed validation profile keys.",
     )
     parser.add_argument(
+        "--cal-manifest",
+        dest="cal_manifest",
+        type=Path,
+        default=None,
+        help="Optional JSON manifest with fixed calibration profile keys.",
+    )
+    parser.add_argument(
+        "--cal-frac",
+        dest="cal_frac",
+        type=float,
+        default=0.0,
+        help=(
+            "Calibration fraction. With fixed test/val manifests and no --cal-manifest, "
+            "this fraction carves calibration profiles from the remaining non-test/non-val pool."
+        ),
+    )
+    parser.add_argument(
         "--test-count",
         dest="test_count",
         type=int,
@@ -81,6 +98,8 @@ def main() -> None:
         raise SystemExit("--test-manifest is mutually exclusive with --test-count.")
     if args.val_manifest is not None and args.test_count is not None:
         raise SystemExit("--val-manifest is mutually exclusive with --test-count.")
+    if args.cal_manifest is not None and args.test_count is not None:
+        raise SystemExit("--cal-manifest is mutually exclusive with --test-count.")
     if args.save_test_manifest is not None and args.test_manifest is not None:
         raise SystemExit("--save-test-manifest cannot be used with --test-manifest.")
     if args.save_test_manifest is not None and args.val_manifest is not None:
@@ -99,6 +118,8 @@ def main() -> None:
         split_mode=args.split_mode,
         test_manifest_path=args.test_manifest,
         val_manifest_path=args.val_manifest,
+        cal_manifest_path=args.cal_manifest,
+        cal_frac=args.cal_frac,
         train_profile_limit_with_manifests=args.train_profile_limit_with_manifests,
         test_count=args.test_count,
         save_test_manifest_path=args.save_test_manifest,
@@ -112,12 +133,14 @@ def main() -> None:
         split_strategy = str(h5f.attrs.get("split_strategy", "fractional"))
         train_profiles = list(h5f["train"]["files"].keys())
         val_profiles = list(h5f["val"]["files"].keys())
+        cal_profiles = list(h5f["cal"]["files"].keys()) if "cal" in h5f else []
         test_profiles = list(h5f["test"]["files"].keys())
         print(
             "Split summary: "
             f"strategy={split_strategy}, "
             f"train_profiles={len(train_profiles)}, "
             f"val_profiles={len(val_profiles)}, "
+            f"cal_profiles={len(cal_profiles)}, "
             f"test_profiles={len(test_profiles)}"
         )
 

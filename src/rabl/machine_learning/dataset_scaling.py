@@ -19,13 +19,16 @@ class SplitFractions:
     train: float
     val: float
     test: float
+    cal: float = 0.0
 
     def validate(self) -> None:
-        total = self.train + self.val + self.test
+        total = self.train + self.val + self.cal + self.test
         if not np.isclose(total, 1.0):
-            raise ValueError("Train/val/test fractions must sum to 1.0.")
+            raise ValueError("Train/val/cal/test fractions must sum to 1.0.")
         if any(frac <= 0 for frac in (self.train, self.val, self.test)):
             raise ValueError("Train/val/test fractions must be positive.")
+        if self.cal < 0:
+            raise ValueError("cal fraction must be non-negative.")
 
 
 class LSTMDatasetScalerSplitter:
@@ -35,6 +38,7 @@ class LSTMDatasetScalerSplitter:
         scaling_type: ScalingType = "standard",
         train_frac: float = 0.7,
         val_frac: float = 0.15,
+        cal_frac: float = 0.0,
         test_frac: float = 0.15,
         output_dir: Path | None = None,
         output_name: str | None = None,
@@ -42,6 +46,7 @@ class LSTMDatasetScalerSplitter:
         split_mode: SplitMode = "sample",
         test_manifest_path: Path | None = None,
         val_manifest_path: Path | None = None,
+        cal_manifest_path: Path | None = None,
         train_profile_limit_with_manifests: int | None = None,
         test_count: int | None = None,
         save_test_manifest_path: Path | None = None,
@@ -50,13 +55,14 @@ class LSTMDatasetScalerSplitter:
     ) -> None:
         self.input_path = Path(input_path)
         self.scaling_type = scaling_type
-        self.splits = SplitFractions(train=train_frac, val=val_frac, test=test_frac)
+        self.splits = SplitFractions(train=train_frac, val=val_frac, cal=cal_frac, test=test_frac)
         self.output_dir = output_dir
         self.output_name = output_name
         self.seed = seed
         self.split_mode = split_mode
         self.test_manifest_path = Path(test_manifest_path) if test_manifest_path else None
         self.val_manifest_path = Path(val_manifest_path) if val_manifest_path else None
+        self.cal_manifest_path = Path(cal_manifest_path) if cal_manifest_path else None
         self.train_profile_limit_with_manifests = train_profile_limit_with_manifests
         self.test_count = test_count
         self.save_test_manifest_path = (
@@ -72,7 +78,12 @@ class LSTMDatasetScalerSplitter:
             raise ValueError("scaling_type must be 'standard', 'minmax', or 'none'.")
         if self.split_mode not in ("profile", "sample"):
             raise ValueError("split_mode must be 'profile' or 'sample'.")
-        if self.test_manifest_path is None and self.val_manifest_path is None and self.test_count is None:
+        if (
+            self.test_manifest_path is None
+            and self.val_manifest_path is None
+            and self.cal_manifest_path is None
+            and self.test_count is None
+        ):
             self.splits.validate()
         else:
             if self.splits.train <= 0 or self.splits.val <= 0:
@@ -137,6 +148,8 @@ class LSTMDatasetScalerSplitter:
                 self._write_metadata(h5f, out_h5f, train_stats, split_definition)
                 self._write_split(out_h5f, "train", files_group, split_payload["train"], train_stats)
                 self._write_split(out_h5f, "val", files_group, split_payload["val"], train_stats)
+                if split_payload.get("cal"):
+                    self._write_split(out_h5f, "cal", files_group, split_payload["cal"], train_stats)
                 self._write_split(out_h5f, "test", files_group, split_payload["test"], train_stats)
 
         return output_path
@@ -152,24 +165,28 @@ class LSTMDatasetScalerSplitter:
         split_strategy = str(split_definition.get("split_strategy", "fractional"))
         if split_strategy == "fractional":
             split_suffix = (
-                f"train{self.splits.train:.2f}_val{self.splits.val:.2f}_test{self.splits.test:.2f}"
+                f"train{self.splits.train:.2f}_val{self.splits.val:.2f}"
+                f"_cal{self.splits.cal:.2f}_test{self.splits.test:.2f}"
             )
         else:
             n_train = len(split_definition.get("train_profiles", []))
             n_val = len(split_definition.get("val_profiles", []))
+            n_cal = len(split_definition.get("cal_profiles", []))
             n_test = len(split_definition.get("test_profiles", []))
-            split_suffix = f"train{n_train}profiles_val{n_val}profiles_test{n_test}profiles"
+            split_suffix = f"train{n_train}profiles_val{n_val}profiles_cal{n_cal}profiles_test{n_test}profiles"
         name = f"{stem}_{self.scaling_type}_{split_suffix}.h5"
         return base_dir / name
 
-    def _split_keys(self, keys: np.ndarray) -> tuple[list[str], list[str], list[str]]:
+    def _split_keys(self, keys: np.ndarray) -> tuple[list[str], list[str], list[str], list[str]]:
         total = len(keys)
         train_end = int(total * self.splits.train)
         val_end = train_end + int(total * self.splits.val)
+        cal_end = val_end + int(total * self.splits.cal)
         train_keys = list(keys[:train_end])
         val_keys = list(keys[train_end:val_end])
-        test_keys = list(keys[val_end:])
-        return train_keys, val_keys, test_keys
+        cal_keys = list(keys[val_end:cal_end])
+        test_keys = list(keys[cal_end:])
+        return train_keys, val_keys, cal_keys, test_keys
 
     def _build_split_payload(
         self,
@@ -183,22 +200,27 @@ class LSTMDatasetScalerSplitter:
         if self.val_manifest_path is not None:
             return self._build_split_payload_from_manifests(files_group, file_keys, rng)
 
+        if self.cal_manifest_path is not None:
+            return self._build_split_payload_from_manifests(files_group, file_keys, rng)
+
         if self.test_count is not None:
             return self._build_split_payload_from_count(files_group, file_keys, rng)
 
         if self.split_mode == "profile":
             shuffled = rng.permutation(file_keys)
-            train_keys, val_keys, test_keys = self._split_keys(shuffled)
+            train_keys, val_keys, cal_keys, test_keys = self._split_keys(shuffled)
             split_definition: dict[str, list[str] | str | int] = {
                 "split_strategy": "fractional",
                 "train_profiles": train_keys,
                 "val_profiles": val_keys,
+                "cal_profiles": cal_keys,
                 "test_profiles": test_keys,
             }
             return (
                 {
                     "train": {key: None for key in train_keys},
                     "val": {key: None for key in val_keys},
+                    "cal": {key: None for key in cal_keys},
                     "test": {key: None for key in test_keys},
                 },
                 split_definition,
@@ -209,7 +231,9 @@ class LSTMDatasetScalerSplitter:
         # - only train/val are split at sample level
         shuffled_keys = rng.permutation(file_keys)
         test_start = int(len(shuffled_keys) * (1.0 - self.splits.test))
-        train_val_keys = list(shuffled_keys[:test_start])
+        cal_start = int(len(shuffled_keys) * (1.0 - self.splits.test - self.splits.cal))
+        train_val_keys = list(shuffled_keys[:cal_start])
+        cal_keys = list(shuffled_keys[cal_start:test_start])
         test_keys = list(shuffled_keys[test_start:])
 
         sample_entries: list[tuple[str, int]] = []
@@ -232,12 +256,14 @@ class LSTMDatasetScalerSplitter:
             "split_strategy": "fractional",
             "train_profiles": sorted(self._entries_to_indices(train_entries).keys()),
             "val_profiles": sorted(self._entries_to_indices(val_entries).keys()),
+            "cal_profiles": sorted(cal_keys),
             "test_profiles": sorted(test_keys),
         }
         return (
             {
                 "train": self._entries_to_indices(train_entries),
                 "val": self._entries_to_indices(val_entries),
+                "cal": {key: None for key in cal_keys},
                 "test": {key: None for key in test_keys},
             },
             split_definition,
@@ -251,6 +277,7 @@ class LSTMDatasetScalerSplitter:
     ) -> tuple[dict[str, dict[str, np.ndarray | None]], dict[str, list[str] | str | int]]:
         test_keys: list[str] = []
         val_keys: list[str] = []
+        cal_keys: list[str] = []
         meta: dict[str, list[str] | str | int] = {}
 
         if self.test_manifest_path is not None:
@@ -279,15 +306,33 @@ class LSTMDatasetScalerSplitter:
             self._validate_fixed_test_split(file_keys, val_keys)
             meta["val_manifest_path"] = str(self.val_manifest_path)
 
-        overlap = sorted(set(test_keys).intersection(val_keys))
+        if self.cal_manifest_path is not None:
+            if not self.cal_manifest_path.exists():
+                raise FileNotFoundError(f"Cal manifest not found: {self.cal_manifest_path}")
+            data = json.loads(self.cal_manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("Cal manifest must be a JSON object.")
+            cal_profiles = data.get("cal_profiles")
+            if not isinstance(cal_profiles, list):
+                raise ValueError("Cal manifest must contain list field: cal_profiles.")
+            cal_keys = [str(key) for key in cal_profiles]
+            self._validate_fixed_test_split(file_keys, cal_keys)
+            meta["cal_manifest_path"] = str(self.cal_manifest_path)
+
+        overlap = sorted(
+            set(test_keys).intersection(val_keys)
+            | set(test_keys).intersection(cal_keys)
+            | set(val_keys).intersection(cal_keys)
+        )
         if overlap:
-            raise ValueError(f"Test and val manifests overlap: {overlap[:10]}")
+            raise ValueError(f"Fixed split manifests overlap: {overlap[:10]}")
 
         return self._build_split_with_fixed_splits(
             files_group=files_group,
             file_keys=file_keys,
             test_keys=test_keys,
             val_keys=val_keys,
+            cal_keys=cal_keys,
             rng=rng,
             split_strategy="fixed_manifest",
             extra_meta=meta,
@@ -332,6 +377,7 @@ class LSTMDatasetScalerSplitter:
             file_keys=file_keys,
             test_keys=test_keys,
             val_keys=[],
+            cal_keys=[],
             rng=rng,
             split_strategy="fixed_count",
             extra_meta=extra_meta,
@@ -352,6 +398,7 @@ class LSTMDatasetScalerSplitter:
         file_keys: list[str],
         test_keys: list[str],
         val_keys: list[str],
+        cal_keys: list[str],
         rng: np.random.Generator,
         *,
         split_strategy: str,
@@ -359,9 +406,22 @@ class LSTMDatasetScalerSplitter:
     ) -> tuple[dict[str, dict[str, np.ndarray | None]], dict[str, list[str] | str | int]]:
         test_set = set(test_keys)
         val_set = set(val_keys)
-        train_pool_keys = [key for key in file_keys if key not in test_set and key not in val_set]
+        cal_set = set(cal_keys)
+        train_pool_keys = [key for key in file_keys if key not in test_set and key not in val_set and key not in cal_set]
         if not train_pool_keys:
             raise ValueError("Fixed test selection leaves no profiles for train/val.")
+
+        if not cal_keys and self.splits.cal > 0.0 and len(train_pool_keys) > 1:
+            shuffled_cal_pool = list(rng.permutation(train_pool_keys))
+            cal_weight = self.splits.cal / (self.splits.train + self.splits.cal)
+            n_cal = int(len(shuffled_cal_pool) * cal_weight)
+            if n_cal < 1:
+                n_cal = 1
+            if n_cal >= len(shuffled_cal_pool):
+                n_cal = len(shuffled_cal_pool) - 1
+            cal_keys = sorted(shuffled_cal_pool[:n_cal])
+            cal_set = set(cal_keys)
+            train_pool_keys = [key for key in train_pool_keys if key not in cal_set]
 
         if val_keys:
             train_keys = sorted(train_pool_keys)
@@ -372,6 +432,7 @@ class LSTMDatasetScalerSplitter:
             payload = {
                 "train": {key: None for key in train_keys},
                 "val": {key: None for key in val_keys},
+                "cal": {key: None for key in cal_keys},
                 "test": {key: None for key in test_keys},
             }
         elif self.split_mode == "profile":
@@ -384,6 +445,7 @@ class LSTMDatasetScalerSplitter:
             payload = {
                 "train": {key: None for key in train_keys},
                 "val": {key: None for key in val_keys},
+                "cal": {key: None for key in cal_keys},
                 "test": {key: None for key in test_keys},
             }
         else:
@@ -402,6 +464,7 @@ class LSTMDatasetScalerSplitter:
             payload = {
                 "train": self._entries_to_indices(train_entries),
                 "val": self._entries_to_indices(val_entries),
+                "cal": {key: None for key in cal_keys},
                 "test": {key: None for key in test_keys},
             }
 
@@ -409,6 +472,7 @@ class LSTMDatasetScalerSplitter:
             "split_strategy": split_strategy,
             "train_profiles": sorted(payload["train"].keys()),
             "val_profiles": sorted(payload["val"].keys()),
+            "cal_profiles": sorted(payload["cal"].keys()),
             "test_profiles": sorted(test_keys),
         }
         if self.train_profile_limit_with_manifests is not None:
@@ -485,6 +549,7 @@ class LSTMDatasetScalerSplitter:
         dst_h5f.attrs["saved_scaler_stats_path"] = "" if self.save_stats_path is None else str(self.save_stats_path)
         dst_h5f.attrs["train_fraction"] = self.splits.train
         dst_h5f.attrs["val_fraction"] = self.splits.val
+        dst_h5f.attrs["cal_fraction"] = self.splits.cal
         dst_h5f.attrs["test_fraction"] = self.splits.test
         dst_h5f.attrs["split_mode"] = self.split_mode
         split_strategy = str(split_definition.get("split_strategy", "fractional"))
@@ -495,6 +560,9 @@ class LSTMDatasetScalerSplitter:
             )
             dst_h5f.attrs["val_manifest_path"] = str(
                 split_definition.get("val_manifest_path", "")
+            )
+            dst_h5f.attrs["cal_manifest_path"] = str(
+                split_definition.get("cal_manifest_path", "")
             )
             dst_h5f.attrs["train_profile_limit_with_manifests"] = int(
                 split_definition.get("train_profile_limit_with_manifests", 0)
@@ -511,6 +579,10 @@ class LSTMDatasetScalerSplitter:
         split_group.create_dataset(
             "val_profiles",
             data=np.asarray(split_definition.get("val_profiles", []), dtype="S"),
+        )
+        split_group.create_dataset(
+            "cal_profiles",
+            data=np.asarray(split_definition.get("cal_profiles", []), dtype="S"),
         )
         split_group.create_dataset(
             "test_profiles",
