@@ -1,19 +1,22 @@
 {
-  "experiment_id": "single_exp_001",
+  "experiment_id": "exp-062526-5Cycles-Nr11Nk2Nb2-1kInitialTrain-SingleModelEval-seed42",
   "strategy": "branching",
-  "seed": 789,
+  "retrain_cycles": 5,
+  "random_profiles_per_cycle": 100,
+  "seed": 42,
   "training_seed": 123,
-  "random_profiles_per_cycle": null,
   "dataset_build_verbose": false,
-  "skip_hyperparameter_tuning": false,
-  "retrain_cycles": 10,
+  "skip_hyperparameter_tuning": true,
+  "use_single_model_test_eval": true,
+  "single_model_seed_count": 1,
+  "single_model_seeds": [101, 202, 303],
   "initial_sim_batches": [
     "0001",
     "0002"
   ],
   "lookback": 12,
   "scaling_type": "minmax",
-  "freeze_scaler_stats": false,
+  "freeze_scaler_stats": true,
   "scaler_stats_path": null,
   "save_scaler_stats": true,
   "split_mode": "profile",
@@ -24,21 +27,18 @@
   "bag_fraction": 0.7,
   "bag_split_mode": "sample",
   "prefer_gpu": true,
-  "ensemble_use_tqdm": true,
-  "use_single_model_test_eval": false,
-  "single_model_seed_count": 1,
-  "single_model_seeds": null,
+  "ensemble_use_tqdm": false,
   "plot_bag_distributions": true,
   "save_individual_ensemble_forecasts": true,
   "plot_individual_ensemble_forecasts": true,
   "evaluate_test_difficulty": true,
   "test_difficulty_bins": 10,
-  "test_difficulty_include_per_target": false,
+  "test_difficulty_include_per_target": true,
   "test_difficulty_num_workers": 4,
   "ensemble_forecast_num_workers": 5,
   "forecast_plot_bins": 5,
   "forecast_plot_profiles_per_bin": 2,
-  "forecast_plot_selection_seed": 789,
+  "forecast_plot_selection_seed": 123,
   "forecast_plot_selection_path": null,
   "hp_grid": {
     "method": "grid",
@@ -47,7 +47,7 @@
       0.0003
     ],
     "batch_sizes": [
-      128
+      64
     ],
     "n_lstm_values": [
       1
@@ -56,7 +56,7 @@
       64
     ],
     "hidden_fc_values": [
-      128
+      64
     ],
     "n_fc_values": [
       1
@@ -66,7 +66,7 @@
     "max_epochs": 128,
     "reduction_factor": 2,
     "prune_strategy": "successive_halving",
-    "early_stopping_patience": 10,
+    "early_stopping_patience": null,
     "early_stopping_min_delta": 0.0,
     "step_lr_gamma": 0.5,
     "step_lr_step_size": 30,
@@ -79,9 +79,9 @@
     "verbose": 1
   },
   "branching": {
-    "N_r": 12,
-    "root_candidate_count": 24,
-    "N_k": 3,
+    "N_r": 11,
+    "root_candidate_count": 50,
+    "N_k": 2,
     "N_b": 2,
     "device": "cpu",
     "finite_difference_order": 4,
@@ -93,9 +93,9 @@
     "output_interval": 0.4
   },
   "config_py_path": "scripts/config.py",
-  "output_root": "rabl_outputs/",
-  "sim_root": "rabl_outputs/sim_profiles",
-  "variography_root": "rabl_outputs/variography_profiles",
+  "output_root": "outputs/",
+  "sim_root": "outputs/sim_profiles",
+  "variography_root": "outputs/variography_profiles",
   "branching_target_weights": {
     "TN2": 0.06666666666666667,
     "Tm": 0.06666666666666667,
