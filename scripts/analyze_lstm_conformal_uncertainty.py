@@ -131,6 +131,26 @@ def _target_color_map(target_names: list[str]) -> dict[str, str]:
     return colors
 
 
+
+def _pretty_target_label(target_name: str) -> str:
+    mapping = {
+        "TN2": r"$T_{N2}$",
+        "Tm": r"$T_m$",
+        "Thp": r"$T_{hp}$",
+        "Tf": r"$T_f$",
+        "Tsg": r"$T_{sg}$",
+        "n": r"$n$",
+        "rho_dollars": r"$\rho_{\$}$",
+        "T_steam_out": r"$T_{\mathrm{steam,out}}$",
+        "x_steam_out": r"$x_{\mathrm{steam,out}}$",
+    }
+    if target_name in mapping:
+        return mapping[target_name]
+    if target_name.startswith("c[") and target_name.endswith("]"):
+        return rf"$c_{{{target_name[2:-1]}}}$"
+    return target_name.replace("_", r"\_")
+
+
 def _extract_profile_arrays(
     table: np.ndarray,
     columns: list[str],
@@ -416,7 +436,7 @@ def _plot_mean_coverage_by_horizon(analysis: dict[str, Any], out_dir: Path, *, s
     ax.set_ylabel(r"Empirical coverage $\hat{P}(y_t \in C_t)$")
     if show_titles:
         ax.set_title("Mean conformal coverage by forecast horizon")
-    ax.grid(True)
+    ax.grid(True, alpha=0.2)
     ax.legend(loc="best")
     fig.tight_layout()
     fig.savefig(out_dir / "coverage_by_horizon_mean.png", dpi=150)
@@ -445,10 +465,10 @@ def _plot_target_grid(
         if nominal is not None:
             ax.axhline(nominal, color="black", linestyle="--", linewidth=1.0)
         if show_titles:
-            ax.set_title(name)
+            ax.set_title(_pretty_target_label(name))
         ax.set_xlabel(r"Forecast horizon $t$")
         ax.set_ylabel(ylabel)
-        ax.grid(True)
+        ax.grid(True, alpha=0.2)
     for ax in axes[len(order):]:
         ax.axis("off")
     if show_titles:
@@ -474,10 +494,10 @@ def _plot_error_vs_width_grid(analysis: dict[str, Any], out_dir: Path, *, show_t
         ax.plot(error[:, idx], label=r"Mean absolute error", color=colors[name])
         ax.plot(half_width[:, idx], label=r"Conformal half-width", color=colors[name], linestyle="--")
         if show_titles:
-            ax.set_title(name)
+            ax.set_title(_pretty_target_label(name))
         ax.set_xlabel(r"Forecast horizon $t$")
         ax.set_ylabel(r"Physical units")
-        ax.grid(True)
+        ax.grid(True, alpha=0.2)
         ax.legend(fontsize=7, loc="best")
     for ax in axes[len(order):]:
         ax.axis("off")
@@ -497,8 +517,9 @@ def _plot_spearman(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool
     ax.set_ylabel(r"Spearman rank correlation $\rho_s$")
     if show_titles:
         ax.set_title("Horizon-level correlation: mean absolute error vs conformal half-width")
+    ax.set_xticks(np.arange(len(target_names)), [_pretty_target_label(name) for name in target_names])
     ax.tick_params(axis="x", rotation=60)
-    ax.grid(True, axis="y")
+    ax.grid(True, axis="y", alpha=0.2)
     fig.tight_layout()
     fig.savefig(out_dir / "spearman_error_half_width_by_target.png", dpi=150)
     plt.close(fig)
@@ -540,13 +561,14 @@ def _plot_interval_efficiency(analysis: dict[str, Any], out_dir: Path, *, show_t
     axes[0].set_ylabel(r"$\overline{W} / \sigma(y_{\mathrm{true}})$")
     if show_titles:
         axes[0].set_title("Interval width normalized by target standard deviation")
-    axes[0].grid(True, axis="y")
+    axes[0].grid(True, axis="y", alpha=0.2)
     axes[1].bar(target_names, over_range, color=bar_colors)
     axes[1].set_ylabel(r"$\overline{W} / \mathrm{range}(y_{\mathrm{true}})$")
     if show_titles:
         axes[1].set_title("Interval width normalized by target range")
+    axes[1].set_xticks(np.arange(len(target_names)), [_pretty_target_label(name) for name in target_names])
     axes[1].tick_params(axis="x", rotation=60)
-    axes[1].grid(True, axis="y")
+    axes[1].grid(True, axis="y", alpha=0.2)
     fig.tight_layout()
     fig.savefig(out_dir / "interval_efficiency_by_target.png", dpi=150)
     plt.close(fig)
