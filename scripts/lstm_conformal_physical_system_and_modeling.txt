@@ -1,0 +1,426 @@
+Physical system, control-profile generation, LSTM forecasting, and per-horizon conformal prediction
+===================================================================================================
+
+This document describes the physical process behind the RABL LSTM forecasting
+workflow, how the process is modeled, how plausible control-drum profiles are
+generated and simulated, how the LSTM is trained for one-step prediction and used
+for autoregressive rollout, and how per-horizon split-conformal prediction is
+implemented.
+
+1. Physical system being modeled
+--------------------------------
+
+The simulated plant is a simplified microreactor point-kinetics and thermal
+network model. The key exogenous control input is a control-drum angle profile:
+
+  theta(t) = drumAngleDeg(t)
+
+All drums are driven with the same angle in the current model. Changing the drum
+angle changes drum reactivity, which changes reactor power through point kinetics.
+The power transient then propagates through a lumped thermal network and affects
+core temperatures, nitrogen-loop temperature, steam-generator metal temperature,
+and outlet steam conditions.
+
+The LSTM target vector has 15 state-like quantities:
+
+  TN2              nitrogen loop average temperature [K]
+  Tm               moderator / graphite temperature [K]
+  Thp              heat-pipe temperature [K]
+  Tf               fuel temperature [K]
+  Tsg              active steam-generator metal temperature [K]
+  c[1]..c[6]       six delayed neutron precursor states
+  n                normalized reactor power
+  rho_dollars      total reactivity in dollars
+  T_steam_out      calculated outlet steam temperature [K]
+  x_steam_out      outlet steam quality / dryness fraction [-]
+
+The input control channel used for LSTM forecasting is:
+
+  drumAngleDeg
+
+The simulation outputs may also include useful diagnostics such as drum velocity,
+drum acceleration, reactor power in MW, drum/fuel/moderator reactivity components,
+and time derivatives, but the LSTM forecasting target set is the 15-dimensional
+state vector listed above.
+
+2. Model equations at a high level
+----------------------------------
+
+The Modelica model is a lumped ODE/DAE model. The solver integrates the system in
+continuous time and writes simulated trajectories to CSV.
+
+2.1 Reactivity model
+~~~~~~~~~~~~~~~~~~~~
+
+Total reactivity is modeled as the sum of control-drum reactivity and temperature
+feedback terms:
+
+  rho(t) = rho_drums(theta(t)) + rho_fuel(Tf(t)) + rho_moderator(Tm(t))
+
+The drum contribution is a shifted cosine worth curve relative to the steady-state
+drum angle theta0 = 45 deg:
+
+  rho_drums(theta) = n_drums * rho_max_per_drum * (1 - cos(pi * theta / 180)) / 2
+                     - rho_ss_total
+
+Fuel and moderator feedback are linearized around nominal temperatures:
+
+  rho_fuel(t)      = alpha_f * (Tf(t) - Tf0)
+  rho_moderator(t) = alpha_m * (Tm(t) - Tm0)
+
+Reactivity in dollars is:
+
+  rho_dollars(t) = rho(t) / beta
+
+where beta is the total delayed neutron fraction.
+
+2.2 Point kinetics
+~~~~~~~~~~~~~~~~~~
+
+The normalized neutron power state is n(t). The model uses six delayed-neutron
+precursor groups c_i(t). The point kinetics equations are:
+
+  dn/dt = ((rho - beta) / Lambda) * n + sum_i lambda_i * c_i
+
+  dc_i/dt = (beta_i / Lambda) * n - lambda_i * c_i,   i = 1,...,6
+
+Physical reactor power is:
+
+  P(t) = n(t) * P_r
+
+where P_r is nominal rated power.
+
+2.3 Thermal network
+~~~~~~~~~~~~~~~~~~~
+
+The model uses lumped thermal nodes for fuel, moderator/graphite, heat pipe,
+nitrogen loop, and active steam-generator metal. The equations are energy-balance
+ODEs with reactor heat deposition and inter-node heat exchange.
+
+Fuel:
+
+  dTf/dt = heat_f * P / (M_f * cp_f) + (Tm - Tf) / tau_f_g
+
+Moderator / graphite:
+
+  dTm/dt = (1 - heat_f) * P / (M_g * cp_g)
+           + (Tf - Tm) / tau_g_f
+           + (Thp - Tm) / tau_g_hp
+
+Heat pipe:
+
+  dThp/dt = (Tm - Thp) / tau_hp_g + (TN2 - Thp) / tau_hp_N2
+
+Nitrogen-to-steam-generator heat transfer:
+
+  Q_N2_to_sg = G_N2_sg * (TN2 - Tsg)
+
+Steam-generator-to-feedwater/steam heat transfer is clamped nonnegative:
+
+  Q_sg_to_fw = max(G_sg_fw * (Tsg - T_sat_steam), 0)
+
+Active steam-generator metal:
+
+  dTsg/dt = (Q_N2_to_sg - Q_sg_to_fw) / C_sg
+
+Nitrogen loop average node:
+
+  dTN2/dt = (Thp - TN2) / tau_N2_hp - Q_N2_to_sg / (M_N2 * cp_N2)
+
+2.4 Outlet steam conditions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+At fixed steam outlet/header pressure, the model computes heat addition per unit
+feedwater mass flow:
+
+  q_sg_per_kg = Q_sg_to_fw / m_dot_fw
+
+Steam quality is:
+
+  x_steam_out = 0                              if q_sg_per_kg <= 0
+              = q_sg_per_kg / h_fg             if 0 < q_sg_per_kg < h_fg
+              = 1                              if q_sg_per_kg >= h_fg
+
+Outlet steam temperature is:
+
+  T_steam_out = T_sat_steam                                    if q_sg_per_kg < h_fg
+              = T_sat_steam + (q_sg_per_kg - h_fg) / cp_sh_eff if q_sg_per_kg >= h_fg
+
+3. Generating plausible control-drum profiles
+---------------------------------------------
+
+The RABL workflow samples time-varying drum-angle profiles that are smooth enough
+to look physically plausible and remain within actuator angle bounds.
+
+3.1 Variography/Gaussian-process representation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The generator models drum angular velocity v(t) as a correlated Gaussian random
+field on a time grid. A Matern kernel, usually Matern 5/2, controls temporal
+smoothness and correlation length:
+
+  Cov[v(t_i), v(t_j)] = sill_v * rho(|t_i - t_j|; ell) + nugget_v * delta_ij
+
+Important configuration parameters include:
+
+  ell                 velocity correlation length / smoothness scale
+  sigma_theta_target  target angle variability after integration
+  nugget_v            uncorrelated velocity noise contribution
+  kernel              e.g. matern52
+  baseline_angle_deg  nominal drum angle, commonly 45 deg
+  T_GRID_DURATION     total simulated time horizon
+  T_GRID_INTERVALS    number of profile grid intervals
+
+The sampled velocity process is conditioned so the initial velocity is zero. This
+helps profiles begin smoothly from the baseline operating point.
+
+3.2 Integrating velocity to angle
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A sampled interval velocity vector v is integrated to form the drum angle profile:
+
+  theta_i = theta_0 + sum_{j=0}^{i-1} v_j * Delta t_j
+
+where theta_0 is the baseline drum angle. Acceleration is computed by finite
+differences of the interval velocities.
+
+3.3 Plausibility constraints
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Generated profiles are checked against constraints such as drum-angle bounds,
+for example:
+
+  0 deg <= theta(t) <= 180 deg
+
+The workflow can reject or regenerate profiles that violate such constraints.
+The resulting MAT/CSV profiles are then provided to the Modelica simulation as
+time-varying drum-angle inputs.
+
+4. Simulation and dataset construction
+--------------------------------------
+
+For each sampled control profile, the Dymola/Modelica simulation produces a time
+series of the state variables and the control input. The dataset builder reads
+simulation CSV files from batch_XXXX directories and converts each trajectory into
+supervised learning windows.
+
+Let k be the lookback. For each forecast sample ending at time index t, the input
+window contains k+1 rows of state history and aligned control history:
+
+  X_t = [x_{t-k}, u_{t-k+1};
+         x_{t-k+1}, u_{t-k+2};
+         ...
+         x_t, u_{t+1}]
+
+The target is the next state:
+
+  Y_t = x_{t+1}
+
+The control component is shifted so the model has access to the known future
+control value over the one-step prediction interval. This is important because
+during rollout the future control sequence is assumed known, while future states
+must be predicted.
+
+The initial history is padded with the configured steady-state values so that the
+first supervised windows are well-defined.
+
+5. Scaling and splitting
+------------------------
+
+The unscaled HDF5 contains all profiles under /files. The scaler/splitter creates
+train, validation, calibration, and test splits.
+
+The scaler computes normalization statistics from train only. Depending on the
+configuration, scaling may be standard scaling, min-max scaling, or no scaling.
+The same train-derived scaling statistics are applied to train, val, cal, and test.
+
+Typical split roles are:
+
+  train  used for model optimization
+  val    used for model selection / early stopping / best validation checkpoint
+  cal    held out for conformal calibration only
+  test   held out for final evaluation and plots
+
+If test, val, and cal manifests are provided, the train split is all remaining
+profiles not listed in those manifests, unless train_profile_limit_with_manifests
+is configured.
+
+6. LSTM one-step prediction model
+---------------------------------
+
+The LSTM is trained as a supervised one-step-ahead predictor in scaled space:
+
+  f_theta(X_t) ≈ x_{t+1}
+
+where:
+
+  X_t has shape (lookback + 1, n_state + n_control)
+  x_{t+1} has shape (n_state,)
+
+The model architecture is configured by:
+
+  n_lstm
+  lstm_hidden
+  lstm_dropout
+  n_fc
+  fc_hidden
+  learning_rate
+  batch_size
+  epochs
+
+During training, batches of one-step windows are sampled from the train split.
+Validation loss is computed on the val split. The conformal run script requests
+restore_best_weights=True, so the saved model is intended to be the best
+validation-loss checkpoint rather than simply the final epoch.
+
+7. Autoregressive rollout
+-------------------------
+
+At test time, the model is not evaluated with teacher forcing. Instead, it is
+rolled forward autoregressively.
+
+For a profile with known control sequence and initial state history:
+
+  1. Build the first input window from true initial state history and known control.
+  2. Predict x_hat_{t+1} = f_theta(X_t).
+  3. Slide the state window forward by dropping the oldest state and appending
+     x_hat_{t+1}.
+  4. Use the next known control window.
+  5. Repeat until the full trajectory is predicted.
+
+Thus, after the first step, the model conditions partly or entirely on its own
+previous predictions. This matches the intended forecasting use case and is also
+how conformal calibration residuals are computed.
+
+8. Per-horizon conformal prediction
+-----------------------------------
+
+This workflow uses split conformal prediction with a held-out calibration set.
+This section describes only the per-horizon method.
+
+8.1 Calibration residuals
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For each calibration profile p, the trained model is rolled out autoregressively:
+
+  x_hat_p[t, j] = rolling_forecast(model, X_p)[t, j]
+
+Residuals are computed in scaled space:
+
+  r[p, t, j] = |x_true[p, t, j] - x_hat[p, t, j]|
+
+where:
+
+  p = calibration profile
+  t = forecast horizon
+  j = target variable
+
+8.2 Per-horizon quantiles
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For each horizon t and target j, the calibration residuals across profiles are
+converted into a conformal quantile:
+
+  q_hat[t, j] = kth smallest value of {r[p, t, j]} over calibration profiles p
+
+with finite-sample index:
+
+  k = ceil((n_cal(t) + 1) * (1 - alpha))
+
+clipped to n_cal(t) if needed.
+
+This means q_hat depends on horizon and target, but not on the individual test
+profile. For a fixed horizon t and target j, all test profiles receive the same
+conformal half-width in scaled space.
+
+8.3 Applying intervals to test rollouts
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For each test profile, the model produces an autoregressive forecast x_hat. The
+per-horizon conformal interval in scaled space is:
+
+  lower_scaled[p, t, j] = x_hat[p, t, j] - q_hat[t, j]
+  upper_scaled[p, t, j] = x_hat[p, t, j] + q_hat[t, j]
+
+The script then descales x_true, x_hat, lower, and upper to physical units before
+saving HDF5 outputs and plots.
+
+8.4 Interpretation of per-horizon intervals
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The per-horizon method provides target- and horizon-specific marginal coverage.
+It can widen intervals at horizons where calibration rollouts historically had
+larger residuals. However, it is not profile-adaptive: at the same horizon and
+same target, an easy profile and a hard profile receive the same half-width.
+
+Therefore, the uncertainty can track horizon-level difficulty but not necessarily
+individual trajectory difficulty. This is why the analysis workflow includes
+coverage by profile-difficulty bins.
+
+9. Evaluation and diagnostics
+-----------------------------
+
+The conformal run writes:
+
+  conformal_calibration_metadata.json
+    calibration settings, q_hat shape, calibration profile count, and calibration
+    coverage.
+
+  conformal_coverage_metrics.json
+    test-set coverage by target and average interval width by target.
+
+  conformal_forecasts.h5
+    per-profile tables containing time, control, true state, prediction, lower
+    conformal bound, upper conformal bound, and conformal width.
+
+The analysis script computes additional diagnostics:
+
+  coverage by horizon
+    Does empirical coverage stay near 1 - alpha over rollout time?
+
+  mean absolute error vs conformal half-width
+    Does interval width increase at horizons where average error increases?
+
+  Spearman error/width correlation by target
+    Across horizons, do larger mean errors correspond to larger half-widths?
+
+  profile-difficulty coverage
+    Are hard profiles under-covered compared with easy profiles?
+
+  test q95 error / conformal half-width
+    Does the test 95th-percentile absolute error exceed the calibrated half-width?
+
+  interval efficiency
+    How large are intervals relative to target range and target standard deviation?
+
+10. Important assumptions and limitations
+-----------------------------------------
+
+Exchangeability
+  Conformal validity depends on calibration and test profiles being drawn from
+  comparable distributions. If the test set is harder or from a different regime,
+  coverage can fall below nominal.
+
+Autoregressive calibration
+  Calibration residuals must be computed from rolling forecasts, not teacher-forced
+  one-step predictions. The workflow does this.
+
+Scaling
+  Residuals and q_hat are computed in scaled space. Saved outputs and plots are
+  descaled to physical units.
+
+Per-horizon but not local
+  The per-horizon method adapts to forecast horizon and target, not to the local
+  state/control trajectory. Profile-specific uncertainty would require an adaptive
+  scale model, ensemble uncertainty, normalized conformal prediction, or another
+  local uncertainty proxy.
+
+Coverage vs sharpness
+  High coverage alone is not enough. Intervals should also be reasonably narrow
+  relative to target variability. This is why the workflow reports both coverage
+  and interval-efficiency metrics.
+
+Manifests and data hygiene
+  Train, validation, calibration, and test profiles should be disjoint. Calibration
+  should not be used for training or validation-model selection, and test should
+  not be used until final evaluation.
