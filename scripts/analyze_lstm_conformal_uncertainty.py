@@ -438,7 +438,7 @@ def _save_target_csv(path: Path, analysis: dict[str, Any]) -> None:
 
 
 def _plot_mean_coverage_by_horizon(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
-    plt.rcParams.update({"font.size": 12})
+    plt.rcParams.update({"font.size": 18})
     nominal = analysis["nominal_coverage"]
     y = np.asarray(analysis["mean_coverage_by_horizon"], dtype=float)
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -465,7 +465,7 @@ def _plot_target_grid(
     nominal: float | None = None,
     show_titles: bool = True,
 ) -> None:
-    plt.rcParams.update({"font.size": 12})
+    plt.rcParams.update({"font.size": 18})
     rows, cols = 4, 4
     fig, axes = plt.subplots(rows, cols, figsize=(24, 16))
     axes = np.atleast_1d(axes).ravel()
@@ -492,7 +492,7 @@ def _plot_target_grid(
 
 
 def _plot_error_vs_width_grid(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
-    plt.rcParams.update({"font.size": 12})
+    plt.rcParams.update({"font.size": 18})
     target_names = list(analysis["target_names"])
     error = np.asarray(analysis["arrays"]["mean_abs_error_by_horizon_target"], dtype=float)
     half_width = np.asarray(analysis["arrays"]["mean_half_width_by_horizon_target"], dtype=float)
@@ -512,7 +512,7 @@ def _plot_error_vs_width_grid(analysis: dict[str, Any], out_dir: Path, *, show_t
         ax.set_xlabel(r"Forecast horizon $t$")
         ax.set_ylabel(r"Physical units")
         ax.grid(True, alpha=0.2)
-        ax.legend(fontsize=7, loc="best")
+        ax.legend(fontsize=18, loc="best")
     for ax in axes[len(order):]:
         ax.axis("off")
     if show_titles:
@@ -523,7 +523,7 @@ def _plot_error_vs_width_grid(analysis: dict[str, Any], out_dir: Path, *, show_t
 
 
 def _plot_spearman(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
-    plt.rcParams.update({"font.size": 12})
+    plt.rcParams.update({"font.size": 18})
     target_names = _ordered_targets(list(analysis["target_names"]))
     values = [analysis["spearman_error_half_width_by_target"][name] for name in target_names]
     colors = _target_color_map(target_names)
@@ -541,7 +541,7 @@ def _plot_spearman(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool
 
 
 def _plot_difficulty_bins(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
-    plt.rcParams.update({"font.size": 12})
+    plt.rcParams.update({"font.size": 18})
     bins = analysis["profile_difficulty"]["bins"]
     labels = ["easy", "medium", "hard"]
     coverage = [bins[label]["mean_coverage"] for label in labels]
@@ -566,7 +566,7 @@ def _plot_difficulty_bins(analysis: dict[str, Any], out_dir: Path, *, show_title
 
 
 def _plot_interval_efficiency(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
-    plt.rcParams.update({"font.size": 12})
+    plt.rcParams.update({"font.size": 18})
     target_names = _ordered_targets(list(analysis["target_names"]))
     by_target = analysis["interval_efficiency_by_target"]
     colors = _target_color_map(target_names)
@@ -601,7 +601,7 @@ def _plot_forecast_profiles(
 ) -> None:
     if max_plots <= 0:
         return
-    plt.rcParams.update({"font.size": 12})
+    plt.rcParams.update({"font.size": 18})
     plot_dir = out_dir / "forecast_profiles"
     plot_dir.mkdir(parents=True, exist_ok=True)
     order = _ordered_targets(target_names)
@@ -642,7 +642,7 @@ def _plot_forecast_profiles(
             ax.set_xlabel(r"Time $t$")
             ax.set_ylabel(pretty_label)
             ax.grid(True, alpha=0.2)
-            ax.legend(fontsize=7, loc="best")
+            ax.legend(fontsize=18, loc="best")
 
         for ax in axes[len(order) + 1:]:
             ax.axis("off")

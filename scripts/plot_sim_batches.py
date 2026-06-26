@@ -135,7 +135,7 @@ def _read_results_csv(results_csv: Path) -> pd.DataFrame:
 
 
 def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
-    plt.rcParams.update({"font.size": 12})
+    plt.rcParams.update({"font.size": 18})
     # Read all data first
     dfs: list[tuple[str, pd.DataFrame]] = []
     for p in results_csvs:

@@ -258,7 +258,7 @@ def plot_conformal_forecast_profile_grid(
     rows, cols = 4, 4
     if nplots > rows * cols:
         raise ValueError(f"Plot requires {nplots} panels but 4x4 supports only 16.")
-    plt.rcParams.update({"font.size": 12})
+    plt.rcParams.update({"font.size": 18})
     fig, axes = plt.subplots(rows, cols, figsize=(24, 16))
     axes = np.atleast_1d(axes).ravel()
     axes[0].plot(control_series, label=r"$u(t)$")
@@ -281,10 +281,10 @@ def plot_conformal_forecast_profile_grid(
         ax.set_ylabel(pretty_label)
         _disable_y_offset_if_requested(ax, name)
         ax.grid(True, alpha=0.2)
-        ax.legend(fontsize=7, loc="best")
+        ax.legend(fontsize=18, loc="best")
     for ax in axes[nplots:]:
         ax.axis("off")
-    fig.suptitle(title, y=0.98, fontsize=14)
+    fig.suptitle(title, y=0.98, fontsize=18)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     if save_path is not None:
         save_path = Path(save_path)
