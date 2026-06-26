@@ -1,0 +1,394 @@
+LSTM conformal prediction workflow and metrics
+==============================================
+
+This document explains how scripts/run_lstm_conformal_prediction.py works and how
+its conformal metadata, coverage metrics, and downstream analysis artifacts are
+calculated.
+
+1. End-to-end run script: run_lstm_conformal_prediction.py
+---------------------------------------------------------
+
+The script is driven by a JSON config passed as:
+
+    PYTHONPATH=src python scripts/run_lstm_conformal_prediction.py \
+      --config scripts/lstm_conformal_prediction_config.json
+
+Conceptually, the run has six phases.
+
+Phase 1: Build an unscaled, unsplit LSTM dataset
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The script reads raw simulation outputs from one or more batch_XXXX directories
+under sim_root. It calls rabl.machine_learning.build_lstm_dataset.build_dataset,
+using:
+
+  - sim_root
+  - batches
+  - lookback
+  - config_py_path, which supplies STEADY_STATE
+  - unscaled_out_dir
+  - unscaled_output_name, if provided
+
+The output HDF5 contains one /files/<profile>/ group per profile with unscaled X
+and Y arrays. X contains autoregressive state history plus control input history;
+Y contains the next-step state targets.
+
+Phase 2: Scale and split the dataset
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The script then calls LSTMDatasetScalerSplitter on the unscaled HDF5. The config
+controls:
+
+  - scaling_type: standard, minmax, or none
+  - split_mode: profile or sample
+  - train_frac, val_frac, cal_frac, test_frac
+  - optional test_manifest_path, val_manifest_path, cal_manifest_path
+
+Scaling statistics are computed from the train split only. Those train-derived
+statistics are then used to scale train, val, cal, and test. The scaled output HDF5
+contains:
+
+  /train/files/...
+  /val/files/...
+  /cal/files/...       when a non-empty cal split is created
+  /test/files/...
+  /scaling/...
+  /split_definition/...
+
+If test, val, and cal manifests are all supplied, train receives every remaining
+profile that is not listed in those manifests, unless train_profile_limit_with_manifests
+is set.
+
+Phase 3: Train one LSTM configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The script creates an LSTMPipelineConfig from the JSON config and trains exactly
+one model configuration. There is no hyperparameter tuning. The relevant config
+fields are:
+
+  - batch_size
+  - epochs
+  - seed
+  - learning_rate
+  - n_lstm
+  - lstm_hidden
+  - lstm_dropout
+  - n_fc
+  - fc_hidden
+  - early_stopping_patience
+  - early_stopping_min_delta
+  - prefer_gpu
+
+Training uses the train split and validation split exposed by build_datasets.
+The script calls pipeline.train(..., restore_best_weights=True), so the in-memory
+model is restored to the best validation-loss state when best-state tracking is
+available. It then saves those weights to:
+
+  <out_dir>/model.pt
+
+Phase 4: Save deterministic rolling forecasts on test
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Before conformal UQ, the script evaluates deterministic autoregressive rolling
+forecasts on the test split via test_and_save_forecasts. Because the scaled HDF5
+path is passed as h5_path, truth and predictions are descaled before being saved.
+The deterministic forecast file is:
+
+  <out_dir>/rolling_forecasts.h5
+
+Those deterministic MAE/RMSE values are therefore in physical/descaled units.
+
+Phase 5: Calibrate conformal intervals on cal
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The conformal calibration split is separate from train and val. The script calls:
+
+  calibrate_autoregressive_conformal(model, cal_profile_ds, alpha, horizon_mode)
+
+For each calibration profile p, it rolls the model forward autoregressively:
+
+  y_pred[p, :, :] = rolling_forecast(model, x_profile)
+
+Then it computes scaled-space absolute residuals:
+
+  residual[p, t, j] = abs(y_true[p, t, j] - y_pred[p, t, j])
+
+where:
+
+  p = calibration profile index
+  t = forecast horizon
+  j = target index
+
+The conformal finite-sample quantile index is:
+
+  k = ceil((n_cal + 1) * (1 - alpha))
+
+clipped to n_cal when necessary.
+
+If horizon_mode is per_horizon, the script computes:
+
+  q_hat[t, j]
+
+from calibration residuals across profiles at each horizon t and target j.
+With n_cal=500 and alpha=0.05, this gives k=476 and an expected calibration
+coverage of 476/500 = 0.952.
+
+If horizon_mode is global, the script computes:
+
+  q_hat[j]
+
+by pooling calibration residuals across all horizons and profiles for each target.
+
+Phase 6: Apply conformal intervals to test forecasts
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For each test profile, the script again runs rolling_forecast. It then applies
+conformal intervals in scaled space:
+
+  lower_scaled = y_pred_scaled - q_hat
+  upper_scaled = y_pred_scaled + q_hat
+
+For per_horizon mode, q_hat has shape:
+
+  (n_horizons, n_targets)
+
+For global mode, q_hat has shape:
+
+  (n_targets,)
+
+The script descales truth, prediction, lower, and upper before saving outputs and
+plots. The conformal outputs are written to:
+
+  <out_dir>/conformal/conformal_forecasts.h5
+  <out_dir>/conformal/conformal_calibration_metadata.json
+  <out_dir>/conformal/conformal_coverage_metrics.json
+  <out_dir>/conformal/conformal_forecast_<profile>.png
+
+2. conformal_calibration_metadata.json
+--------------------------------------
+
+This JSON summarizes calibration settings and calibration-set coverage. Important
+fields include:
+
+  alpha
+    Miscoverage level. Nominal coverage is 1 - alpha.
+
+  horizon_mode
+    Either per_horizon or global.
+
+  q_hat_shape
+    Shape of the calibrated residual quantile array. For per_horizon this is
+    [n_horizons, n_targets]. For global this is [n_targets].
+
+  n_cal_profiles
+    Number of calibration profiles used to estimate q_hat.
+
+  n_horizons
+    Number of autoregressive forecast steps represented in q_hat.
+
+  target_names
+    Target order used throughout the conformal output.
+
+  empirical_calibration_coverage
+    Coverage measured on the calibration profiles after applying the calibrated
+    conformal intervals back to the calibration forecasts.
+
+  empirical_calibration_mean_coverage
+    Mean of empirical_calibration_coverage over targets.
+
+For split conformal prediction, calibration coverage is expected to be near the
+finite-sample level k / n_cal, not necessarily exactly 1 - alpha. With 500
+calibration profiles and alpha=0.05, this is about 0.952.
+
+3. conformal_coverage_metrics.json
+----------------------------------
+
+This JSON summarizes test-set coverage and interval width after applying the
+calibrated conformal intervals to the test profiles.
+
+For each target j:
+
+  coverage_by_target[j] = mean over profiles and horizons of
+      lower[p, t, j] <= y_true[p, t, j] <= upper[p, t, j]
+
+  average_width_by_target[j] = mean over profiles and horizons of
+      upper[p, t, j] - lower[p, t, j]
+
+The file also stores:
+
+  mean_coverage
+    Mean of coverage_by_target over targets.
+
+  mean_average_width
+    Mean of average_width_by_target over targets.
+
+Coverage values should be compared with 1 - alpha. Width values are in physical
+units because conformal outputs are descaled before saving.
+
+4. Analysis script: analyze_lstm_conformal_uncertainty.py
+---------------------------------------------------------
+
+The secondary analysis script is run as:
+
+    PYTHONPATH=src python scripts/analyze_lstm_conformal_uncertainty.py \
+      --metadata-json <out_dir>/conformal/conformal_calibration_metadata.json \
+      --coverage-metrics-json <out_dir>/conformal/conformal_coverage_metrics.json \
+      --forecasts-h5 <out_dir>/conformal/conformal_forecasts.h5 \
+      --out-dir <out_dir>/conformal/uncertainty_analysis
+
+Optional plot title control:
+
+    --show-plot-titles     default, include plot titles
+    --no-plot-titles       suppress plot titles
+
+The script reads conformal_forecasts.h5 and reconstructs arrays:
+
+  y_true[p, t, j]
+  y_pred[p, t, j]
+  lower[p, t, j]
+  upper[p, t, j]
+  width[p, t, j] = upper[p, t, j] - lower[p, t, j]
+
+Then it computes:
+
+  abs_error[p, t, j] = abs(y_true[p, t, j] - y_pred[p, t, j])
+  inside[p, t, j] = lower[p, t, j] <= y_true[p, t, j] <= upper[p, t, j]
+  half_width[p, t, j] = width[p, t, j] / 2
+
+The main output files are:
+
+  conformal_uncertainty_analysis.json
+  horizon_summary.csv
+  target_summary.csv
+  coverage_by_horizon_mean.png
+  coverage_by_horizon_target_grid.png
+  mean_abs_error_vs_half_width_by_target.png
+  spearman_error_half_width_by_target.png
+  coverage_by_profile_difficulty.png
+  test_q95_to_conformal_half_width_ratio_grid.png
+  interval_efficiency_by_target.png
+
+5. Analysis metrics and plots
+-----------------------------
+
+coverage_by_horizon_mean.png
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For each horizon t:
+
+  coverage_by_horizon_target[t, j] = mean over profiles of inside[p, t, j]
+
+Then the plotted curve is:
+
+  mean_coverage_by_horizon[t] = mean over targets of coverage_by_horizon_target[t, j]
+
+A horizontal reference line is drawn at 1 - alpha.
+
+coverage_by_horizon_target_grid.png
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This shows coverage_by_horizon_target[t, j] separately for each target. It helps
+identify specific targets or time regions where conformal coverage fails.
+
+mean_abs_error_vs_half_width_by_target.png
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For each target and horizon:
+
+  mean_abs_error[t, j] = mean over profiles of abs_error[p, t, j]
+  mean_half_width[t, j] = mean over profiles of half_width[p, t, j]
+
+The plot overlays these two curves. If uncertainty grows where horizon-level
+forecast error grows, the conformal half-width curve should tend to increase in
+regions where mean absolute error increases.
+
+spearman_error_half_width_by_target.png
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For each target j, the script computes Spearman rank correlation across horizons:
+
+  Spearman({mean_abs_error[t, j]}_t, {mean_half_width[t, j]}_t)
+
+This asks whether horizons with larger average errors also have larger conformal
+half-widths. This is a horizon-level diagnostic, not a profile-specific one.
+
+coverage_by_profile_difficulty.png
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For each profile p:
+
+  profile_mae[p] = mean over horizons and targets of abs_error[p, t, j]
+  profile_coverage[p] = mean over horizons and targets of inside[p, t, j]
+
+Using the default difficulty_quantile=0.20:
+
+  easy   = profiles with profile_mae <= 20th percentile
+  medium = profiles between the 20th and 80th percentiles
+  hard   = profiles with profile_mae >= 80th percentile
+
+The plot shows coverage and mean profile MAE for these bins. Easy is green,
+medium is yellow/gold, and hard is red.
+
+test_q95_to_conformal_half_width_ratio_grid.png
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For each horizon and target:
+
+  test_q95_abs_error[t, j] = 95th percentile over profiles of abs_error[p, t, j]
+  mean_half_width[t, j] = mean over profiles of half_width[p, t, j]
+
+The plotted ratio is:
+
+  ratio[t, j] = test_q95_abs_error[t, j] / mean_half_width[t, j]
+
+Interpretation:
+
+  ratio near 1.0
+    Test 95th percentile error is approximately equal to the conformal half-width.
+
+  ratio below 1.0
+    The interval is conservative at that horizon/target.
+
+  ratio above 1.0
+    Test 95th percentile error exceeds the conformal half-width. This indicates
+    undercoverage risk at that horizon/target.
+
+The required inputs do not contain full calibration residual arrays, so this plot
+uses the conformal half-width as a calibration-quantile proxy after descaling.
+
+interval_efficiency_by_target.png
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For each target j:
+
+  average_width[j] = mean over profiles and horizons of width[p, t, j]
+  median_width[j] = median over profiles and horizons of width[p, t, j]
+  p90_width[j] = 90th percentile over profiles and horizons of width[p, t, j]
+  target_range[j] = max(y_true[:, :, j]) - min(y_true[:, :, j])
+  target_std[j] = std(y_true[:, :, j])
+
+The normalized efficiency metrics are:
+
+  average_width_over_range[j] = average_width[j] / target_range[j]
+  average_width_over_std[j] = average_width[j] / target_std[j]
+
+These are sharpness/efficiency metrics, not coverage metrics. Values near or
+below 1 target standard deviation indicate relatively compact intervals; larger
+values indicate broader intervals. They should always be interpreted together
+with test coverage.
+
+6. Plot styling
+---------------
+
+Per-target analysis plots use the same physical-group color convention as other
+forecasting utilities:
+
+  temperatures       red shades
+  concentrations     green shades
+  power              deeppink
+  reactivity         black
+  steam-related      gray
+  other              C4
+
+The analysis script uses Matplotlib mathtext labels for cleaner subscripts and
+ratios. It does not require a system LaTeX installation.

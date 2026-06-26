@@ -45,6 +45,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--forecasts-h5", type=Path, required=True, help="Path to conformal_forecasts.h5.")
     parser.add_argument("--out-dir", type=Path, required=True, help="Directory for analysis JSON/CSVs/plots.")
     parser.add_argument("--difficulty-quantile", type=float, default=0.20, help="Tail fraction for easy/hard bins.")
+    parser.add_argument(
+        "--show-plot-titles",
+        dest="show_plot_titles",
+        action="store_true",
+        default=True,
+        help="Show titles on generated plots (default).",
+    )
+    parser.add_argument(
+        "--no-plot-titles",
+        dest="show_plot_titles",
+        action="store_false",
+        help="Suppress titles on generated plots.",
+    )
     return parser.parse_args()
 
 
@@ -393,15 +406,16 @@ def _save_target_csv(path: Path, analysis: dict[str, Any]) -> None:
             )
 
 
-def _plot_mean_coverage_by_horizon(analysis: dict[str, Any], out_dir: Path) -> None:
+def _plot_mean_coverage_by_horizon(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
     nominal = analysis["nominal_coverage"]
     y = np.asarray(analysis["mean_coverage_by_horizon"], dtype=float)
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(y, label="mean coverage across targets")
     ax.axhline(nominal, color="black", linestyle="--", label=f"nominal={nominal:.3f}")
-    ax.set_xlabel("Forecast horizon")
-    ax.set_ylabel("Coverage")
-    ax.set_title("Mean conformal coverage by horizon")
+    ax.set_xlabel(r"Forecast horizon $t$")
+    ax.set_ylabel(r"Empirical coverage $\hat{P}(y_t \in C_t)$")
+    if show_titles:
+        ax.set_title("Mean conformal coverage by forecast horizon")
     ax.grid(True)
     ax.legend(loc="best")
     fig.tight_layout()
@@ -417,6 +431,7 @@ def _plot_target_grid(
     ylabel: str,
     title: str,
     nominal: float | None = None,
+    show_titles: bool = True,
 ) -> None:
     rows, cols = 4, 4
     fig, axes = plt.subplots(rows, cols, figsize=(24, 16))
@@ -429,19 +444,21 @@ def _plot_target_grid(
         ax.plot(data[:, name_to_idx[name]], color=colors[name])
         if nominal is not None:
             ax.axhline(nominal, color="black", linestyle="--", linewidth=1.0)
-        ax.set_title(name)
-        ax.set_xlabel("Forecast horizon")
+        if show_titles:
+            ax.set_title(name)
+        ax.set_xlabel(r"Forecast horizon $t$")
         ax.set_ylabel(ylabel)
         ax.grid(True)
     for ax in axes[len(order):]:
         ax.axis("off")
-    fig.suptitle(title, y=0.98)
+    if show_titles:
+        fig.suptitle(title, y=0.98)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
 
-def _plot_error_vs_width_grid(analysis: dict[str, Any], out_dir: Path) -> None:
+def _plot_error_vs_width_grid(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
     target_names = list(analysis["target_names"])
     error = np.asarray(analysis["arrays"]["mean_abs_error_by_horizon_target"], dtype=float)
     half_width = np.asarray(analysis["arrays"]["mean_half_width_by_horizon_target"], dtype=float)
@@ -454,28 +471,32 @@ def _plot_error_vs_width_grid(analysis: dict[str, Any], out_dir: Path) -> None:
     for plot_idx, name in enumerate(order):
         idx = name_to_idx[name]
         ax = axes[plot_idx]
-        ax.plot(error[:, idx], label="mean absolute error", color=colors[name])
-        ax.plot(half_width[:, idx], label="conformal half-width", color=colors[name], linestyle="--")
-        ax.set_title(name)
-        ax.set_xlabel("Forecast horizon")
+        ax.plot(error[:, idx], label=r"Mean absolute error", color=colors[name])
+        ax.plot(half_width[:, idx], label=r"Conformal half-width", color=colors[name], linestyle="--")
+        if show_titles:
+            ax.set_title(name)
+        ax.set_xlabel(r"Forecast horizon $t$")
+        ax.set_ylabel(r"Physical units")
         ax.grid(True)
         ax.legend(fontsize=7, loc="best")
     for ax in axes[len(order):]:
         ax.axis("off")
-    fig.suptitle("Mean absolute error vs conformal half-width by horizon", y=0.98)
+    if show_titles:
+        fig.suptitle("Mean absolute error vs conformal half-width by forecast horizon", y=0.98)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     fig.savefig(out_dir / "mean_abs_error_vs_half_width_by_target.png", dpi=150)
     plt.close(fig)
 
 
-def _plot_spearman(analysis: dict[str, Any], out_dir: Path) -> None:
+def _plot_spearman(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
     target_names = _ordered_targets(list(analysis["target_names"]))
     values = [analysis["spearman_error_half_width_by_target"][name] for name in target_names]
     colors = _target_color_map(target_names)
     fig, ax = plt.subplots(figsize=(14, 5))
     ax.bar(target_names, values, color=[colors[name] for name in target_names])
-    ax.set_ylabel("Spearman correlation")
-    ax.set_title("Horizon-level correlation: mean absolute error vs conformal half-width")
+    ax.set_ylabel(r"Spearman rank correlation $\rho_s$")
+    if show_titles:
+        ax.set_title("Horizon-level correlation: mean absolute error vs conformal half-width")
     ax.tick_params(axis="x", rotation=60)
     ax.grid(True, axis="y")
     fig.tight_layout()
@@ -483,7 +504,7 @@ def _plot_spearman(analysis: dict[str, Any], out_dir: Path) -> None:
     plt.close(fig)
 
 
-def _plot_difficulty_bins(analysis: dict[str, Any], out_dir: Path) -> None:
+def _plot_difficulty_bins(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
     bins = analysis["profile_difficulty"]["bins"]
     labels = ["easy", "medium", "hard"]
     coverage = [bins[label]["mean_coverage"] for label in labels]
@@ -494,18 +515,20 @@ def _plot_difficulty_bins(analysis: dict[str, Any], out_dir: Path) -> None:
     bar_colors = [difficulty_colors[label] for label in labels]
     axes[0].bar(labels, coverage, color=bar_colors)
     axes[0].axhline(nominal, color="black", linestyle="--", label=f"nominal={nominal:.3f}")
-    axes[0].set_ylabel("Coverage")
-    axes[0].set_title("Coverage by profile difficulty")
+    axes[0].set_ylabel(r"Empirical coverage")
+    if show_titles:
+        axes[0].set_title("Coverage by profile-difficulty bin")
     axes[0].legend(loc="best")
     axes[1].bar(labels, mae, color=bar_colors)
-    axes[1].set_ylabel("Mean profile MAE")
-    axes[1].set_title("Difficulty-bin mean MAE")
+    axes[1].set_ylabel(r"Mean profile MAE")
+    if show_titles:
+        axes[1].set_title("Mean absolute error by difficulty bin")
     fig.tight_layout()
     fig.savefig(out_dir / "coverage_by_profile_difficulty.png", dpi=150)
     plt.close(fig)
 
 
-def _plot_interval_efficiency(analysis: dict[str, Any], out_dir: Path) -> None:
+def _plot_interval_efficiency(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
     target_names = _ordered_targets(list(analysis["target_names"]))
     by_target = analysis["interval_efficiency_by_target"]
     colors = _target_color_map(target_names)
@@ -514,12 +537,14 @@ def _plot_interval_efficiency(analysis: dict[str, Any], out_dir: Path) -> None:
     over_range = [by_target[name]["average_width_over_range"] for name in target_names]
     fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
     axes[0].bar(target_names, over_std, color=bar_colors)
-    axes[0].set_ylabel("Avg width / std(y_true)")
-    axes[0].set_title("Interval efficiency normalized by target std")
+    axes[0].set_ylabel(r"$\overline{W} / \sigma(y_{\mathrm{true}})$")
+    if show_titles:
+        axes[0].set_title("Interval width normalized by target standard deviation")
     axes[0].grid(True, axis="y")
     axes[1].bar(target_names, over_range, color=bar_colors)
-    axes[1].set_ylabel("Avg width / range(y_true)")
-    axes[1].set_title("Interval efficiency normalized by target range")
+    axes[1].set_ylabel(r"$\overline{W} / \mathrm{range}(y_{\mathrm{true}})$")
+    if show_titles:
+        axes[1].set_title("Interval width normalized by target range")
     axes[1].tick_params(axis="x", rotation=60)
     axes[1].grid(True, axis="y")
     fig.tight_layout()
@@ -527,31 +552,33 @@ def _plot_interval_efficiency(analysis: dict[str, Any], out_dir: Path) -> None:
     plt.close(fig)
 
 
-def save_plots(analysis: dict[str, Any], out_dir: Path) -> None:
+def save_plots(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
     target_names = list(analysis["target_names"])
     coverage = np.asarray(analysis["arrays"]["coverage_by_horizon_target"], dtype=float)
     ratio = np.asarray(analysis["arrays"]["test_q95_to_half_width_ratio"], dtype=float)
-    _plot_mean_coverage_by_horizon(analysis, out_dir)
+    _plot_mean_coverage_by_horizon(analysis, out_dir, show_titles=show_titles)
     _plot_target_grid(
         coverage,
         target_names,
         out_path=out_dir / "coverage_by_horizon_target_grid.png",
-        ylabel="Coverage",
-        title="Coverage by horizon and target",
+        ylabel=r"Empirical coverage $\hat{P}(y_t \in C_t)$",
+        title="Coverage by forecast horizon and target",
         nominal=analysis["nominal_coverage"],
+        show_titles=show_titles,
     )
-    _plot_error_vs_width_grid(analysis, out_dir)
+    _plot_error_vs_width_grid(analysis, out_dir, show_titles=show_titles)
     _plot_target_grid(
         ratio,
         target_names,
         out_path=out_dir / "test_q95_to_conformal_half_width_ratio_grid.png",
-        ylabel="test q95 abs error / conformal half-width",
-        title="Test 95th percentile error vs conformal half-width by horizon",
+        ylabel=r"$Q_{0.95}(|e_t|) / h_t$",
+        title="Test 95th-percentile error relative to conformal half-width",
         nominal=1.0,
+        show_titles=show_titles,
     )
-    _plot_spearman(analysis, out_dir)
-    _plot_difficulty_bins(analysis, out_dir)
-    _plot_interval_efficiency(analysis, out_dir)
+    _plot_spearman(analysis, out_dir, show_titles=show_titles)
+    _plot_difficulty_bins(analysis, out_dir, show_titles=show_titles)
+    _plot_interval_efficiency(analysis, out_dir, show_titles=show_titles)
 
 
 def main() -> None:
@@ -575,7 +602,7 @@ def main() -> None:
     (args.out_dir / "conformal_uncertainty_analysis.json").write_text(json.dumps(analysis, indent=2), encoding="utf-8")
     _save_horizon_csv(args.out_dir / "horizon_summary.csv", analysis)
     _save_target_csv(args.out_dir / "target_summary.csv", analysis)
-    save_plots(analysis, args.out_dir)
+    save_plots(analysis, args.out_dir, show_titles=args.show_plot_titles)
 
     print(f"Saved conformal uncertainty analysis to: {args.out_dir}")
     print(f"Mean test coverage: {np.nanmean(analysis['mean_coverage_by_horizon']):.6f}")
