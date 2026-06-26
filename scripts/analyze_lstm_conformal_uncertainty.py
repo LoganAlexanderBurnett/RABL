@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import h5py
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -62,6 +63,59 @@ def _ordered_targets(target_names: list[str]) -> list[str]:
     known = [name for name in TARGET_ORDER if name in target_names]
     remaining = [name for name in target_names if name not in known]
     return known + remaining
+
+
+def _physical_group_for_target_name(target_name: str) -> str:
+    name = target_name.strip().lower()
+    if name == "n" or "power" in name:
+        return "power"
+    if "reactivity" in name or name in {"rho", "rho_dollars"}:
+        return "reactivity"
+    if "q_to_steam" in name or "steam" in name:
+        return "q_to_steam"
+    if name.startswith("c[") or name.startswith("c_"):
+        return "concentration"
+    if name.startswith("t") or "temp" in name:
+        return "temperature"
+    return "other"
+
+
+def _vary_group_color(base_color: str, *, shade_idx: int, n_shades: int) -> str:
+    if n_shades <= 1:
+        return base_color
+    rgb = np.asarray(mcolors.to_rgb(base_color), dtype=np.float64)
+    center = 0.5 * (n_shades - 1)
+    offset = (shade_idx - center) / max(center, 1.0)
+    if offset >= 0:
+        mix = 0.22 * offset
+        out = rgb * (1.0 - mix) + np.ones(3, dtype=np.float64) * mix
+    else:
+        mix = 0.18 * (-offset)
+        out = rgb * (1.0 - mix)
+    return mcolors.to_hex(np.clip(out, 0.0, 1.0))
+
+
+def _target_color_map(target_names: list[str]) -> dict[str, str]:
+    group_base_colors = {
+        "temperature": "red",
+        "concentration": "green",
+        "power": "deeppink",
+        "reactivity": "black",
+        "q_to_steam": "gray",
+        "other": "C4",
+    }
+    groups = [_physical_group_for_target_name(name) for name in target_names]
+    group_counts: dict[str, int] = {}
+    group_indices: dict[str, int] = {}
+    for group in groups:
+        group_counts[group] = group_counts.get(group, 0) + 1
+    colors: dict[str, str] = {}
+    for name, group in zip(target_names, groups, strict=True):
+        idx_in_group = group_indices.get(group, 0)
+        group_indices[group] = idx_in_group + 1
+        shade_idx = 0 if group_counts[group] <= 1 else idx_in_group
+        colors[name] = _vary_group_color(group_base_colors[group], shade_idx=shade_idx, n_shades=group_counts[group])
+    return colors
 
 
 def _extract_profile_arrays(
@@ -369,9 +423,10 @@ def _plot_target_grid(
     axes = np.atleast_1d(axes).ravel()
     order = _ordered_targets(target_names)
     name_to_idx = {name: idx for idx, name in enumerate(target_names)}
+    colors = _target_color_map(order)
     for plot_idx, name in enumerate(order):
         ax = axes[plot_idx]
-        ax.plot(data[:, name_to_idx[name]])
+        ax.plot(data[:, name_to_idx[name]], color=colors[name])
         if nominal is not None:
             ax.axhline(nominal, color="black", linestyle="--", linewidth=1.0)
         ax.set_title(name)
@@ -395,11 +450,12 @@ def _plot_error_vs_width_grid(analysis: dict[str, Any], out_dir: Path) -> None:
     axes = np.atleast_1d(axes).ravel()
     order = _ordered_targets(target_names)
     name_to_idx = {name: idx for idx, name in enumerate(target_names)}
+    colors = _target_color_map(order)
     for plot_idx, name in enumerate(order):
         idx = name_to_idx[name]
         ax = axes[plot_idx]
-        ax.plot(error[:, idx], label="mean absolute error")
-        ax.plot(half_width[:, idx], label="conformal half-width")
+        ax.plot(error[:, idx], label="mean absolute error", color=colors[name])
+        ax.plot(half_width[:, idx], label="conformal half-width", color=colors[name], linestyle="--")
         ax.set_title(name)
         ax.set_xlabel("Forecast horizon")
         ax.grid(True)
@@ -415,9 +471,9 @@ def _plot_error_vs_width_grid(analysis: dict[str, Any], out_dir: Path) -> None:
 def _plot_spearman(analysis: dict[str, Any], out_dir: Path) -> None:
     target_names = _ordered_targets(list(analysis["target_names"]))
     values = [analysis["spearman_error_half_width_by_target"][name] for name in target_names]
+    colors = _target_color_map(target_names)
     fig, ax = plt.subplots(figsize=(14, 5))
-    ax.bar(target_names, values)
-    ax.set_ylim(-1.05, 1.05)
+    ax.bar(target_names, values, color=[colors[name] for name in target_names])
     ax.set_ylabel("Spearman correlation")
     ax.set_title("Horizon-level correlation: mean absolute error vs conformal half-width")
     ax.tick_params(axis="x", rotation=60)
@@ -434,16 +490,16 @@ def _plot_difficulty_bins(analysis: dict[str, Any], out_dir: Path) -> None:
     mae = [bins[label]["mean_profile_mae"] for label in labels]
     nominal = analysis["nominal_coverage"]
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    axes[0].bar(labels, coverage)
+    difficulty_colors = {"easy": "green", "medium": "gold", "hard": "red"}
+    bar_colors = [difficulty_colors[label] for label in labels]
+    axes[0].bar(labels, coverage, color=bar_colors)
     axes[0].axhline(nominal, color="black", linestyle="--", label=f"nominal={nominal:.3f}")
     axes[0].set_ylabel("Coverage")
     axes[0].set_title("Coverage by profile difficulty")
-    axes[0].grid(True, axis="y")
     axes[0].legend(loc="best")
-    axes[1].bar(labels, mae)
+    axes[1].bar(labels, mae, color=bar_colors)
     axes[1].set_ylabel("Mean profile MAE")
     axes[1].set_title("Difficulty-bin mean MAE")
-    axes[1].grid(True, axis="y")
     fig.tight_layout()
     fig.savefig(out_dir / "coverage_by_profile_difficulty.png", dpi=150)
     plt.close(fig)
@@ -452,14 +508,16 @@ def _plot_difficulty_bins(analysis: dict[str, Any], out_dir: Path) -> None:
 def _plot_interval_efficiency(analysis: dict[str, Any], out_dir: Path) -> None:
     target_names = _ordered_targets(list(analysis["target_names"]))
     by_target = analysis["interval_efficiency_by_target"]
+    colors = _target_color_map(target_names)
+    bar_colors = [colors[name] for name in target_names]
     over_std = [by_target[name]["average_width_over_std"] for name in target_names]
     over_range = [by_target[name]["average_width_over_range"] for name in target_names]
     fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-    axes[0].bar(target_names, over_std)
+    axes[0].bar(target_names, over_std, color=bar_colors)
     axes[0].set_ylabel("Avg width / std(y_true)")
     axes[0].set_title("Interval efficiency normalized by target std")
     axes[0].grid(True, axis="y")
-    axes[1].bar(target_names, over_range)
+    axes[1].bar(target_names, over_range, color=bar_colors)
     axes[1].set_ylabel("Avg width / range(y_true)")
     axes[1].set_title("Interval efficiency normalized by target range")
     axes[1].tick_params(axis="x", rotation=60)
