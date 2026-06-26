@@ -63,6 +63,29 @@ COLOR_MAP = {
 }
 
 
+def _pretty_var_label(var_name: str) -> str:
+    mapping = {
+        "drumAngleDeg": r"$\theta_{\mathrm{drum}}$ (deg)",
+        "TN2": r"$T_{N2}$",
+        "Tm": r"$T_m$",
+        "Thp": r"$T_{hp}$",
+        "Tf": r"$T_f$",
+        "Tsg": r"$T_{sg}$",
+        "T_steam_out": r"$T_{\mathrm{steam,out}}$",
+        "x_steam_out": r"$x_{\mathrm{steam,out}}$",
+        "P_MW": r"$P$ (MW)",
+        "rho_dollars": r"$\rho_{\$}$",
+        "rho_drums_dollars": r"$\rho_{\mathrm{drums},\$}$",
+        "rho_fuel_dollars": r"$\rho_{\mathrm{fuel},\$}$",
+        "rho_moderator_dollars": r"$\rho_{\mathrm{moderator},\$}$",
+    }
+    if var_name in mapping:
+        return mapping[var_name]
+    if var_name.startswith("c[") and var_name.endswith("]"):
+        return rf"$c_{{{var_name[2:-1]}}}$"
+    return var_name.replace("_", r"\_")
+
+
 def _load_config(config_path: Path) -> dict:
     if not config_path.exists():
         raise SystemExit(f"Missing config file: {config_path}")
@@ -112,6 +135,7 @@ def _read_results_csv(results_csv: Path) -> pd.DataFrame:
 
 
 def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
+    plt.rcParams.update({"font.size": 12})
     # Read all data first
     dfs: list[tuple[str, pd.DataFrame]] = []
     for p in results_csvs:
@@ -124,6 +148,7 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
 
     for ax, var in zip(axes, PLOT_VARS, strict=False):
         color = COLOR_MAP.get(var, "black")
+        pretty_label = _pretty_var_label(var)
 
         # Overlay every profile on this subplot
         for _, df in dfs:
@@ -135,9 +160,9 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
                 alpha=0.10,
             )
 
-        ax.set_title(var)
-        ax.set_ylabel(var)
-        ax.grid(True, which="both", alpha=0.35)
+        ax.set_title(pretty_label)
+        ax.set_ylabel(pretty_label)
+        ax.grid(True, which="both", alpha=0.2)
 
     for ax in axes[len(PLOT_VARS):]:
         ax.set_axis_off()

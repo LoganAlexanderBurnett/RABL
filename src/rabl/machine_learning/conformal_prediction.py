@@ -31,6 +31,25 @@ from .lstm_pipeline import (
 )
 
 
+def _pretty_target_label(target_name: str) -> str:
+    mapping = {
+        "TN2": r"$T_{N2}$",
+        "Tm": r"$T_m$",
+        "Thp": r"$T_{hp}$",
+        "Tf": r"$T_f$",
+        "Tsg": r"$T_{sg}$",
+        "n": r"$n$",
+        "rho_dollars": r"$\rho_{\$}$",
+        "T_steam_out": r"$T_{\mathrm{steam,out}}$",
+        "x_steam_out": r"$x_{\mathrm{steam,out}}$",
+    }
+    if target_name in mapping:
+        return mapping[target_name]
+    if target_name.startswith("c[") and target_name.endswith("]"):
+        return rf"$c_{{{target_name[2:-1]}}}$"
+    return target_name.replace("_", r"\_")
+
+
 @dataclass(frozen=True)
 class ConformalConfig:
     alpha: float = 0.05
@@ -239,25 +258,29 @@ def plot_conformal_forecast_profile_grid(
     rows, cols = 4, 4
     if nplots > rows * cols:
         raise ValueError(f"Plot requires {nplots} panels but 4x4 supports only 16.")
+    plt.rcParams.update({"font.size": 12})
     fig, axes = plt.subplots(rows, cols, figsize=(24, 16))
     axes = np.atleast_1d(axes).ravel()
-    axes[0].plot(control_series, label=control_name)
-    axes[0].set_title(control_name)
-    axes[0].grid(True)
+    axes[0].plot(control_series, label=r"$u(t)$")
+    axes[0].set_title(r"Control $u(t)$")
+    axes[0].set_xlabel(r"Forecast horizon $t$")
+    axes[0].set_ylabel(r"$u(t)$")
+    axes[0].grid(True, alpha=0.2)
     axes[0].legend(loc="best")
     steps = np.arange(y_true.shape[0])
     for i, name in enumerate(target_names):
         ax = axes[i + 1]
-        ax.plot(steps, y_true[:, i], label="truth", color="black")
-        ax.plot(steps, y_pred[:, i], label="pred", color="blue")
-        ax.plot(steps, lower[:, i], label="lower", color="tab:orange", linewidth=0.8)
-        ax.plot(steps, upper[:, i], label="upper", color="tab:orange", linewidth=0.8)
-        ax.fill_between(steps, lower[:, i], upper[:, i], color="tab:orange", alpha=0.2, label="conformal")
-        ax.set_title(name)
-        ax.set_xlabel("Forecast step")
-        ax.set_ylabel(name)
+        pretty_label = _pretty_target_label(name)
+        ax.plot(steps, y_true[:, i], label="Truth", color="black")
+        ax.plot(steps, y_pred[:, i], label="Prediction", color="blue")
+        ax.plot(steps, lower[:, i], label="Lower", color="tab:orange", linewidth=0.8)
+        ax.plot(steps, upper[:, i], label="Upper", color="tab:orange", linewidth=0.8)
+        ax.fill_between(steps, lower[:, i], upper[:, i], color="tab:orange", alpha=0.2, label="Conformal interval")
+        ax.set_title(pretty_label)
+        ax.set_xlabel(r"Forecast horizon $t$")
+        ax.set_ylabel(pretty_label)
         _disable_y_offset_if_requested(ax, name)
-        ax.grid(True)
+        ax.grid(True, alpha=0.2)
         ax.legend(fontsize=7, loc="best")
     for ax in axes[nplots:]:
         ax.axis("off")

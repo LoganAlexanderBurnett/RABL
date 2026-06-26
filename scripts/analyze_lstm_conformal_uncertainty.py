@@ -58,6 +58,15 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Suppress titles on generated plots.",
     )
+    parser.add_argument(
+        "--max-forecast-plots",
+        type=int,
+        default=0,
+        help=(
+            "Number of individual test forecast profiles to plot from conformal_forecasts.h5. "
+            "Use 0 to skip these profile-level plots."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -155,14 +164,15 @@ def _extract_profile_arrays(
     table: np.ndarray,
     columns: list[str],
     target_names: list[str],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     t = table[:, columns.index("t")]
+    u = table[:, columns.index("u(t)")]
     y_true = np.column_stack([table[:, columns.index(f"x_true(t)_{name}")] for name in target_names])
     y_pred = np.column_stack([table[:, columns.index(f"x_pred(t)_{name}")] for name in target_names])
     lower = np.column_stack([table[:, columns.index(f"x_lower_conformal(t)_{name}")] for name in target_names])
     upper = np.column_stack([table[:, columns.index(f"x_upper_conformal(t)_{name}")] for name in target_names])
     width = np.column_stack([table[:, columns.index(f"x_width_conformal(t)_{name}")] for name in target_names])
-    return t, y_true, y_pred, lower, upper, width
+    return t, u, y_true, y_pred, lower, upper, width
 
 
 def load_forecasts(
@@ -180,11 +190,12 @@ def load_forecasts(
                 raise KeyError(f"Profile {profile_name!r} is missing dataset 'data'.")
             columns = _decode_columns(group.attrs.get("columns", h5f.attrs.get("columns", [])))
             table = group["data"][...].astype(np.float64)
-            t, y_true, y_pred, lower, upper, width = _extract_profile_arrays(table, columns, target_names)
+            t, u, y_true, y_pred, lower, upper, width = _extract_profile_arrays(table, columns, target_names)
             profile_records.append(
                 {
                     "profile": str(profile_name),
                     "t": t,
+                    "u": u,
                     "y_true": y_true,
                     "y_pred": y_pred,
                     "lower": lower,
@@ -427,6 +438,7 @@ def _save_target_csv(path: Path, analysis: dict[str, Any]) -> None:
 
 
 def _plot_mean_coverage_by_horizon(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
+    plt.rcParams.update({"font.size": 12})
     nominal = analysis["nominal_coverage"]
     y = np.asarray(analysis["mean_coverage_by_horizon"], dtype=float)
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -453,6 +465,7 @@ def _plot_target_grid(
     nominal: float | None = None,
     show_titles: bool = True,
 ) -> None:
+    plt.rcParams.update({"font.size": 12})
     rows, cols = 4, 4
     fig, axes = plt.subplots(rows, cols, figsize=(24, 16))
     axes = np.atleast_1d(axes).ravel()
@@ -479,6 +492,7 @@ def _plot_target_grid(
 
 
 def _plot_error_vs_width_grid(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
+    plt.rcParams.update({"font.size": 12})
     target_names = list(analysis["target_names"])
     error = np.asarray(analysis["arrays"]["mean_abs_error_by_horizon_target"], dtype=float)
     half_width = np.asarray(analysis["arrays"]["mean_half_width_by_horizon_target"], dtype=float)
@@ -509,6 +523,7 @@ def _plot_error_vs_width_grid(analysis: dict[str, Any], out_dir: Path, *, show_t
 
 
 def _plot_spearman(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
+    plt.rcParams.update({"font.size": 12})
     target_names = _ordered_targets(list(analysis["target_names"]))
     values = [analysis["spearman_error_half_width_by_target"][name] for name in target_names]
     colors = _target_color_map(target_names)
@@ -526,6 +541,7 @@ def _plot_spearman(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool
 
 
 def _plot_difficulty_bins(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
+    plt.rcParams.update({"font.size": 12})
     bins = analysis["profile_difficulty"]["bins"]
     labels = ["easy", "medium", "hard"]
     coverage = [bins[label]["mean_coverage"] for label in labels]
@@ -550,6 +566,7 @@ def _plot_difficulty_bins(analysis: dict[str, Any], out_dir: Path, *, show_title
 
 
 def _plot_interval_efficiency(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
+    plt.rcParams.update({"font.size": 12})
     target_names = _ordered_targets(list(analysis["target_names"]))
     by_target = analysis["interval_efficiency_by_target"]
     colors = _target_color_map(target_names)
@@ -572,6 +589,69 @@ def _plot_interval_efficiency(analysis: dict[str, Any], out_dir: Path, *, show_t
     fig.tight_layout()
     fig.savefig(out_dir / "interval_efficiency_by_target.png", dpi=150)
     plt.close(fig)
+
+
+def _plot_forecast_profiles(
+    forecast_data: dict[str, Any],
+    target_names: list[str],
+    out_dir: Path,
+    *,
+    max_plots: int,
+    show_titles: bool,
+) -> None:
+    if max_plots <= 0:
+        return
+    plt.rcParams.update({"font.size": 12})
+    plot_dir = out_dir / "forecast_profiles"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    order = _ordered_targets(target_names)
+    name_to_idx = {name: idx for idx, name in enumerate(target_names)}
+    colors = _target_color_map(order)
+    rows, cols = 4, 4
+    for record in forecast_data["profiles"][:max_plots]:
+        fig, axes = plt.subplots(rows, cols, figsize=(24, 16), sharex=True)
+        axes = np.atleast_1d(axes).ravel()
+        t = np.asarray(record["t"], dtype=float)
+        axes[0].plot(t, record["u"], color="black", label=r"$u(t)$")
+        if show_titles:
+            axes[0].set_title(r"Control $u(t)$")
+        axes[0].set_xlabel(r"Time $t$")
+        axes[0].set_ylabel(r"$u(t)$")
+        axes[0].grid(True, alpha=0.2)
+        axes[0].legend(loc="best")
+
+        for plot_idx, name in enumerate(order, start=1):
+            ax = axes[plot_idx]
+            idx = name_to_idx[name]
+            color = colors[name]
+            ax.plot(t, record["y_true"][:, idx], label="Truth", color="black")
+            ax.plot(t, record["y_pred"][:, idx], label="Prediction", color=color)
+            ax.plot(t, record["lower"][:, idx], label="Lower", color="tab:orange", linewidth=0.8)
+            ax.plot(t, record["upper"][:, idx], label="Upper", color="tab:orange", linewidth=0.8)
+            ax.fill_between(
+                t,
+                record["lower"][:, idx],
+                record["upper"][:, idx],
+                color="tab:orange",
+                alpha=0.2,
+                label="Conformal interval",
+            )
+            pretty_label = _pretty_target_label(name)
+            if show_titles:
+                ax.set_title(pretty_label)
+            ax.set_xlabel(r"Time $t$")
+            ax.set_ylabel(pretty_label)
+            ax.grid(True, alpha=0.2)
+            ax.legend(fontsize=7, loc="best")
+
+        for ax in axes[len(order) + 1:]:
+            ax.axis("off")
+        if show_titles:
+            fig.suptitle(f"Conformal forecast - {record['profile']}", y=0.98)
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        safe_name = str(record["profile"]).replace("/", "_")
+        fig.savefig(plot_dir / f"conformal_forecast_{safe_name}.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
 
 
 def save_plots(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) -> None:
@@ -625,6 +705,13 @@ def main() -> None:
     _save_horizon_csv(args.out_dir / "horizon_summary.csv", analysis)
     _save_target_csv(args.out_dir / "target_summary.csv", analysis)
     save_plots(analysis, args.out_dir, show_titles=args.show_plot_titles)
+    _plot_forecast_profiles(
+        forecast_data,
+        target_names,
+        args.out_dir,
+        max_plots=args.max_forecast_plots,
+        show_titles=args.show_plot_titles,
+    )
 
     print(f"Saved conformal uncertainty analysis to: {args.out_dir}")
     print(f"Mean test coverage: {np.nanmean(analysis['mean_coverage_by_horizon']):.6f}")
