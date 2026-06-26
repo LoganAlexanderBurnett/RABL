@@ -618,17 +618,18 @@ def _plot_forecast_profiles(
         axes[0].set_xlabel(r"Time $t$")
         axes[0].set_ylabel(r"$u(t)$")
         axes[0].grid(True, alpha=0.2)
-        axes[0].legend(loc="best")
+        legend_handles = []
+        legend_labels = []
 
         for plot_idx, name in enumerate(order, start=1):
             ax = axes[plot_idx]
             idx = name_to_idx[name]
             color = colors[name]
-            ax.plot(t, record["y_true"][:, idx], label="Truth", color="black")
-            ax.plot(t, record["y_pred"][:, idx], label="Prediction", color=color)
-            ax.plot(t, record["lower"][:, idx], label="Lower", color="tab:orange", linewidth=0.8)
-            ax.plot(t, record["upper"][:, idx], label="Upper", color="tab:orange", linewidth=0.8)
-            ax.fill_between(
+            truth_line = ax.plot(t, record["y_true"][:, idx], label="Truth", color="black")[0]
+            pred_line = ax.plot(t, record["y_pred"][:, idx], label="Prediction", color=color)[0]
+            lower_line = ax.plot(t, record["lower"][:, idx], label="Lower", color="tab:orange", linewidth=0.8)[0]
+            upper_line = ax.plot(t, record["upper"][:, idx], label="Upper", color="tab:orange", linewidth=0.8)[0]
+            interval = ax.fill_between(
                 t,
                 record["lower"][:, idx],
                 record["upper"][:, idx],
@@ -636,13 +637,18 @@ def _plot_forecast_profiles(
                 alpha=0.2,
                 label="Conformal interval",
             )
+            if not legend_handles:
+                legend_handles = [truth_line, pred_line, lower_line, upper_line, interval]
+                legend_labels = [handle.get_label() for handle in legend_handles]
             pretty_label = _pretty_target_label(name)
             if show_titles:
                 ax.set_title(pretty_label)
             ax.set_xlabel(r"Time $t$")
             ax.set_ylabel(pretty_label)
             ax.grid(True, alpha=0.2)
-            ax.legend(fontsize=18, loc="best")
+
+        if legend_handles:
+            axes[3].legend(legend_handles, legend_labels, fontsize=16, loc="upper right")
 
         for ax in axes[len(order) + 1:]:
             ax.axis("off")

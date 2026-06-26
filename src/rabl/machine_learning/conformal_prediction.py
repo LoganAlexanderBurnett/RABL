@@ -266,22 +266,27 @@ def plot_conformal_forecast_profile_grid(
     axes[0].set_xlabel(r"Forecast horizon $t$")
     axes[0].set_ylabel(r"$u(t)$")
     axes[0].grid(True, alpha=0.2)
-    axes[0].legend(loc="best")
+    legend_handles = []
+    legend_labels = []
     steps = np.arange(y_true.shape[0])
     for i, name in enumerate(target_names):
         ax = axes[i + 1]
         pretty_label = _pretty_target_label(name)
-        ax.plot(steps, y_true[:, i], label="Truth", color="black")
-        ax.plot(steps, y_pred[:, i], label="Prediction", color="blue")
-        ax.plot(steps, lower[:, i], label="Lower", color="tab:orange", linewidth=0.8)
-        ax.plot(steps, upper[:, i], label="Upper", color="tab:orange", linewidth=0.8)
-        ax.fill_between(steps, lower[:, i], upper[:, i], color="tab:orange", alpha=0.2, label="Conformal interval")
+        truth_line = ax.plot(steps, y_true[:, i], label="Truth", color="black")[0]
+        pred_line = ax.plot(steps, y_pred[:, i], label="Prediction", color="blue")[0]
+        lower_line = ax.plot(steps, lower[:, i], label="Lower", color="tab:orange", linewidth=0.8)[0]
+        upper_line = ax.plot(steps, upper[:, i], label="Upper", color="tab:orange", linewidth=0.8)[0]
+        interval = ax.fill_between(steps, lower[:, i], upper[:, i], color="tab:orange", alpha=0.2, label="Conformal interval")
+        if not legend_handles:
+            legend_handles = [truth_line, pred_line, lower_line, upper_line, interval]
+            legend_labels = [handle.get_label() for handle in legend_handles]
         ax.set_title(pretty_label)
         ax.set_xlabel(r"Forecast horizon $t$")
         ax.set_ylabel(pretty_label)
         _disable_y_offset_if_requested(ax, name)
         ax.grid(True, alpha=0.2)
-        ax.legend(fontsize=18, loc="best")
+    if legend_handles:
+        axes[3].legend(legend_handles, legend_labels, fontsize=16, loc="upper right")
     for ax in axes[nplots:]:
         ax.axis("off")
     fig.suptitle(title, y=0.98, fontsize=18)
