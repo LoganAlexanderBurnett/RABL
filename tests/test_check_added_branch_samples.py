@@ -93,6 +93,8 @@ def test_check_added_branch_samples_passes_for_parent_padded_branch(tmp_path: Pa
 
     assert result.returncode == 0, result.stderr + result.stdout
     assert '"added_sample_count": 2' in result.stdout
+    assert '"plot_count": 2' in result.stdout
+    assert (tmp_path / "after_added_samples_preview.png").exists()
     assert '"problems": []' in result.stdout
 
 
@@ -142,5 +144,6 @@ def test_check_added_branch_samples_fails_for_steady_state_padded_branch(tmp_pat
     )
 
     assert result.returncode == 1
+    assert (tmp_path / "after_added_samples_preview.png").exists()
     assert "history_rows_prepended=3, expected lookback=2" in result.stdout
     assert "first X state window does not equal parent history plus first child state" in result.stdout

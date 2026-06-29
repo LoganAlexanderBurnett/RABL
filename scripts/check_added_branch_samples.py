@@ -293,6 +293,61 @@ def _validate_branch_profile(
     return problems
 
 
+
+
+def _plot_added_samples(
+    profiles: dict[str, ProfileArrays],
+    added_refs: list[SampleRef],
+    state_names: list[str],
+    control_name: str,
+    output_path: Path,
+    plot_count: int,
+) -> Path | None:
+    """Plot up to ``plot_count`` added samples in a 4x4 feature layout."""
+    if plot_count < 1 or not added_refs:
+        return None
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    selected = added_refs[:plot_count]
+    feature_labels = [*state_names, control_name]
+    n_axes = 16
+    if len(feature_labels) > n_axes:
+        feature_labels = feature_labels[:n_axes]
+    elif len(feature_labels) < n_axes:
+        feature_labels = [*feature_labels, *[""] * (n_axes - len(feature_labels))]
+
+    fig, axes = plt.subplots(4, 4, figsize=(16, 12), sharex=True)
+    flat_axes = axes.ravel()
+    for sample_num, ref in enumerate(selected, start=1):
+        profile = profiles[ref.profile]
+        x_row = profile.x[ref.index]
+        steps = np.arange(x_row.shape[0])
+        label = f"{sample_num}: {ref.profile}[{ref.index}]"
+        for feature_idx, ax in enumerate(flat_axes):
+            if feature_idx >= x_row.shape[1] or not feature_labels[feature_idx]:
+                ax.set_visible(False)
+                continue
+            ax.plot(steps, x_row[:, feature_idx], alpha=0.8, linewidth=1.0, label=label)
+
+    for feature_idx, ax in enumerate(flat_axes):
+        if not ax.get_visible():
+            continue
+        ax.set_title(feature_labels[feature_idx])
+        ax.grid(True, alpha=0.25)
+        ax.set_xlabel("window step")
+    flat_axes[0].legend(fontsize="xx-small", loc="best")
+    fig.suptitle(f"First {len(selected)} newly added samples: X windows ({selected[0].profile} ...)")
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    return output_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("before", type=Path, help="Dataset HDF5 before data addition.")
@@ -300,6 +355,9 @@ def main() -> int:
     parser.add_argument("--atol", type=float, default=1e-8, help="Absolute tolerance for numeric comparisons.")
     parser.add_argument("--rtol", type=float, default=1e-6, help="Relative tolerance for numeric comparisons.")
     parser.add_argument("--json-out", type=Path, default=None, help="Optional JSON report path.")
+    parser.add_argument("--plot-out", type=Path, default=None, help="Output path for a 4x4 preview plot of newly added samples.")
+    parser.add_argument("--plot-count", type=int, default=10, help="Maximum number of newly added samples to overlay in the preview plot.")
+    parser.add_argument("--no-plot", action="store_true", help="Disable preview plot generation.")
     args = parser.parse_args()
 
     before_profiles, before_counts, _before_refs, before_features = _load_profiles(args.before)
@@ -346,6 +404,11 @@ def main() -> int:
         if not np.isfinite(prof.x[indices]).all() or not np.isfinite(prof.y[indices]).all():
             problems.append(f"{name}: at least one added sample contains NaN/inf.")
 
+    plot_path: Path | None = None
+    if not args.no_plot:
+        resolved_plot_out = args.plot_out or args.after.with_name(f"{args.after.stem}_added_samples_preview.png")
+        plot_path = _plot_added_samples(after_profiles, added_refs, state_names, control_name, resolved_plot_out, args.plot_count)
+
     report = {
         "before": str(args.before),
         "after": str(args.after),
@@ -361,6 +424,8 @@ def main() -> int:
         "added_profiles": {name: len(indices) for name, indices in sorted(added_by_profile.items())},
         "branch_added_profile_count": len(branch_added),
         "nonbranch_added_profile_count": len(nonbranch_added),
+        "sample_plot": None if plot_path is None else str(plot_path),
+        "plot_count": 0 if plot_path is None else min(max(args.plot_count, 0), len(added_refs)),
         "problems": problems,
     }
 
