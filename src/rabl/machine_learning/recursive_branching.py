@@ -113,6 +113,7 @@ class RecursiveBranchingBatchConfig:
     nugget_v_deg2_s2: float = 0.0
     finite_difference_order: int = 4
     target_weights: tuple[float, ...] | None = None
+    root_score_top_k: int | None = None
     branch_time_min: float = 25.0
     branch_time_max: float = 175.0
     plot_root_forecasts: bool = True
@@ -346,13 +347,82 @@ def generate_root_profile(
     )[0]
 
 
-def _score_root_uncertainty(forecaster: EnsembleForecaster, root_profile: DrumProfile) -> float:
-    """Score a candidate root by mean ensemble 2-sigma width over horizon and targets."""
+def _compute_uncertainty_growth_signal(
+    forecaster: EnsembleForecaster,
+    root_profile: DrumProfile,
+    *,
+    weights: np.ndarray,
+    dt: float,
+) -> np.ndarray:
+    """Return a raw, positive, target-weighted uncertainty-growth signal.
+
+    Candidate roots are scored by how quickly ensemble uncertainty is actively
+    increasing. The uncertainty derivative is computed as a literal
+    timestep-to-timestep change, not a smoothed finite-difference stencil:
+
+    ``growth(t_i) = sum_j weights_j * max((u_j(t_i)-u_j(t_{i-1})) / dt, 0)``.
+
+    The first timestep has no previous value, so its growth score is set to
+    zero. The returned array therefore has one scalar score per profile
+    timestep.
+    """
+    weights = np.asarray(weights, dtype=float)
+    if weights.ndim != 1:
+        raise ValueError(f"weights must be 1D, got shape {weights.shape}.")
+    if np.any(weights < 0):
+        raise ValueError("weights must be non-negative.")
+    if dt <= 0:
+        raise ValueError(f"dt must be positive; got {dt}.")
+
     forecasts = forecaster.forecast(root_profile)
     if forecasts.ndim != 3:
         raise ValueError(f"Expected forecasts shape (n_models, n_steps, n_targets), got {forecasts.shape}.")
     uncertainty_2sigma = 2.0 * np.std(forecasts, axis=0, ddof=0)
-    return float(np.nanmean(uncertainty_2sigma))
+    if uncertainty_2sigma.shape[1] != weights.shape[0]:
+        raise ValueError(
+            "Target dimension from forecasts does not match weight length. "
+            f"Got targets={uncertainty_2sigma.shape[1]}, weights={weights.shape[0]}"
+        )
+
+    d_unc_dt = np.zeros_like(uncertainty_2sigma, dtype=np.float64)
+    if uncertainty_2sigma.shape[0] > 1:
+        d_unc_dt[1:] = np.diff(uncertainty_2sigma, axis=0) / float(dt)
+
+    positive_growth = np.maximum(d_unc_dt, 0.0)
+    return np.sum(positive_growth * weights[None, :], axis=1)
+
+
+def _score_root_uncertainty_growth(
+    forecaster: EnsembleForecaster,
+    root_profile: DrumProfile,
+    *,
+    weights: np.ndarray,
+    dt: float,
+    top_k: int | None = None,
+) -> float:
+    """Score a candidate root by positive target-weighted uncertainty growth.
+
+    By default this returns the maximum growth spike. Passing ``top_k`` averages
+    the strongest ``top_k`` timesteps, which can reduce sensitivity to a single
+    noisy derivative value.
+    """
+    growth_signal = _compute_uncertainty_growth_signal(
+        forecaster,
+        root_profile,
+        weights=weights,
+        dt=dt,
+    )
+    finite_signal = growth_signal[np.isfinite(growth_signal)]
+    if finite_signal.size == 0:
+        return float("-inf")
+
+    if top_k is None:
+        return float(np.nanmax(finite_signal))
+    if top_k < 1:
+        raise ValueError(f"top_k must be >= 1 when provided; got {top_k}.")
+    k = min(int(top_k), int(finite_signal.size))
+    top_values = np.partition(finite_signal, finite_signal.size - k)[-k:]
+    return float(np.nanmean(top_values))
 
 
 def _select_root_candidates(
@@ -364,8 +434,11 @@ def _select_root_candidates(
     seed: int,
     candidate_count: int,
     selected_count: int,
+    weights: np.ndarray,
+    dt: float,
+    score_top_k: int | None = None,
 ) -> tuple[list[tuple[int, DrumProfile, float]], list[dict[str, float | int | bool]]]:
-    """Generate candidate roots, score uncertainty, and return the top roots."""
+    """Generate candidate roots, score uncertainty growth, and return the top roots."""
     if selected_count < 1:
         raise ValueError("selected_count must be >= 1.")
     if candidate_count < selected_count:
@@ -382,7 +455,13 @@ def _select_root_candidates(
             baseline_angle_deg=baseline_angle_deg,
             seed=candidate_seed,
         )
-        score = _score_root_uncertainty(forecaster, profile)
+        score = _score_root_uncertainty_growth(
+            forecaster,
+            profile,
+            weights=weights,
+            dt=dt,
+            top_k=score_top_k,
+        )
         candidates.append((candidate_idx, profile, score))
 
     ranked = sorted(candidates, key=lambda item: item[2], reverse=True)
@@ -392,6 +471,7 @@ def _select_root_candidates(
             "candidate_index": int(candidate_idx),
             "candidate_seed": int(seed + candidate_idx),
             "uncertainty_score": float(score),
+            "uncertainty_growth_score": float(score),
             "rank": int(rank),
             "selected": bool(candidate_idx in selected_indices),
         }
@@ -1013,6 +1093,9 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
         seed=config.seed,
         candidate_count=root_candidate_count,
         selected_count=config.Nr,
+        weights=weights,
+        dt=config.dt,
+        score_top_k=config.root_score_top_k,
     )
     candidate_summary_path = config.output_dir / "root_candidate_selection.json"
     candidate_summary_path.write_text(
@@ -1020,7 +1103,8 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
             {
                 "root_candidate_count": root_candidate_count,
                 "selected_root_count": int(config.Nr),
-                "score": "mean_2sigma_uncertainty_over_horizon_and_targets",
+                "score": "positive_target_weighted_uncertainty_derivative",
+                "score_reduction": "max" if config.root_score_top_k is None else f"mean_top_{config.root_score_top_k}",
                 "candidates": root_candidate_summary,
             },
             indent=2,
@@ -1029,7 +1113,7 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
     )
     print(
         f"[root-selection] selected top {config.Nr} of {root_candidate_count} candidate roots by "
-        f"mean ensemble 2-sigma uncertainty. Summary: {candidate_summary_path}"
+        f"positive target-weighted uncertainty derivative. Summary: {candidate_summary_path}"
     )
     for root_idx, (candidate_idx, root, candidate_score) in enumerate(selected_roots):
         result = run_recursive_branching(
