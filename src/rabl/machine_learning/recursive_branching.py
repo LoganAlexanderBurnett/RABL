@@ -65,6 +65,7 @@ class ProfileNode:
     parent_profile_id: str | None = None
     created_in_interval: int | None = None
     branch_time: float | None = None
+    branch_end_time: float | None = None
     branch_label: int | None = None
 
 
@@ -77,6 +78,7 @@ class BranchEvent:
     interval_index: int
     branch_time: float
     branch_label: int
+    branch_end_time: float | None = None
 
 
 @dataclass(frozen=True)
@@ -263,6 +265,7 @@ def _append_manifest(
                 "parent_profile_id": "" if node.parent_profile_id is None else node.parent_profile_id,
                 "created_in_interval": -1 if node.created_in_interval is None else int(node.created_in_interval),
                 "branch_time": None if node.branch_time is None else float(node.branch_time),
+                "branch_end_time": None if node.branch_end_time is None else float(node.branch_end_time),
                 "branch_label": -1 if node.branch_label is None else int(node.branch_label),
                 "mat_file": mat_path.name,
             }
@@ -611,11 +614,21 @@ def _truncate_profile(profile: DrumProfile, *, end_time: float) -> DrumProfile:
     if not np.any(mask):
         raise ValueError(f"No profile samples remain after truncating at end_time={end_time}.")
 
+    t_out = np.asarray(profile.t, dtype=float)[mask]
+    theta_out = np.asarray(profile.theta_deg, dtype=float)[mask]
+    v_out = np.asarray(profile.v_deg_s, dtype=float)[mask]
+    a_out = np.asarray(profile.a_deg_s2, dtype=float)[mask]
+    if t_out[-1] < float(end_time) - tol:
+        t_out = np.append(t_out, float(end_time))
+        theta_out = np.append(theta_out, np.interp(float(end_time), t, np.asarray(profile.theta_deg, dtype=float)))
+        v_out = np.append(v_out, np.interp(float(end_time), t, np.asarray(profile.v_deg_s, dtype=float)))
+        a_out = np.append(a_out, np.interp(float(end_time), t, np.asarray(profile.a_deg_s2, dtype=float)))
+
     return DrumProfile(
-        t=np.asarray(profile.t, dtype=float)[mask],
-        theta_deg=np.asarray(profile.theta_deg, dtype=float)[mask],
-        v_deg_s=np.asarray(profile.v_deg_s, dtype=float)[mask],
-        a_deg_s2=np.asarray(profile.a_deg_s2, dtype=float)[mask],
+        t=t_out,
+        theta_deg=theta_out,
+        v_deg_s=v_out,
+        a_deg_s2=a_out,
     )
 
 
@@ -734,6 +747,7 @@ def run_nonrecursive_finite_horizon_branching(
                 parent_profile_id="profile_00000",
                 created_in_interval=interval.index,
                 branch_time=t_branch,
+                branch_end_time=branch_end_time,
                 branch_label=branch_label,
             )
             branch_events.append(
@@ -743,6 +757,7 @@ def run_nonrecursive_finite_horizon_branching(
                     interval_index=interval.index,
                     branch_time=t_branch,
                     branch_label=branch_label,
+                    branch_end_time=branch_end_time,
                 )
             )
 
@@ -979,6 +994,7 @@ def save_recursive_branching_output(
             grp.attrs["parent_profile_id"] = "" if node.parent_profile_id is None else node.parent_profile_id
             grp.attrs["created_in_interval"] = -1 if node.created_in_interval is None else node.created_in_interval
             grp.attrs["branch_time"] = np.nan if node.branch_time is None else node.branch_time
+            grp.attrs["branch_end_time"] = np.nan if node.branch_end_time is None else node.branch_end_time
             grp.attrs["branch_label"] = -1 if node.branch_label is None else node.branch_label
 
 

@@ -48,6 +48,7 @@ class BranchLineageEntry:
     profile_id: str
     parent_profile_id: str | None
     branch_time: float | None
+    branch_end_time: float | None = None
     source_stem: str | None = None
 
 
@@ -249,6 +250,8 @@ def _load_branch_lineage_from_batch_summary(batch_dir: Path) -> dict[str, Branch
         parent = str(row.get("parent_profile_id", "")).strip() or None
         branch_time_raw = row.get("branch_time_s", "")
         branch_time = None if branch_time_raw in (None, "") else float(branch_time_raw)
+        branch_end_time_raw = row.get("branch_end_time_s", row.get("stop_time_s", ""))
+        branch_end_time = None if branch_end_time_raw in (None, "") else float(branch_end_time_raw)
         if parent is not None and branch_time is None:
             raise SystemExit(f"Missing branch_time_s for {root_id}/{profile_id} in {summary_path}")
         mapping[copied_stem] = BranchLineageEntry(
@@ -258,6 +261,7 @@ def _load_branch_lineage_from_batch_summary(batch_dir: Path) -> dict[str, Branch
             profile_id=profile_id,
             parent_profile_id=parent,
             branch_time=branch_time,
+            branch_end_time=branch_end_time,
         )
     return mapping
 
@@ -283,6 +287,8 @@ def _load_branch_lineage(batch_dirs: list[Path]) -> dict[Path, dict[str, BranchL
             parent = str(entry.get("parent_profile_id", "")).strip() or None
             branch_time_raw = entry.get("branch_time", entry.get("branch_time_s"))
             branch_time = None if branch_time_raw in (None, "") else float(branch_time_raw)
+            branch_end_time_raw = entry.get("branch_end_time", entry.get("branch_end_time_s"))
+            branch_end_time = None if branch_end_time_raw in (None, "") else float(branch_end_time_raw)
             if parent is not None and branch_time is None:
                 raise SystemExit(f"Branch lineage entry missing branch_time for {root_id}/{profile_id} in {lineage_path}")
             mapping[result_stem] = BranchLineageEntry(
@@ -292,6 +298,7 @@ def _load_branch_lineage(batch_dirs: list[Path]) -> dict[Path, dict[str, BranchL
                 profile_id=profile_id,
                 parent_profile_id=parent,
                 branch_time=branch_time,
+                branch_end_time=branch_end_time,
             )
         lineage_by_batch[batch_dir.resolve()] = mapping
     return lineage_by_batch
@@ -503,6 +510,9 @@ def build_dataset(
                 file_group.attrs["branch_profile_id"] = lineage.profile_id
                 file_group.attrs["branch_parent_profile_id"] = lineage.parent_profile_id or ""
                 file_group.attrs["branch_time"] = np.nan if lineage.branch_time is None else float(lineage.branch_time)
+                file_group.attrs["branch_end_time"] = (
+                    np.nan if lineage.branch_end_time is None else float(lineage.branch_end_time)
+                )
                 if lineage.source_stem:
                     file_group.attrs["branch_source_stem"] = lineage.source_stem
             total_samples += x_seq.shape[0]

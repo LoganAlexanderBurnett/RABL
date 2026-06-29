@@ -555,6 +555,7 @@ def _copy_branched_results_to_batch_root_with_global_numbering(
                 "profile_id": profile_id,
                 "parent_profile_id": str(manifest_entry.get("parent_profile_id", "")).strip(),
                 "branch_time": manifest_entry.get("branch_time"),
+                "branch_end_time": manifest_entry.get("branch_end_time"),
             }
         )
         copied += 1

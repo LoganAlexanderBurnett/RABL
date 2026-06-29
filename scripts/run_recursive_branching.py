@@ -423,6 +423,7 @@ def _run_single_recursive_branching_workflow(
                 "parent_profile_id": event.parent_profile_id,
                 "interval_index": event.interval_index,
                 "branch_time": event.branch_time,
+                "branch_end_time": event.branch_end_time,
                 "branch_label": event.branch_label,
             }
             for event in result.branch_events
@@ -570,6 +571,7 @@ def _append_branched_profile_manifest(
                 "parent_profile_id": "" if node.parent_profile_id is None else node.parent_profile_id,
                 "created_in_interval": -1 if node.created_in_interval is None else int(node.created_in_interval),
                 "branch_time": None if node.branch_time is None else float(node.branch_time),
+                "branch_end_time": None if node.branch_end_time is None else float(node.branch_end_time),
                 "branch_label": -1 if node.branch_label is None else int(node.branch_label),
                 "mat_file": mat_path.name,
             }
