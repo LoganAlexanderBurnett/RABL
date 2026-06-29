@@ -433,8 +433,16 @@ class DymolaBatchRunner:
             theta_deg = np.asarray(table[:, 1], dtype=float)
             v_deg_s = np.asarray(table[:, 2], dtype=float)
             a_deg_s2 = np.asarray(table[:, 3], dtype=float)
-            branch_end_time = None if branch_end_time_raw is None else float(branch_end_time_raw)
-            stop_time = float(t[-1]) if branch_end_time is None else branch_end_time
+            branch_end_time = None
+            if branch_end_time_raw not in (None, ""):
+                branch_end_time_value = float(branch_end_time_raw)
+                branch_end_time = branch_end_time_value if np.isfinite(branch_end_time_value) else None
+            if parent_profile_id is None:
+                stop_time = float(t[-1])
+            elif branch_end_time is None:
+                stop_time = float(t[-1])
+            else:
+                stop_time = branch_end_time
 
             nodes.append(BranchNode(
                 root_id=root_id,
