@@ -42,16 +42,18 @@ def _write_h5(path: Path, groups: dict[str, tuple[np.ndarray, np.ndarray, dict]]
             group.attrs["num_samples"] = x.shape[0]
 
 
-def test_check_added_branch_samples_passes_for_parent_padded_branch(tmp_path: Path) -> None:
-    root_csv = tmp_path / "results_drum_profile_00001.csv"
-    branch_csv = tmp_path / "results_drum_profile_00002.csv"
+def test_check_added_branch_samples_passes_for_parent_padded_branch_with_sim_profiles_override(tmp_path: Path) -> None:
+    sim_profiles_dir = tmp_path / "sim_profiles"
+    batch_dir = sim_profiles_dir / "batch_0001"
+    root_csv = batch_dir / "results_drum_profile_00001.csv"
+    branch_csv = batch_dir / "results_drum_profile_00002.csv"
     _write_csv(root_csv, [0.0, 1.0, 2.0], [10.0, 11.0, 12.0], [20.0, 21.0, 22.0])
     _write_csv(branch_csv, [2.5, 3.0, 3.5], [100.0, 101.0, 102.0], [200.0, 201.0, 202.0])
 
     root_x = np.asarray([[[10.0, 20.0], [11.0, 21.0], [12.0, 22.0]]])
     root_y = np.asarray([[13.0]])
     root_attrs = {
-        "source_file": str(root_csv),
+        "source_file": "/stale/machine/sim_profiles/batch_0001/results_drum_profile_00001.csv",
         "history_rows_prepended": 3,
         "branch_root_id": "root_001",
         "branch_profile_id": "profile_000000",
@@ -64,7 +66,7 @@ def test_check_added_branch_samples_passes_for_parent_padded_branch(tmp_path: Pa
     ])
     branch_y = np.asarray([[101.0], [102.0]])
     branch_attrs = {
-        "source_file": str(branch_csv),
+        "source_file": "/stale/machine/sim_profiles/batch_0001/results_drum_profile_00002.csv",
         "history_rows_prepended": 2,
         "branch_root_id": "root_001",
         "branch_profile_id": "profile_000001",
@@ -85,7 +87,7 @@ def test_check_added_branch_samples_passes_for_parent_padded_branch(tmp_path: Pa
     )
 
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), str(before), str(after)],
+        [sys.executable, str(SCRIPT), str(before), str(after), "--sim-profiles-dir", str(sim_profiles_dir)],
         text=True,
         capture_output=True,
         check=False,
@@ -94,6 +96,7 @@ def test_check_added_branch_samples_passes_for_parent_padded_branch(tmp_path: Pa
     assert result.returncode == 0, result.stderr + result.stdout
     assert '"added_sample_count": 2' in result.stdout
     assert '"plot_count": 2' in result.stdout
+    assert str(sim_profiles_dir) in result.stdout
     assert (tmp_path / "after_added_samples_preview.png").exists()
     assert '"problems": []' in result.stdout
 

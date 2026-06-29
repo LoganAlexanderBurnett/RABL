@@ -129,15 +129,34 @@ def _read_csv(path: Path, columns: Iterable[str]) -> tuple[np.ndarray, np.ndarra
     return data[:, 0], data[:, 1:-1], data[:, -1:]
 
 
-def _source_path(profile: ProfileArrays) -> Path | None:
+def _source_path(profile: ProfileArrays, sim_profiles_dir: Path | None = None) -> Path | None:
     raw = str(profile.attrs.get("source_file", "")).strip()
-    return Path(raw) if raw else None
+    if not raw:
+        return None
+    source = Path(raw)
+    if sim_profiles_dir is None:
+        return source
+
+    # Dataset files often contain absolute source paths from the machine that
+    # built them.  Allow callers to relocate those paths under a local
+    # sim_profiles directory by preserving the batch_XXXX-relative suffix.
+    for idx, part in enumerate(source.parts):
+        if part.startswith("batch_"):
+            return sim_profiles_dir.joinpath(*source.parts[idx:])
+
+    candidate = sim_profiles_dir / source.name
+    if candidate.exists():
+        return candidate
+    matches = list(sim_profiles_dir.glob(f"batch_*/{source.name}"))
+    if len(matches) == 1:
+        return matches[0]
+    return candidate
 
 
-def _lineage_key(profile: ProfileArrays) -> tuple[str, str, str] | None:
+def _lineage_key(profile: ProfileArrays, sim_profiles_dir: Path | None = None) -> tuple[str, str, str] | None:
     root = str(profile.attrs.get("branch_root_id", "")).strip()
     pid = str(profile.attrs.get("branch_profile_id", "")).strip()
-    source = _source_path(profile)
+    source = _source_path(profile, sim_profiles_dir)
     if not root or not pid or source is None:
         return None
     return (str(source.parent.resolve()), root, pid)
@@ -150,9 +169,10 @@ def _collect_parent_history(
     control_name: str,
     cutoff_time: float,
     rows_needed: int,
+    sim_profiles_dir: Path | None = None,
     stack: tuple[tuple[str, str, str], ...] = (),
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    source = _source_path(profile)
+    source = _source_path(profile, sim_profiles_dir)
     if source is None:
         raise RuntimeError(f"{profile.name}: missing source_file attr.")
     t, states, control = _read_csv(source, ["t", *state_names, control_name])
@@ -167,7 +187,7 @@ def _collect_parent_history(
         raise RuntimeError(
             f"{profile.name}: only {own_t.size} pre-branch rows available and no parent lineage to fill {missing} rows."
         )
-    key = _lineage_key(profile)
+    key = _lineage_key(profile, sim_profiles_dir)
     if key is None:
         raise RuntimeError(f"{profile.name}: missing lineage attrs needed to find parent.")
     if key in stack:
@@ -186,6 +206,7 @@ def _collect_parent_history(
         control_name,
         float(parent_branch_time_raw),
         missing,
+        sim_profiles_dir,
         stack + (key,),
     )
     return np.concatenate([parent_t, own_t]), np.vstack([parent_states, own_states]), np.vstack([parent_control, own_control])
@@ -203,6 +224,7 @@ def _validate_branch_profile(
     lookback: int,
     atol: float,
     rtol: float,
+    sim_profiles_dir: Path | None = None,
 ) -> list[str]:
     problems: list[str] = []
     prefix = f"{profile.name}: "
@@ -228,7 +250,7 @@ def _validate_branch_profile(
         problems.append(prefix + "missing branch_time attr.")
         return problems
     branch_time = float(branch_time_raw)
-    source = _source_path(profile)
+    source = _source_path(profile, sim_profiles_dir)
     if source is None or not source.exists():
         problems.append(prefix + f"source_file is missing or unreadable: {source}")
         return problems
@@ -252,7 +274,7 @@ def _validate_branch_profile(
         problems.append(prefix + f"num_samples attr={attr_num}, but X has {profile.x.shape[0]} rows.")
 
     parent_id = str(profile.attrs.get("branch_parent_profile_id", "")).strip()
-    key = _lineage_key(profile)
+    key = _lineage_key(profile, sim_profiles_dir)
     if key is None or not parent_id:
         problems.append(prefix + "missing lineage attrs required for parent-history validation.")
         return problems
@@ -263,7 +285,7 @@ def _validate_branch_profile(
 
     try:
         hist_t, hist_states, hist_control = _collect_parent_history(
-            parent, profiles_by_key, state_names, control_name, branch_time, lookback
+            parent, profiles_by_key, state_names, control_name, branch_time, lookback, sim_profiles_dir
         )
     except Exception as exc:  # noqa: BLE001
         problems.append(prefix + f"could not collect parent history: {exc}")
@@ -358,7 +380,17 @@ def main() -> int:
     parser.add_argument("--plot-out", type=Path, default=None, help="Output path for a 4x4 preview plot of newly added samples.")
     parser.add_argument("--plot-count", type=int, default=10, help="Maximum number of newly added samples to overlay in the preview plot.")
     parser.add_argument("--no-plot", action="store_true", help="Disable preview plot generation.")
+    parser.add_argument(
+        "--sim-profiles-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Local sim_profiles directory to use when source_file attrs in the HDF5 point "
+            "to another machine or stale absolute path. Batch-relative suffixes are preserved."
+        ),
+    )
     args = parser.parse_args()
+    sim_profiles_dir = args.sim_profiles_dir.resolve() if args.sim_profiles_dir is not None else None
 
     before_profiles, before_counts, _before_refs, before_features = _load_profiles(args.before)
     after_profiles, after_counts, after_refs, after_features = _load_profiles(args.after)
@@ -377,7 +409,7 @@ def main() -> int:
 
     profiles_by_key: dict[tuple[str, str, str], ProfileArrays] = {}
     for profile in after_profiles.values():
-        key = _lineage_key(profile)
+        key = _lineage_key(profile, sim_profiles_dir)
         if key is not None:
             profiles_by_key[key] = profile
 
@@ -390,7 +422,7 @@ def main() -> int:
     for name in branch_added:
         problems.extend(
             _validate_branch_profile(
-                after_profiles[name], profiles_by_key, state_names, control_name, lookback, args.atol, args.rtol
+                after_profiles[name], profiles_by_key, state_names, control_name, lookback, args.atol, args.rtol, sim_profiles_dir
             )
         )
 
@@ -415,6 +447,7 @@ def main() -> int:
         "lookback": lookback,
         "state_feature_names": state_names,
         "control_feature_name": control_name,
+        "sim_profiles_dir": None if sim_profiles_dir is None else str(sim_profiles_dir),
         "before_profile_count": len(before_profiles),
         "after_profile_count": len(after_profiles),
         "new_profile_count": len(new_profile_names),
