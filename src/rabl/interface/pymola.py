@@ -481,13 +481,30 @@ class DymolaBatchRunner:
                         raise ValueError(f"Missing parent {node.parent_profile_id} for {root_id}/{pid}")
                     if node.branch_time is None:
                         raise ValueError(f"Child node {root_id}/{pid} missing branch_time")
-                    if node.branch_time < float(node.t[0]) or node.branch_time > float(node.t[-1]):
-                        raise ValueError(f"Invalid branch_time for {root_id}/{pid}")
-                    if node.stop_time < node.branch_time or node.stop_time > float(node.t[-1]):
-                        raise ValueError(f"Invalid branch_end_time/stop_time for {root_id}/{pid}")
+                    branch_tol = _branch_time_snap_tolerance(float(node.branch_time))
+                    stop_tol = _branch_time_snap_tolerance(float(node.stop_time))
+                    node_start = float(node.t[0])
+                    node_end = float(node.t[-1])
+                    if node.branch_time < node_start - branch_tol or node.branch_time > node_end + branch_tol:
+                        raise ValueError(
+                            f"Invalid branch_time for {root_id}/{pid}: "
+                            f"branch_time={node.branch_time}, profile_range=[{node_start}, {node_end}], tol={branch_tol}"
+                        )
+                    if node.stop_time < node.branch_time - stop_tol or node.stop_time > node_end + stop_tol:
+                        raise ValueError(
+                            f"Invalid branch_end_time/stop_time for {root_id}/{pid}: "
+                            f"branch_time={node.branch_time}, stop_time={node.stop_time}, "
+                            f"profile_end={node_end}, tol={stop_tol}"
+                        )
                     parent = mapping[node.parent_profile_id]
-                    if node.branch_time < float(parent.t[0]) or node.branch_time > float(parent.t[-1]):
-                        raise ValueError(f"branch_time out of parent range for {root_id}/{pid}")
+                    parent_start = float(parent.t[0])
+                    parent_end = float(parent.t[-1])
+                    if node.branch_time < parent_start - branch_tol or node.branch_time > parent_end + branch_tol:
+                        raise ValueError(
+                            f"branch_time out of parent range for {root_id}/{pid}: "
+                            f"branch_time={node.branch_time}, parent_range=[{parent_start}, {parent_end}], "
+                            f"tol={branch_tol}"
+                        )
                     depths[pid] = depth(node.parent_profile_id) + 1
                 return depths[pid]
 
