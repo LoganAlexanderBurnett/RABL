@@ -81,6 +81,11 @@
   "branching": {
     "N_r": 11,
     "root_candidate_count": 50,
+    "branching_mode": "recursive",
+    "branch_horizon": 40.0,
+    "root_score_metric": "positive_weighted_uncertainty_derivative",
+    "root_score_top_k": null,
+    "simulate_root_for_training": false,
     "N_k": 2,
     "N_b": 2,
     "device": "cpu",

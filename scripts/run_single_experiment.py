@@ -604,7 +604,18 @@ def _run_recursive_branching_internal(
         Nk=int(cfg.branching["N_k"]),
         Nb=int(cfg.branching["N_b"]),
         Nr=int(cfg.branching["N_r"]),
+        branching_mode=str(cfg.branching.get("branching_mode", "recursive")).replace("-", "_"),
+        branch_horizon=float(cfg.branching.get("branch_horizon", 40.0)),
         root_candidate_count=int(cfg.branching.get("root_candidate_count", cfg.branching["N_r"])),
+        root_score_metric=str(
+            cfg.branching.get("root_score_metric", "positive_weighted_uncertainty_derivative")
+        ),
+        root_score_top_k=(
+            None
+            if cfg.branching.get("root_score_top_k") is None
+            else int(cfg.branching["root_score_top_k"])
+        ),
+        simulate_root_for_training=bool(cfg.branching.get("simulate_root_for_training", False)),
         baseline_angle_deg=float(variography_params["BASELINE_ANGLE_DEG"]),
         seed=int(seed),
         lookback=int(cfg.lookback),
@@ -2413,10 +2424,26 @@ def main() -> None:
         raise SystemExit("strategy must be branching or random.")
     branching_selected_roots = int(cfg.branching["N_r"])
     branching_candidate_roots = int(cfg.branching.get("root_candidate_count", branching_selected_roots))
+    branching_mode = str(cfg.branching.get("branching_mode", "recursive")).replace("-", "_")
+    branching_root_score_metric = str(
+        cfg.branching.get("root_score_metric", "positive_weighted_uncertainty_derivative")
+    )
+    branching_root_score_top_k = cfg.branching.get("root_score_top_k")
     if branching_selected_roots < 1:
         raise SystemExit("branching.N_r must be >= 1.")
     if branching_candidate_roots < branching_selected_roots:
         raise SystemExit("branching.root_candidate_count must be >= branching.N_r.")
+    if branching_mode not in {"recursive", "nonrecursive_finite"}:
+        raise SystemExit("branching.branching_mode must be 'recursive' or 'nonrecursive_finite'.")
+    if float(cfg.branching.get("branch_horizon", 40.0)) <= 0:
+        raise SystemExit("branching.branch_horizon must be > 0.")
+    if branching_root_score_metric != "positive_weighted_uncertainty_derivative":
+        raise SystemExit(
+            "branching.root_score_metric currently supports only "
+            "'positive_weighted_uncertainty_derivative'."
+        )
+    if branching_root_score_top_k is not None and int(branching_root_score_top_k) < 1:
+        raise SystemExit("branching.root_score_top_k must be null or >= 1.")
     if cfg.random_profiles_per_cycle is not None and int(cfg.random_profiles_per_cycle) < 1:
         raise SystemExit("random_profiles_per_cycle must be a positive integer when provided.")
     if bool(cfg.use_single_model_test_eval) and int(cfg.single_model_seed_count) < 1:
