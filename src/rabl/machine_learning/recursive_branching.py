@@ -101,7 +101,11 @@ class RecursiveBranchingBatchConfig:
     Nk: int = 3
     Nb: int = 2
     Nr: int = 1
+    branching_mode: str = "recursive"
+    branch_horizon: float = 40.0
     root_candidate_count: int | None = None
+    root_score_metric: str = "positive_weighted_uncertainty_derivative"
+    simulate_root_for_training: bool = False
     baseline_angle_deg: float = 45.0
     seed: int = 123
     lookback: int = 12
@@ -1214,6 +1218,15 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
     config.output_dir.mkdir(parents=True, exist_ok=True)
     if config.Nr < 1:
         raise ValueError("Nr must be >=1.")
+    branching_mode = str(config.branching_mode).replace("-", "_")
+    if branching_mode not in {"recursive", "nonrecursive_finite"}:
+        raise ValueError("branching_mode must be 'recursive' or 'nonrecursive_finite'.")
+    if config.branch_horizon <= 0:
+        raise ValueError(f"branch_horizon must be positive; got {config.branch_horizon}.")
+    if config.root_score_metric != "positive_weighted_uncertainty_derivative":
+        raise ValueError(
+            "root_score_metric currently supports only 'positive_weighted_uncertainty_derivative'."
+        )
     root_candidate_count = int(config.root_candidate_count or config.Nr)
     if root_candidate_count < config.Nr:
         raise ValueError(
@@ -1314,8 +1327,11 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
             {
                 "root_candidate_count": root_candidate_count,
                 "selected_root_count": int(config.Nr),
-                "score": "positive_target_weighted_uncertainty_derivative",
+                "score": config.root_score_metric,
                 "score_reduction": "max" if config.root_score_top_k is None else f"mean_top_{config.root_score_top_k}",
+                "branching_mode": branching_mode,
+                "branch_horizon": float(config.branch_horizon),
+                "simulate_root_for_training": bool(config.simulate_root_for_training),
                 "candidates": root_candidate_summary,
             },
             indent=2,
@@ -1324,21 +1340,48 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
     )
     print(
         f"[root-selection] selected top {config.Nr} of {root_candidate_count} candidate roots by "
-        f"positive target-weighted uncertainty derivative. Summary: {candidate_summary_path}"
+        f"{config.root_score_metric}. Summary: {candidate_summary_path}"
+    )
+    expected_branch_count = int(config.Nr * config.Nk * config.Nb)
+    print(
+        f"[branching-config] mode={branching_mode} branch_horizon={config.branch_horizon} "
+        f"root_candidate_count={root_candidate_count} expected_nonrecursive_branch_count={expected_branch_count}"
     )
     for root_idx, (candidate_idx, root, candidate_score) in enumerate(selected_roots):
-        result = run_recursive_branching(
-            forecaster=forecaster,
-            generator=generator,
-            root_profile=root,
-            n_intervals=config.Nk,
-            n_branches=config.Nb,
-            weights=weights,
-            finite_difference_order=config.finite_difference_order,
-            branch_time_min=config.branch_time_min,
-            branch_time_max=config.branch_time_max,
-            seed=config.seed + int(candidate_idx),
-            verbose=True,
+        if branching_mode == "recursive":
+            result = run_recursive_branching(
+                forecaster=forecaster,
+                generator=generator,
+                root_profile=root,
+                n_intervals=config.Nk,
+                n_branches=config.Nb,
+                weights=weights,
+                finite_difference_order=config.finite_difference_order,
+                branch_time_min=config.branch_time_min,
+                branch_time_max=config.branch_time_max,
+                seed=config.seed + int(candidate_idx),
+                verbose=True,
+            )
+        else:
+            result = run_nonrecursive_finite_horizon_branching(
+                forecaster=forecaster,
+                generator=generator,
+                root_profile=root,
+                n_intervals=config.Nk,
+                n_branches=config.Nb,
+                weights=weights,
+                branch_horizon=config.branch_horizon,
+                finite_difference_order=config.finite_difference_order,
+                branch_time_min=config.branch_time_min,
+                branch_time_max=config.branch_time_max,
+                seed=config.seed + int(candidate_idx),
+                verbose=True,
+            )
+        skipped_branch_count = max(0, config.Nk * config.Nb - len(result.branch_events))
+        print(
+            f"[branching-summary] root={root_idx + 1}/{config.Nr} selected_root_score={candidate_score:.6g} "
+            f"branch_events={len(result.branch_events)} expected_for_root={config.Nk * config.Nb} "
+            f"skipped_branch_count={skipped_branch_count}"
         )
         root_group = f"root_{root_idx + 1:03d}"
         branched_profiles_plot = _plot_branched_profiles(
