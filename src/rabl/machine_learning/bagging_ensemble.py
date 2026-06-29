@@ -992,6 +992,7 @@ def run_bagging_ensemble(
     forecast_num_workers: int = 4,
     plot_bag_distributions: bool = True,
     save_member_forecasts: bool = True,
+    save_test_forecasts: bool = True,
 ) -> dict[str, Any]:
     config = BaggingEnsembleConfig(
         n_models=n_models,
@@ -1095,19 +1096,23 @@ def run_bagging_ensemble(
     if config.verbose >= 1 and training_curves_plot is not None:
         print(f"[bagging] saved ensemble training curves plot: {training_curves_plot}")
 
-    forecast_output_path = out_dir / "rolling_forecasts.h5"
-    test_profile_ds = ProfileDataset(bagged_h5_path, _get_profile_names(bagged_h5_path, "test"), "test")
-    ensemble_rolling_forecast_and_save(
-        models,
-        test_profile_ds,
-        h5_path=bagged_h5_path,
-        output_path=forecast_output_path,
-        state_dim=STATE_DIM,
-        control_channel=0,
-        target_names=list(TARGET_NAMES),
-        num_workers=forecast_num_workers,
-        save_member_forecasts=save_member_forecasts,
-    )
+    forecast_output_path: Path | None = None
+    if save_test_forecasts:
+        forecast_output_path = out_dir / "rolling_forecasts.h5"
+        test_profile_ds = ProfileDataset(bagged_h5_path, _get_profile_names(bagged_h5_path, "test"), "test")
+        ensemble_rolling_forecast_and_save(
+            models,
+            test_profile_ds,
+            h5_path=bagged_h5_path,
+            output_path=forecast_output_path,
+            state_dim=STATE_DIM,
+            control_channel=0,
+            target_names=list(TARGET_NAMES),
+            num_workers=forecast_num_workers,
+            save_member_forecasts=save_member_forecasts,
+        )
+    elif config.verbose >= 1:
+        print("[bagging] skipping ensemble rolling forecasts (save_test_forecasts=False).")
 
     return {
         "bagged_h5_path": bagged_h5_path,
@@ -1118,4 +1123,5 @@ def run_bagging_ensemble(
         "bag_distribution_overlap_plot": bag_distribution_overlap_plot,
         "training_curves_plot": training_curves_plot,
         "save_member_forecasts": bool(save_member_forecasts),
+        "save_test_forecasts": bool(save_test_forecasts),
     }

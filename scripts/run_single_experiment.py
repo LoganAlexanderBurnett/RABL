@@ -2663,6 +2663,7 @@ def main() -> None:
                 forecast_num_workers=int(cfg.ensemble_forecast_num_workers),
                 plot_bag_distributions=bool(cfg.plot_bag_distributions),
                 save_member_forecasts=save_member_forecasts_for_cycle,
+                save_test_forecasts=train_ensemble_for_eval,
             )
             step_times["ensemble_training_sec"] = perf_counter() - t0
         else:
