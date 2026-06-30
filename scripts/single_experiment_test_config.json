@@ -8,6 +8,7 @@
   "dataset_build_verbose": false,
   "skip_hyperparameter_tuning": true,
   "use_single_model_test_eval": true,
+  "test_forecast_mode": "autoregressive",
   "single_model_seed_count": 1,
   "single_model_seeds": [101, 202, 303],
   "initial_sim_batches": [

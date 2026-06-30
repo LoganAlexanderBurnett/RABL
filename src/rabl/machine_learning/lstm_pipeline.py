@@ -1224,6 +1224,26 @@ def rolling_forecast(model: nn.Module, x_profile: np.ndarray, *, state_dim: int 
     return np.asarray(preds, dtype=np.float32)
 
 
+def teacher_forcing_forecast(model: nn.Module, x_profile: np.ndarray) -> np.ndarray:
+    """
+    One-step-ahead forecast over a single profile using ground-truth history.
+
+    Unlike :func:`rolling_forecast`, this does not feed predictions back into
+    later input windows. Each timestep prediction is made from the corresponding
+    prebuilt dataset window, whose state-history channels contain ground-truth
+    values.
+    """
+    if x_profile.ndim != 3:
+        raise ValueError(f"x_profile must be (steps,timesteps,features), got {x_profile.shape}")
+
+    model.eval()
+    device = next(model.parameters()).device
+    with torch.no_grad():
+        input_tensor = torch.from_numpy(x_profile).to(device)
+        pred = model(input_tensor).cpu().numpy()
+    return np.asarray(pred, dtype=np.float32)
+
+
 def _extract_control_series(
     x_profile: np.ndarray,
     *,
@@ -1265,6 +1285,7 @@ def save_rolling_forecasts_hdf5(
     *,
     output_path: Path,
     target_names: list[str],
+    forecast_mode: str = "autoregressive",
 ) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1283,6 +1304,10 @@ def save_rolling_forecasts_hdf5(
             group.create_dataset("rmse", data=entry["rmse"])
             group.create_dataset("mape", data=entry["mape"])
             group.attrs["columns"] = column_attr
+            group.attrs["forecast_mode"] = str(forecast_mode)
+            group.attrs["plot_title"] = (
+                f"{str(forecast_mode).replace('_', ' ').title()} Forecast - {entry['profile']}"
+            )
 
 
 def test_and_save_forecasts(
@@ -1295,12 +1320,16 @@ def test_and_save_forecasts(
     control_channel: int = 0,
     target_names: list[str] | None = None,
     output_name: str = "rolling_forecasts.h5",
+    forecast_mode: str = "autoregressive",
     max_plots: int = 0,
     plot_callback: Callable[..., None] | None = None,
     use_tqdm: bool = True,
     verbose: int = 1,
     num_workers: int = 4,
 ) -> dict[str, float]:
+    forecast_mode = str(forecast_mode).replace("-", "_")
+    if forecast_mode not in {"autoregressive", "teacher_forcing"}:
+        raise ValueError("forecast_mode must be either 'autoregressive' or 'teacher_forcing'.")
     if target_names is None:
         target_names = list(TARGET_NAMES)
     out_dir = Path(out_dir)
@@ -1319,7 +1348,10 @@ def test_and_save_forecasts(
         x_np = x_profile.numpy()
         y_np = y_profile.numpy()
         inference_start = perf_counter()
-        y_pred = rolling_forecast(model, x_np, state_dim=state_dim)
+        if forecast_mode == "teacher_forcing":
+            y_pred = teacher_forcing_forecast(model, x_np)
+        else:
+            y_pred = rolling_forecast(model, x_np, state_dim=state_dim)
         inference_time = perf_counter() - inference_start
 
         y_true = y_np
@@ -1380,7 +1412,7 @@ def test_and_save_forecasts(
                     x_profile=x_plot,
                     y_true=rec["y_true"],
                     y_pred=rec["y_pred_out"],
-                    title=f"Rolling Forecast - {profile_name}",
+                    title=f"{forecast_mode.replace('_', ' ').title()} Forecast - {profile_name}",
                     save_path=save_path,
                 )
     else:
@@ -1409,7 +1441,7 @@ def test_and_save_forecasts(
                         x_profile=x_plot,
                         y_true=rec["y_true"],
                         y_pred=rec["y_pred_out"],
-                        title=f"Rolling Forecast - {profile_name}",
+                        title=f"{forecast_mode.replace('_', ' ').title()} Forecast - {profile_name}",
                         save_path=save_path,
                     )
                 if use_tqdm and hasattr(progress, "set_postfix"):
@@ -1422,6 +1454,7 @@ def test_and_save_forecasts(
         forecasts,
         output_path=out_dir / output_name,
         target_names=target_names,
+        forecast_mode=forecast_mode,
     )
     save_time_s = perf_counter() - save_start
 
@@ -1445,6 +1478,7 @@ def test_and_save_forecasts(
         "total_fetch_s": total_fetch,
         "total_test_s": total_test,
         "save_time_s": save_time_s,
+        "forecast_mode": forecast_mode,
     }
 
 
