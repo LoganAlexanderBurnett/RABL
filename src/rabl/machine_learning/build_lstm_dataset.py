@@ -48,6 +48,7 @@ class BranchLineageEntry:
     profile_id: str
     parent_profile_id: str | None
     branch_time: float | None
+    branch_end_time: float | None = None
     source_stem: str | None = None
 
 
@@ -148,6 +149,22 @@ def _read_profile_data(csv_path: Path, lineage: BranchLineageEntry | None = None
     t = data[:, 0]
     if np.any(np.diff(t) < -_BRANCH_TIME_ATOL):
         raise SystemExit(f"Time column is not non-decreasing in {csv_path}")
+    if lineage is not None and lineage.branch_end_time is not None:
+        branch_end_time = float(lineage.branch_end_time)
+        branch_end_tol = _branch_time_tolerance(branch_end_time)
+        keep = ~np.isfinite(t) | (t <= branch_end_time + branch_end_tol)
+        if not np.any(keep):
+            raise SystemExit(
+                f"No rows remain in {csv_path} after applying branch_end_time={branch_end_time}."
+            )
+        if not np.all(keep):
+            data = data[keep]
+            t = data[:, 0]
+        finite_t = t[np.isfinite(t)]
+        if finite_t.size and np.any(finite_t > branch_end_time + branch_end_tol):
+            raise SystemExit(
+                f"Profile {csv_path} contains rows beyond branch_end_time={branch_end_time}."
+            )
     return ProfileData(
         csv_path=csv_path,
         stem=csv_path.stem,
@@ -249,6 +266,10 @@ def _load_branch_lineage_from_batch_summary(batch_dir: Path) -> dict[str, Branch
         parent = str(row.get("parent_profile_id", "")).strip() or None
         branch_time_raw = row.get("branch_time_s", "")
         branch_time = None if branch_time_raw in (None, "") else float(branch_time_raw)
+        branch_end_time_raw = row.get("branch_end_time_s", row.get("branch_end_time", ""))
+        if branch_end_time_raw in (None, "") and parent is not None:
+            branch_end_time_raw = row.get("stop_time_s", "")
+        branch_end_time = None if branch_end_time_raw in (None, "") else float(branch_end_time_raw)
         if parent is not None and branch_time is None:
             raise SystemExit(f"Missing branch_time_s for {root_id}/{profile_id} in {summary_path}")
         mapping[copied_stem] = BranchLineageEntry(
@@ -258,6 +279,7 @@ def _load_branch_lineage_from_batch_summary(batch_dir: Path) -> dict[str, Branch
             profile_id=profile_id,
             parent_profile_id=parent,
             branch_time=branch_time,
+            branch_end_time=branch_end_time,
         )
     return mapping
 
@@ -283,6 +305,10 @@ def _load_branch_lineage(batch_dirs: list[Path]) -> dict[Path, dict[str, BranchL
             parent = str(entry.get("parent_profile_id", "")).strip() or None
             branch_time_raw = entry.get("branch_time", entry.get("branch_time_s"))
             branch_time = None if branch_time_raw in (None, "") else float(branch_time_raw)
+            branch_end_time_raw = entry.get("branch_end_time", entry.get("branch_end_time_s"))
+            if branch_end_time_raw in (None, "") and parent is not None:
+                branch_end_time_raw = entry.get("stop_time_s")
+            branch_end_time = None if branch_end_time_raw in (None, "") else float(branch_end_time_raw)
             if parent is not None and branch_time is None:
                 raise SystemExit(f"Branch lineage entry missing branch_time for {root_id}/{profile_id} in {lineage_path}")
             mapping[result_stem] = BranchLineageEntry(
@@ -292,6 +318,7 @@ def _load_branch_lineage(batch_dirs: list[Path]) -> dict[Path, dict[str, BranchL
                 profile_id=profile_id,
                 parent_profile_id=parent,
                 branch_time=branch_time,
+                branch_end_time=branch_end_time,
             )
         lineage_by_batch[batch_dir.resolve()] = mapping
     return lineage_by_batch
@@ -400,6 +427,11 @@ def _build_branch_sequences(
             f"parent_profile_id={lineage.parent_profile_id}"
         )
     branch_time = float(lineage.branch_time)
+    if lineage.branch_end_time is not None and float(lineage.branch_end_time) < branch_time:
+        raise SystemExit(
+            f"branch_end_time precedes branch_time for {lineage.root_id}/{lineage.profile_id}: "
+            f"branch_end_time={lineage.branch_end_time}, branch_time={lineage.branch_time}"
+        )
     branch_time_tol = _branch_time_tolerance(branch_time)
     first_t = float(profile.t[0])
     if first_t + branch_time_tol < branch_time:
@@ -503,6 +535,14 @@ def build_dataset(
                 file_group.attrs["branch_profile_id"] = lineage.profile_id
                 file_group.attrs["branch_parent_profile_id"] = lineage.parent_profile_id or ""
                 file_group.attrs["branch_time"] = np.nan if lineage.branch_time is None else float(lineage.branch_time)
+                file_group.attrs["branch_end_time"] = (
+                    np.nan if lineage.branch_end_time is None else float(lineage.branch_end_time)
+                )
+                file_group.attrs["finite_branch_horizon"] = (
+                    np.nan
+                    if lineage.branch_time is None or lineage.branch_end_time is None
+                    else float(lineage.branch_end_time) - float(lineage.branch_time)
+                )
                 if lineage.source_stem:
                     file_group.attrs["branch_source_stem"] = lineage.source_stem
             total_samples += x_seq.shape[0]

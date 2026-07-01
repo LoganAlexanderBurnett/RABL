@@ -157,7 +157,7 @@ def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, si
                 f"Missing branched manifest entry for simulated result {csv_src.name}: "
                 f"root_id={root_id}, profile_id={profile_id}"
             )
-        parent_id, branch_time = manifest_index[(root_id, profile_id)]
+        parent_id, branch_time, branch_end_time = manifest_index[(root_id, profile_id)]
         lineage_entries.append({
             "result_stem": dst_stem,
             "source_stem": csv_src.stem,
@@ -165,6 +165,7 @@ def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, si
             "profile_id": profile_id,
             "parent_profile_id": "" if parent_id is None else parent_id,
             "branch_time": branch_time,
+            "branch_end_time": branch_end_time,
         })
         copied += 1
         next_idx += 1
@@ -172,19 +173,21 @@ def _copy_branched_results_to_batch_root_with_global_numbering(out_dir: Path, si
     print(f"[run-mode=production] Copied {copied} branched result pairs to batch root with global profile numbering.")
 
 
-def _load_branch_manifest_index(batch_dir: Path) -> dict[tuple[str, str], tuple[str | None, float | None]]:
+def _load_branch_manifest_index(batch_dir: Path) -> dict[tuple[str, str], tuple[str | None, float | None, float | None]]:
     manifest_path = batch_dir / "branched_profiles_manifest.json"
     if not manifest_path.exists():
         raise SystemExit(f"Missing manifest for branched_mat mode: {manifest_path}")
     entries = json.loads(manifest_path.read_text(encoding="utf-8"))
-    out: dict[tuple[str, str], tuple[str | None, float | None]] = {}
+    out: dict[tuple[str, str], tuple[str | None, float | None, float | None]] = {}
     for entry in entries:
         root_id = str(entry["root_group_name"])
         profile_id = str(entry["profile_id"])
         parent = str(entry.get("parent_profile_id", "")).strip() or None
         branch_time_val = entry.get("branch_time", None)
         branch_time = None if branch_time_val is None else float(branch_time_val)
-        out[(root_id, profile_id)] = (parent, branch_time)
+        branch_end_time_val = entry.get("branch_end_time", None)
+        branch_end_time = None if branch_end_time_val is None else float(branch_end_time_val)
+        out[(root_id, profile_id)] = (parent, branch_time, branch_end_time)
     return out
 
 
@@ -309,9 +312,15 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
     plt.close(fig)
 
 
-def _run_branch_start_time_checks(branched_results_dir: Path, branch_index: dict[tuple[str, str], tuple[str | None, float | None]], *, atol: float, rtol: float) -> list[str]:
+def _run_branch_start_time_checks(
+    branched_results_dir: Path,
+    branch_index: dict[tuple[str, str], tuple[str | None, float | None, float | None]],
+    *,
+    atol: float,
+    rtol: float,
+) -> list[str]:
     failures: list[str] = []
-    for (root_id, profile_id), (parent_id, branch_time) in sorted(branch_index.items()):
+    for (root_id, profile_id), (parent_id, branch_time, _branch_end_time) in sorted(branch_index.items()):
         result_csv = branched_results_dir / f"results_{root_id}__{profile_id}.csv"
         if not result_csv.exists():
             failures.append(f"{root_id}/{profile_id}: missing result csv")
@@ -343,7 +352,7 @@ def main() -> None:
 
     out_dir = _resolve_output_dir(args, output_root)
     profiles_dir = _repo_rel(args.profiles, str(output_root / "variography_profiles" / "test_batch"))
-    branch_index: dict[tuple[str, str], tuple[str | None, float | None]] = {}
+    branch_index: dict[tuple[str, str], tuple[str | None, float | None, float | None]] = {}
 
     if args.mode == "branched_mat":
         if args.profiles is None:

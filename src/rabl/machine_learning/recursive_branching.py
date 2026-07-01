@@ -65,6 +65,7 @@ class ProfileNode:
     parent_profile_id: str | None = None
     created_in_interval: int | None = None
     branch_time: float | None = None
+    branch_end_time: float | None = None
     branch_label: int | None = None
 
 
@@ -77,6 +78,7 @@ class BranchEvent:
     interval_index: int
     branch_time: float
     branch_label: int
+    branch_end_time: float | None = None
 
 
 @dataclass(frozen=True)
@@ -99,7 +101,11 @@ class RecursiveBranchingBatchConfig:
     Nk: int = 3
     Nb: int = 2
     Nr: int = 1
+    branching_mode: str = "recursive"
+    branch_horizon: float = 40.0
     root_candidate_count: int | None = None
+    root_score_metric: str = "positive_weighted_uncertainty_derivative"
+    simulate_root_for_training: bool = False
     baseline_angle_deg: float = 45.0
     seed: int = 123
     lookback: int = 12
@@ -113,6 +119,7 @@ class RecursiveBranchingBatchConfig:
     nugget_v_deg2_s2: float = 0.0
     finite_difference_order: int = 4
     target_weights: tuple[float, ...] | None = None
+    root_score_top_k: int | None = None
     branch_time_min: float = 25.0
     branch_time_max: float = 175.0
     plot_root_forecasts: bool = True
@@ -262,6 +269,7 @@ def _append_manifest(
                 "parent_profile_id": "" if node.parent_profile_id is None else node.parent_profile_id,
                 "created_in_interval": -1 if node.created_in_interval is None else int(node.created_in_interval),
                 "branch_time": None if node.branch_time is None else float(node.branch_time),
+                "branch_end_time": None if node.branch_end_time is None else float(node.branch_end_time),
                 "branch_label": -1 if node.branch_label is None else int(node.branch_label),
                 "mat_file": mat_path.name,
             }
@@ -346,13 +354,82 @@ def generate_root_profile(
     )[0]
 
 
-def _score_root_uncertainty(forecaster: EnsembleForecaster, root_profile: DrumProfile) -> float:
-    """Score a candidate root by mean ensemble 2-sigma width over horizon and targets."""
+def _compute_uncertainty_growth_signal(
+    forecaster: EnsembleForecaster,
+    root_profile: DrumProfile,
+    *,
+    weights: np.ndarray,
+    dt: float,
+) -> np.ndarray:
+    """Return a raw, positive, target-weighted uncertainty-growth signal.
+
+    Candidate roots are scored by how quickly ensemble uncertainty is actively
+    increasing. The uncertainty derivative is computed as a literal
+    timestep-to-timestep change, not a smoothed finite-difference stencil:
+
+    ``growth(t_i) = sum_j weights_j * max((u_j(t_i)-u_j(t_{i-1})) / dt, 0)``.
+
+    The first timestep has no previous value, so its growth score is set to
+    zero. The returned array therefore has one scalar score per profile
+    timestep.
+    """
+    weights = np.asarray(weights, dtype=float)
+    if weights.ndim != 1:
+        raise ValueError(f"weights must be 1D, got shape {weights.shape}.")
+    if np.any(weights < 0):
+        raise ValueError("weights must be non-negative.")
+    if dt <= 0:
+        raise ValueError(f"dt must be positive; got {dt}.")
+
     forecasts = forecaster.forecast(root_profile)
     if forecasts.ndim != 3:
         raise ValueError(f"Expected forecasts shape (n_models, n_steps, n_targets), got {forecasts.shape}.")
     uncertainty_2sigma = 2.0 * np.std(forecasts, axis=0, ddof=0)
-    return float(np.nanmean(uncertainty_2sigma))
+    if uncertainty_2sigma.shape[1] != weights.shape[0]:
+        raise ValueError(
+            "Target dimension from forecasts does not match weight length. "
+            f"Got targets={uncertainty_2sigma.shape[1]}, weights={weights.shape[0]}"
+        )
+
+    d_unc_dt = np.zeros_like(uncertainty_2sigma, dtype=np.float64)
+    if uncertainty_2sigma.shape[0] > 1:
+        d_unc_dt[1:] = np.diff(uncertainty_2sigma, axis=0) / float(dt)
+
+    positive_growth = np.maximum(d_unc_dt, 0.0)
+    return np.sum(positive_growth * weights[None, :], axis=1)
+
+
+def _score_root_uncertainty_growth(
+    forecaster: EnsembleForecaster,
+    root_profile: DrumProfile,
+    *,
+    weights: np.ndarray,
+    dt: float,
+    top_k: int | None = None,
+) -> float:
+    """Score a candidate root by positive target-weighted uncertainty growth.
+
+    By default this returns the maximum growth spike. Passing ``top_k`` averages
+    the strongest ``top_k`` timesteps, which can reduce sensitivity to a single
+    noisy derivative value.
+    """
+    growth_signal = _compute_uncertainty_growth_signal(
+        forecaster,
+        root_profile,
+        weights=weights,
+        dt=dt,
+    )
+    finite_signal = growth_signal[np.isfinite(growth_signal)]
+    if finite_signal.size == 0:
+        return float("-inf")
+
+    if top_k is None:
+        return float(np.nanmax(finite_signal))
+    if top_k < 1:
+        raise ValueError(f"top_k must be >= 1 when provided; got {top_k}.")
+    k = min(int(top_k), int(finite_signal.size))
+    top_values = np.partition(finite_signal, finite_signal.size - k)[-k:]
+    return float(np.nanmean(top_values))
 
 
 def _select_root_candidates(
@@ -364,8 +441,11 @@ def _select_root_candidates(
     seed: int,
     candidate_count: int,
     selected_count: int,
+    weights: np.ndarray,
+    dt: float,
+    score_top_k: int | None = None,
 ) -> tuple[list[tuple[int, DrumProfile, float]], list[dict[str, float | int | bool]]]:
-    """Generate candidate roots, score uncertainty, and return the top roots."""
+    """Generate candidate roots, score uncertainty growth, and return the top roots."""
     if selected_count < 1:
         raise ValueError("selected_count must be >= 1.")
     if candidate_count < selected_count:
@@ -382,7 +462,13 @@ def _select_root_candidates(
             baseline_angle_deg=baseline_angle_deg,
             seed=candidate_seed,
         )
-        score = _score_root_uncertainty(forecaster, profile)
+        score = _score_root_uncertainty_growth(
+            forecaster,
+            profile,
+            weights=weights,
+            dt=dt,
+            top_k=score_top_k,
+        )
         candidates.append((candidate_idx, profile, score))
 
     ranked = sorted(candidates, key=lambda item: item[2], reverse=True)
@@ -392,6 +478,7 @@ def _select_root_candidates(
             "candidate_index": int(candidate_idx),
             "candidate_seed": int(seed + candidate_idx),
             "uncertainty_score": float(score),
+            "uncertainty_growth_score": float(score),
             "rank": int(rank),
             "selected": bool(candidate_idx in selected_indices),
         }
@@ -472,6 +559,213 @@ def _select_branch_time(
     all_non_positive = bool(np.all(score_interval <= 0.0))
     local_argmax = int(np.argmax(score_interval))
     return float(t[masked_idx[local_argmax]]), score, all_non_positive
+
+
+def _select_branch_time_from_score(
+    t: np.ndarray,
+    score: np.ndarray,
+    *,
+    interval: Interval,
+    is_last_interval: bool,
+    branch_time_min: float = 25.0,
+    branch_time_max: float = 175.0,
+) -> tuple[float, bool]:
+    """Select one branch time from a precomputed scalar growth score."""
+    t = np.asarray(t, dtype=float)
+    score = np.asarray(score, dtype=float)
+    if t.ndim != 1:
+        raise ValueError(f"Expected 1D t-grid, got shape {t.shape}.")
+    if score.ndim != 1 or score.shape[0] != t.shape[0]:
+        raise ValueError(
+            "Scalar score timeline must be 1D with length equal to t-grid length. "
+            f"Got score={score.shape}, t={t.shape}."
+        )
+    if not branch_time_min < branch_time_max:
+        raise ValueError(
+            "branch_time_min must be strictly less than branch_time_max. "
+            f"Got branch_time_min={branch_time_min}, branch_time_max={branch_time_max}."
+        )
+
+    mask = (
+        _interval_mask(t, interval, is_last=is_last_interval)
+        & (t > float(branch_time_min))
+        & (t < float(branch_time_max))
+    )
+    if not np.any(mask):
+        raise RuntimeError(
+            f"No eligible branch times found in interval {interval.index}: "
+            f"[{interval.start}, {interval.end}] after applying the strict branch-time constraint "
+            f"{branch_time_min} < t < {branch_time_max}."
+        )
+
+    masked_idx = np.where(mask)[0]
+    score_interval = score[masked_idx]
+    all_non_positive = bool(np.all(score_interval <= 0.0))
+    local_argmax = int(np.argmax(score_interval))
+    return float(t[masked_idx[local_argmax]]), all_non_positive
+
+
+def _truncate_profile(profile: DrumProfile, *, end_time: float) -> DrumProfile:
+    """Return a copy of ``profile`` ending no later than ``end_time``."""
+    t = np.asarray(profile.t, dtype=float)
+    if t.ndim != 1 or t.size < 1:
+        raise ValueError("profile.t must be a non-empty 1D array.")
+    if end_time < float(t[0]):
+        raise ValueError(f"end_time={end_time} is before profile start time {float(t[0])}.")
+
+    tol = max(1e-12, abs(float(end_time)) * 1e-12)
+    mask = t <= float(end_time) + tol
+    if not np.any(mask):
+        raise ValueError(f"No profile samples remain after truncating at end_time={end_time}.")
+
+    t_out = np.asarray(profile.t, dtype=float)[mask]
+    theta_out = np.asarray(profile.theta_deg, dtype=float)[mask]
+    v_out = np.asarray(profile.v_deg_s, dtype=float)[mask]
+    a_out = np.asarray(profile.a_deg_s2, dtype=float)[mask]
+    if t_out[-1] < float(end_time) - tol:
+        t_out = np.append(t_out, float(end_time))
+        theta_out = np.append(theta_out, np.interp(float(end_time), t, np.asarray(profile.theta_deg, dtype=float)))
+        v_out = np.append(v_out, np.interp(float(end_time), t, np.asarray(profile.v_deg_s, dtype=float)))
+        a_out = np.append(a_out, np.interp(float(end_time), t, np.asarray(profile.a_deg_s2, dtype=float)))
+
+    return DrumProfile(
+        t=t_out,
+        theta_deg=theta_out,
+        v_deg_s=v_out,
+        a_deg_s2=a_out,
+    )
+
+
+def run_nonrecursive_finite_horizon_branching(
+    *,
+    forecaster: EnsembleForecaster,
+    generator: DrumProfileGenerator,
+    root_profile: DrumProfile,
+    n_intervals: int,
+    n_branches: int,
+    weights: np.ndarray,
+    branch_horizon: float,
+    finite_difference_order: int = 4,
+    branch_time_min: float = 25.0,
+    branch_time_max: float = 175.0,
+    seed: int | None = None,
+    verbose: bool = True,
+) -> RecursiveBranchingResult:
+    """Execute root-only finite-horizon branching.
+
+    Branch points are selected only from the root trajectory. Children are
+    generated as siblings from the root and then truncated to
+    ``t_branch + branch_horizon`` or the root horizon end, whichever comes
+    first. Generated children are never reconsidered as parents.
+    """
+    if n_branches < 1:
+        raise ValueError("n_branches must be >= 1.")
+    weights = np.asarray(weights, dtype=float)
+    if weights.ndim != 1:
+        raise ValueError(f"weights must be 1D, got shape {weights.shape}.")
+    if np.any(weights < 0):
+        raise ValueError("weights must be non-negative.")
+    if branch_horizon <= 0:
+        raise ValueError(f"branch_horizon must be positive; got {branch_horizon}.")
+    if not branch_time_min < branch_time_max:
+        raise ValueError(
+            "branch_time_min must be strictly less than branch_time_max. "
+            f"Got branch_time_min={branch_time_min}, branch_time_max={branch_time_max}."
+        )
+
+    t_grid = np.asarray(root_profile.t, dtype=float)
+    if t_grid.ndim != 1 or t_grid.size < 2:
+        raise ValueError("root_profile.t must be a 1D array with at least two points.")
+    intervals = partition_horizon(t_grid, n_intervals=n_intervals)
+    dt = float(np.mean(np.diff(t_grid)))
+
+    forecasts = forecaster.forecast(root_profile)
+    if forecasts.ndim != 3:
+        raise ValueError(f"Expected forecasts shape (n_models, n_steps, n_targets), got {forecasts.shape}.")
+    uncertainty_2sigma = 2.0 * np.std(forecasts, axis=0, ddof=0)
+    if uncertainty_2sigma.shape[0] != t_grid.shape[0]:
+        raise ValueError(
+            "Uncertainty timeline length does not match root profile timeline. "
+            f"Got {uncertainty_2sigma.shape[0]} vs {t_grid.shape[0]}."
+        )
+    if uncertainty_2sigma.shape[1] != weights.shape[0]:
+        raise ValueError(
+            "Target dimension from forecasts does not match weight length. "
+            f"Got targets={uncertainty_2sigma.shape[1]}, weights={weights.shape[0]}"
+        )
+
+    d_unc_dt = finite_difference(uncertainty_2sigma, order=finite_difference_order, dt=dt)
+    growth_signal = np.sum(np.maximum(d_unc_dt, 0.0) * weights[None, :], axis=1)
+
+    rng = np.random.default_rng(seed)
+    profiles: dict[str, ProfileNode] = {"profile_00000": ProfileNode(profile_id="profile_00000", profile=root_profile)}
+    branch_events: list[BranchEvent] = []
+    next_profile_idx = 1
+
+    for interval in intervals:
+        try:
+            t_branch, all_non_positive = _select_branch_time_from_score(
+                t_grid,
+                growth_signal,
+                interval=interval,
+                is_last_interval=(interval.index == len(intervals) - 1),
+                branch_time_min=branch_time_min,
+                branch_time_max=branch_time_max,
+            )
+        except RuntimeError:
+            if verbose:
+                print(
+                    f"\n[branch-skip] interval={interval.index} has no points satisfying "
+                    f"{branch_time_min} < t < {branch_time_max}; skipping interval.\n"
+            )
+            continue
+
+        if all_non_positive:
+            if verbose:
+                print(
+                    f"\n[branch-note] root interval={interval.index} "
+                    "all uncertainty-derivative scores were non-positive; selecting the interval maximum anyway.\n"
+                )
+
+        child_profiles = generator.branch_N_times(
+            root_profile,
+            t_branch=t_branch,
+            n_branches=n_branches,
+            seed=int(rng.integers(low=0, high=np.iinfo(np.int32).max)),
+        )
+        branch_end_time = min(float(t_branch) + float(branch_horizon), float(t_grid[-1]))
+        if verbose:
+            print(
+                f"\n[branch-nonrecursive] interval={interval.index} parent=profile_00000 "
+                f"t_branch={t_branch:.3f} branch_end={branch_end_time:.3f} generated={len(child_profiles)}\n"
+            )
+
+        for branch_label, child_profile in enumerate(child_profiles):
+            child_id = f"profile_{next_profile_idx:05d}"
+            next_profile_idx += 1
+            finite_child_profile = _truncate_profile(child_profile, end_time=branch_end_time)
+
+            profiles[child_id] = ProfileNode(
+                profile_id=child_id,
+                profile=finite_child_profile,
+                parent_profile_id="profile_00000",
+                created_in_interval=interval.index,
+                branch_time=t_branch,
+                branch_end_time=branch_end_time,
+                branch_label=branch_label,
+            )
+            branch_events.append(
+                BranchEvent(
+                    child_profile_id=child_id,
+                    parent_profile_id="profile_00000",
+                    interval_index=interval.index,
+                    branch_time=t_branch,
+                    branch_label=branch_label,
+                    branch_end_time=branch_end_time,
+                )
+            )
+
+    return RecursiveBranchingResult(intervals=intervals, final_profiles=profiles, branch_events=branch_events)
 
 
 def run_recursive_branching(
@@ -704,6 +998,7 @@ def save_recursive_branching_output(
             grp.attrs["parent_profile_id"] = "" if node.parent_profile_id is None else node.parent_profile_id
             grp.attrs["created_in_interval"] = -1 if node.created_in_interval is None else node.created_in_interval
             grp.attrs["branch_time"] = np.nan if node.branch_time is None else node.branch_time
+            grp.attrs["branch_end_time"] = np.nan if node.branch_end_time is None else node.branch_end_time
             grp.attrs["branch_label"] = -1 if node.branch_label is None else node.branch_label
 
 
@@ -923,6 +1218,15 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
     config.output_dir.mkdir(parents=True, exist_ok=True)
     if config.Nr < 1:
         raise ValueError("Nr must be >=1.")
+    branching_mode = str(config.branching_mode).replace("-", "_")
+    if branching_mode not in {"recursive", "nonrecursive_finite"}:
+        raise ValueError("branching_mode must be 'recursive' or 'nonrecursive_finite'.")
+    if config.branch_horizon <= 0:
+        raise ValueError(f"branch_horizon must be positive; got {config.branch_horizon}.")
+    if config.root_score_metric != "positive_weighted_uncertainty_derivative":
+        raise ValueError(
+            "root_score_metric currently supports only 'positive_weighted_uncertainty_derivative'."
+        )
     root_candidate_count = int(config.root_candidate_count or config.Nr)
     if root_candidate_count < config.Nr:
         raise ValueError(
@@ -1013,6 +1317,9 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
         seed=config.seed,
         candidate_count=root_candidate_count,
         selected_count=config.Nr,
+        weights=weights,
+        dt=config.dt,
+        score_top_k=config.root_score_top_k,
     )
     candidate_summary_path = config.output_dir / "root_candidate_selection.json"
     candidate_summary_path.write_text(
@@ -1020,7 +1327,11 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
             {
                 "root_candidate_count": root_candidate_count,
                 "selected_root_count": int(config.Nr),
-                "score": "mean_2sigma_uncertainty_over_horizon_and_targets",
+                "score": config.root_score_metric,
+                "score_reduction": "max" if config.root_score_top_k is None else f"mean_top_{config.root_score_top_k}",
+                "branching_mode": branching_mode,
+                "branch_horizon": float(config.branch_horizon),
+                "simulate_root_for_training": bool(config.simulate_root_for_training),
                 "candidates": root_candidate_summary,
             },
             indent=2,
@@ -1029,21 +1340,48 @@ def run_recursive_branching_batch(config: RecursiveBranchingBatchConfig) -> Path
     )
     print(
         f"[root-selection] selected top {config.Nr} of {root_candidate_count} candidate roots by "
-        f"mean ensemble 2-sigma uncertainty. Summary: {candidate_summary_path}"
+        f"{config.root_score_metric}. Summary: {candidate_summary_path}"
+    )
+    expected_branch_count = int(config.Nr * config.Nk * config.Nb)
+    print(
+        f"[branching-config] mode={branching_mode} branch_horizon={config.branch_horizon} "
+        f"root_candidate_count={root_candidate_count} expected_nonrecursive_branch_count={expected_branch_count}"
     )
     for root_idx, (candidate_idx, root, candidate_score) in enumerate(selected_roots):
-        result = run_recursive_branching(
-            forecaster=forecaster,
-            generator=generator,
-            root_profile=root,
-            n_intervals=config.Nk,
-            n_branches=config.Nb,
-            weights=weights,
-            finite_difference_order=config.finite_difference_order,
-            branch_time_min=config.branch_time_min,
-            branch_time_max=config.branch_time_max,
-            seed=config.seed + int(candidate_idx),
-            verbose=True,
+        if branching_mode == "recursive":
+            result = run_recursive_branching(
+                forecaster=forecaster,
+                generator=generator,
+                root_profile=root,
+                n_intervals=config.Nk,
+                n_branches=config.Nb,
+                weights=weights,
+                finite_difference_order=config.finite_difference_order,
+                branch_time_min=config.branch_time_min,
+                branch_time_max=config.branch_time_max,
+                seed=config.seed + int(candidate_idx),
+                verbose=True,
+            )
+        else:
+            result = run_nonrecursive_finite_horizon_branching(
+                forecaster=forecaster,
+                generator=generator,
+                root_profile=root,
+                n_intervals=config.Nk,
+                n_branches=config.Nb,
+                weights=weights,
+                branch_horizon=config.branch_horizon,
+                finite_difference_order=config.finite_difference_order,
+                branch_time_min=config.branch_time_min,
+                branch_time_max=config.branch_time_max,
+                seed=config.seed + int(candidate_idx),
+                verbose=True,
+            )
+        skipped_branch_count = max(0, config.Nk * config.Nb - len(result.branch_events))
+        print(
+            f"[branching-summary] root={root_idx + 1}/{config.Nr} selected_root_score={candidate_score:.6g} "
+            f"branch_events={len(result.branch_events)} expected_for_root={config.Nk * config.Nb} "
+            f"skipped_branch_count={skipped_branch_count}"
         )
         root_group = f"root_{root_idx + 1:03d}"
         branched_profiles_plot = _plot_branched_profiles(

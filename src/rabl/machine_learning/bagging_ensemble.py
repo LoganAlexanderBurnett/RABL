@@ -29,6 +29,7 @@ from .lstm_pipeline import (
     _get_profile_shapes,
     _load_scaling_stats,
     rolling_forecast,
+    teacher_forcing_forecast,
     train_with_fallback,
 )
 
@@ -698,6 +699,11 @@ def _save_ensemble_rolling_forecasts_hdf5(
                 table = np.column_stack([table, entry["dx_sigma_dt"].astype(np.float32)]).astype(np.float32)
             group.create_dataset("data", data=table)
             group.attrs["columns"] = column_attr
+            group.attrs["forecast_mode"] = str(entry.get("forecast_mode", "autoregressive"))
+            group.attrs["plot_title"] = (
+                f"{str(entry.get('forecast_mode', 'autoregressive')).replace('_', ' ').title()} "
+                f"Ensemble Forecast - {entry['profile']}"
+            )
             if save_member_forecasts and "member_predictions" in entry:
                 member_predictions = entry["member_predictions"].astype(np.float32)
                 member_ds = group.create_dataset("member_predictions", data=member_predictions, compression="gzip")
@@ -721,13 +727,17 @@ def _forecast_ensemble_profile(
     derivative_order: int | None,
     derivative_dt: float,
     save_member_forecasts: bool = True,
+    forecast_mode: str = "autoregressive",
 ) -> dict[str, Any]:
     x_np = x_profile.numpy()
     y_true = _descale_targets_from_stats(scaling_stats, y_profile.numpy())
 
     per_model_preds: list[np.ndarray] = []
     for model in models:
-        y_pred = rolling_forecast(model, x_np, state_dim=state_dim)
+        if forecast_mode == "teacher_forcing":
+            y_pred = teacher_forcing_forecast(model, x_np)
+        else:
+            y_pred = rolling_forecast(model, x_np, state_dim=state_dim)
         y_pred = _descale_targets_from_stats(scaling_stats, y_pred)
         per_model_preds.append(y_pred)
 
@@ -741,7 +751,7 @@ def _forecast_ensemble_profile(
     u_series = _descale_feature_from_stats(scaling_stats, u_series, control_idx)
 
     table = np.column_stack([t_series, u_series, y_true, y_mean, y_two_sigma]).astype(np.float32)
-    entry: dict[str, Any] = {"profile": str(profile_name), "table": table}
+    entry: dict[str, Any] = {"profile": str(profile_name), "table": table, "forecast_mode": forecast_mode}
     if save_member_forecasts:
         entry["member_predictions"] = pred_stack.astype(np.float32)
     if derivative_order is not None:
@@ -762,7 +772,11 @@ def ensemble_rolling_forecast_and_save(
     derivative_dt: float = 1.0,
     num_workers: int = 4,
     save_member_forecasts: bool = True,
+    forecast_mode: str = "autoregressive",
 ) -> None:
+    forecast_mode = str(forecast_mode).replace("-", "_")
+    if forecast_mode not in {"autoregressive", "teacher_forcing"}:
+        raise ValueError("forecast_mode must be either 'autoregressive' or 'teacher_forcing'.")
     if target_names is None:
         target_names = list(TARGET_NAMES)
 
@@ -787,6 +801,7 @@ def ensemble_rolling_forecast_and_save(
             derivative_order=derivative_order,
             derivative_dt=derivative_dt,
             save_member_forecasts=save_member_forecasts,
+            forecast_mode=forecast_mode,
         )
 
     if workers <= 1:
@@ -992,6 +1007,8 @@ def run_bagging_ensemble(
     forecast_num_workers: int = 4,
     plot_bag_distributions: bool = True,
     save_member_forecasts: bool = True,
+    save_test_forecasts: bool = True,
+    test_forecast_mode: str = "autoregressive",
 ) -> dict[str, Any]:
     config = BaggingEnsembleConfig(
         n_models=n_models,
@@ -1016,6 +1033,9 @@ def run_bagging_ensemble(
         plot_bag_distributions=plot_bag_distributions,
     )
     config.validate()
+    test_forecast_mode = str(test_forecast_mode).replace("-", "_")
+    if test_forecast_mode not in {"autoregressive", "teacher_forcing"}:
+        raise ValueError("test_forecast_mode must be either 'autoregressive' or 'teacher_forcing'.")
 
     scaled_h5_path = Path(scaled_h5_path)
     out_dir = Path(out_dir)
@@ -1095,19 +1115,24 @@ def run_bagging_ensemble(
     if config.verbose >= 1 and training_curves_plot is not None:
         print(f"[bagging] saved ensemble training curves plot: {training_curves_plot}")
 
-    forecast_output_path = out_dir / "rolling_forecasts.h5"
-    test_profile_ds = ProfileDataset(bagged_h5_path, _get_profile_names(bagged_h5_path, "test"), "test")
-    ensemble_rolling_forecast_and_save(
-        models,
-        test_profile_ds,
-        h5_path=bagged_h5_path,
-        output_path=forecast_output_path,
-        state_dim=STATE_DIM,
-        control_channel=0,
-        target_names=list(TARGET_NAMES),
-        num_workers=forecast_num_workers,
-        save_member_forecasts=save_member_forecasts,
-    )
+    forecast_output_path: Path | None = None
+    if save_test_forecasts:
+        forecast_output_path = out_dir / "rolling_forecasts.h5"
+        test_profile_ds = ProfileDataset(bagged_h5_path, _get_profile_names(bagged_h5_path, "test"), "test")
+        ensemble_rolling_forecast_and_save(
+            models,
+            test_profile_ds,
+            h5_path=bagged_h5_path,
+            output_path=forecast_output_path,
+            state_dim=STATE_DIM,
+            control_channel=0,
+            target_names=list(TARGET_NAMES),
+            num_workers=forecast_num_workers,
+            save_member_forecasts=save_member_forecasts,
+            forecast_mode=test_forecast_mode,
+        )
+    elif config.verbose >= 1:
+        print("[bagging] skipping ensemble rolling forecasts (save_test_forecasts=False).")
 
     return {
         "bagged_h5_path": bagged_h5_path,
@@ -1118,4 +1143,6 @@ def run_bagging_ensemble(
         "bag_distribution_overlap_plot": bag_distribution_overlap_plot,
         "training_curves_plot": training_curves_plot,
         "save_member_forecasts": bool(save_member_forecasts),
+        "save_test_forecasts": bool(save_test_forecasts),
+        "test_forecast_mode": test_forecast_mode,
     }

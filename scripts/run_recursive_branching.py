@@ -36,10 +36,11 @@ from rabl.paths import resolve_output_root
 from rabl.machine_learning.recursive_branching import (
     LSTMEnsembleForecaster,
     RecursiveBranchingResult,
+    _select_root_candidates,
     _save_branching_ensemble_forecasts,
     _plot_branched_profiles,
-    generate_root_profile,
     load_trained_ensemble,
+    run_nonrecursive_finite_horizon_branching,
     run_recursive_branching,
     save_profiles_as_mat_files,
     save_profiles_lineage_graph,
@@ -64,6 +65,11 @@ class RecursiveBranchingRunConfig:
     dt: float = 0.4
     Nk: int = 3
     Nb: int = 2
+    branching_mode: str = "recursive"
+    branch_horizon: float = 40.0
+    root_candidate_count: int | None = None
+    root_score_metric: str = "positive_weighted_uncertainty_derivative"
+    simulate_root_for_training: bool = False
 
     baseline_angle_deg: float = 45.0
     seed: int = 123
@@ -284,6 +290,10 @@ def _print_run_summary(
     print("\n=== Recursive Branching Run Configuration ===")
     print(f"Variogram: kernel={config.kernel}, ell={ell}, nugget={nugget_v}, sill={sill_v:.6f}")
     print(f"Time/Grid: n_steps={n_steps}, dt={config.dt}, T={config.T}, Nk={config.Nk}, Nb={config.Nb}, Nr={config.Nr}")
+    print(
+        f"Branching: mode={config.branching_mode}, branch_horizon={config.branch_horizon}, "
+        f"root_candidate_count={config.root_candidate_count or 1}, root_score_metric={config.root_score_metric}"
+    )
     print(f"Forecast shape: state_dim={state_dim}, num_targets={num_targets}, lookback={config.lookback}, n_features={n_features}")
     print(f"Finite difference order: {config.finite_difference_order}")
     print(f"Scaling: type={scaling_type}, source={config.bagged_h5_path}")
@@ -336,16 +346,17 @@ def _run_single_recursive_branching_workflow(
 
     process_start = perf_counter()
 
-    root_profile = generate_root_profile(
-        generator,
-        t_grid=t_grid,
-        baseline_angle_deg=config.baseline_angle_deg,
-        seed=config.seed + root_index,
-    )
-    if config.visualize:
-        _plot_root_profile(root_profile, run_output_dir / "root_profile.png")
+    branching_mode = str(config.branching_mode).replace("-", "_")
+    if branching_mode not in {"recursive", "nonrecursive_finite"}:
+        raise ValueError("branching_mode must be 'recursive' or 'nonrecursive_finite'.")
+    if config.branch_horizon <= 0:
+        raise ValueError(f"branch_horizon must be positive; got {config.branch_horizon}.")
+    if config.root_score_metric != "positive_weighted_uncertainty_derivative":
+        raise ValueError(
+            "root_score_metric currently supports only 'positive_weighted_uncertainty_derivative'."
+        )
 
-    n_steps = int(root_profile.t.size)
+    n_steps = int(t_grid.size)
     n_features, num_targets = _resolve_model_io_shapes(config)
     state_dim = (n_features - 1) if config.state_dim is None else int(config.state_dim)
     if num_targets != state_dim:
@@ -390,19 +401,66 @@ def _run_single_recursive_branching_workflow(
             f"Got {weights.shape}, num_targets={num_targets}."
         )
 
-    result = run_recursive_branching(
-        forecaster=forecaster,
+    root_candidate_count = int(config.root_candidate_count or 1)
+    selected_roots, root_candidate_summary = _select_root_candidates(
         generator=generator,
-        root_profile=root_profile,
-        n_intervals=config.Nk,
-        n_branches=config.Nb,
+        forecaster=forecaster,
+        t_grid=t_grid,
+        baseline_angle_deg=config.baseline_angle_deg,
+        seed=config.seed + root_index * root_candidate_count,
+        candidate_count=root_candidate_count,
+        selected_count=1,
         weights=weights,
-        finite_difference_order=config.finite_difference_order,
-        branch_time_min=config.branch_time_min,
-        branch_time_max=config.branch_time_max,
-        seed=config.seed + root_index,
-        verbose=True,
+        dt=config.dt,
     )
+    candidate_idx, root_profile, selected_root_score = selected_roots[0]
+    (run_output_dir / "root_candidate_selection.json").write_text(
+        json.dumps(
+            {
+                "root_candidate_count": root_candidate_count,
+                "selected_root_count": 1,
+                "score": config.root_score_metric,
+                "branching_mode": branching_mode,
+                "branch_horizon": float(config.branch_horizon),
+                "simulate_root_for_training": bool(config.simulate_root_for_training),
+                "candidates": root_candidate_summary,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    if config.visualize:
+        _plot_root_profile(root_profile, run_output_dir / "root_profile.png")
+
+    if branching_mode == "recursive":
+        result = run_recursive_branching(
+            forecaster=forecaster,
+            generator=generator,
+            root_profile=root_profile,
+            n_intervals=config.Nk,
+            n_branches=config.Nb,
+            weights=weights,
+            finite_difference_order=config.finite_difference_order,
+            branch_time_min=config.branch_time_min,
+            branch_time_max=config.branch_time_max,
+            seed=config.seed + int(candidate_idx),
+            verbose=True,
+        )
+    else:
+        result = run_nonrecursive_finite_horizon_branching(
+            forecaster=forecaster,
+            generator=generator,
+            root_profile=root_profile,
+            n_intervals=config.Nk,
+            n_branches=config.Nb,
+            weights=weights,
+            branch_horizon=config.branch_horizon,
+            finite_difference_order=config.finite_difference_order,
+            branch_time_min=config.branch_time_min,
+            branch_time_max=config.branch_time_max,
+            seed=config.seed + int(candidate_idx),
+            verbose=True,
+        )
 
     root_group_name = f"root_{root_index + 1:03d}"
     save_recursive_branching_output(
@@ -423,6 +481,7 @@ def _run_single_recursive_branching_workflow(
                 "parent_profile_id": event.parent_profile_id,
                 "interval_index": event.interval_index,
                 "branch_time": event.branch_time,
+                "branch_end_time": event.branch_end_time,
                 "branch_label": event.branch_label,
             }
             for event in result.branch_events
@@ -479,11 +538,18 @@ def _run_single_recursive_branching_workflow(
     )
 
     expected_profiles = (config.Nb + 1) ** config.Nk
+    expected_branch_count = config.Nk * config.Nb
+    skipped_branch_count = max(0, expected_branch_count - len(result.branch_events))
     print(
-        "\nRecursive branching complete:\n"
+        "\nBranching complete:\n"
         f"  final_profiles={len(result.final_profiles)}\n"
         f"  expected_profiles={expected_profiles}\n"
         f"  branch_events={len(result.branch_events)}\n"
+        f"  expected_branch_count={expected_branch_count}\n"
+        f"  skipped_branch_count={skipped_branch_count}\n"
+        f"  selected_root_score={selected_root_score:.6g}\n"
+        f"  branch_horizon={config.branch_horizon}\n"
+        f"  root_candidate_count={config.root_candidate_count or 1}\n"
         f"  process_seconds_excluding_visualization={process_elapsed_seconds:.3f}\n"
         f"  output_dir={run_output_dir}\n"
     )
@@ -523,6 +589,18 @@ def run_recursive_branching_workflow(config: RecursiveBranchingRunConfig) -> Rec
             result=result,
             written_mats=written_mats,
         )
+
+    total_branch_events = sum(len(result.branch_events) for result in results)
+    expected_branch_count = config.Nr * config.Nk * config.Nb
+    print(
+        "\nBranching workflow summary:\n"
+        f"  branching_mode={config.branching_mode}\n"
+        f"  root_candidate_count={config.root_candidate_count or 1}\n"
+        f"  branch_horizon={config.branch_horizon}\n"
+        f"  total_branch_events={total_branch_events}\n"
+        f"  expected_branch_count={expected_branch_count}\n"
+        f"  skipped_branch_count={max(0, expected_branch_count - total_branch_events)}\n"
+    )
 
     return results[0] if config.Nr == 1 else results
 
@@ -570,6 +648,7 @@ def _append_branched_profile_manifest(
                 "parent_profile_id": "" if node.parent_profile_id is None else node.parent_profile_id,
                 "created_in_interval": -1 if node.created_in_interval is None else int(node.created_in_interval),
                 "branch_time": None if node.branch_time is None else float(node.branch_time),
+                "branch_end_time": None if node.branch_end_time is None else float(node.branch_end_time),
                 "branch_label": -1 if node.branch_label is None else int(node.branch_label),
                 "mat_file": mat_path.name,
             }
@@ -631,6 +710,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--Nk", type=int, default=3, help="Number of intervals across the horizon.")
     parser.add_argument("--Nb", type=int, default=2, help="Number of children generated at each branch point.")
     parser.add_argument("--Nr", type=int, default=1, help="Number of root profiles to run through the branching workflow.")
+    parser.add_argument(
+        "--branching-mode",
+        choices=("recursive", "nonrecursive-finite"),
+        default="recursive",
+        help="Branching workflow to run.",
+    )
+    parser.add_argument(
+        "--branch-horizon",
+        type=float,
+        default=40.0,
+        help="Finite branch duration H for nonrecursive-finite mode.",
+    )
+    parser.add_argument(
+        "--root-candidate-count",
+        type=int,
+        default=None,
+        help="Number of candidate root profiles to score before selecting a root.",
+    )
+    parser.add_argument(
+        "--simulate-root-for-training",
+        action="store_true",
+        help="Record intent to keep the selected root as a training profile.",
+    )
 
     parser.add_argument("--baseline-angle-deg", type=float, default=45.0)
     parser.add_argument("--seed", type=int, default=123)
@@ -693,6 +795,10 @@ def main() -> None:
         Nk=args.Nk,
         Nb=args.Nb,
         Nr=args.Nr,
+        branching_mode=args.branching_mode.replace("-", "_"),
+        branch_horizon=args.branch_horizon,
+        root_candidate_count=args.root_candidate_count,
+        simulate_root_for_training=bool(args.simulate_root_for_training),
         baseline_angle_deg=args.baseline_angle_deg,
         seed=_resolve_seed(args),
         visualize=bool(args.visualize),

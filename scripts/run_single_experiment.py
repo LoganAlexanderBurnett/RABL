@@ -138,6 +138,7 @@ class ExperimentConfig:
     bag_split_mode: str = "profile"
     ensemble_use_tqdm: bool = True
     use_single_model_test_eval: bool = False
+    test_forecast_mode: str = "autoregressive"
     single_model_seed_count: int = 1
     single_model_seeds: list[int] | None = None
     ensemble_forecast_num_workers: int = 4
@@ -555,6 +556,7 @@ def _copy_branched_results_to_batch_root_with_global_numbering(
                 "profile_id": profile_id,
                 "parent_profile_id": str(manifest_entry.get("parent_profile_id", "")).strip(),
                 "branch_time": manifest_entry.get("branch_time"),
+                "branch_end_time": manifest_entry.get("branch_end_time"),
             }
         )
         copied += 1
@@ -603,7 +605,18 @@ def _run_recursive_branching_internal(
         Nk=int(cfg.branching["N_k"]),
         Nb=int(cfg.branching["N_b"]),
         Nr=int(cfg.branching["N_r"]),
+        branching_mode=str(cfg.branching.get("branching_mode", "recursive")).replace("-", "_"),
+        branch_horizon=float(cfg.branching.get("branch_horizon", 40.0)),
         root_candidate_count=int(cfg.branching.get("root_candidate_count", cfg.branching["N_r"])),
+        root_score_metric=str(
+            cfg.branching.get("root_score_metric", "positive_weighted_uncertainty_derivative")
+        ),
+        root_score_top_k=(
+            None
+            if cfg.branching.get("root_score_top_k") is None
+            else int(cfg.branching["root_score_top_k"])
+        ),
+        simulate_root_for_training=bool(cfg.branching.get("simulate_root_for_training", False)),
         baseline_angle_deg=float(variography_params["BASELINE_ANGLE_DEG"]),
         seed=int(seed),
         lookback=int(cfg.lookback),
@@ -2362,6 +2375,7 @@ def _train_single_model_for_test_eval(
         control_channel=0,
         target_names=list(TARGET_NAMES),
         output_name="rolling_forecasts.h5",
+        forecast_mode=str(cfg.test_forecast_mode).replace("-", "_"),
         use_tqdm=bool(cfg.ensemble_use_tqdm),
         verbose=int(cfg.hp_grid.get("verbose", 1)),
         num_workers=int(cfg.ensemble_forecast_num_workers),
@@ -2391,6 +2405,12 @@ def main() -> None:
             "prefer forecast_plot_bins and forecast_plot_profiles_per_bin in the config."
         ),
     )
+    parser.add_argument(
+        "--test-forecast-mode",
+        choices=("autoregressive", "teacher_forcing"),
+        default=None,
+        help="Override config test_forecast_mode for test-set evaluation.",
+    )
     args = parser.parse_args()
 
     cfg = _load_cfg(args.config)
@@ -2399,6 +2419,8 @@ def main() -> None:
             raise SystemExit("--plot-n-forecasts must be >= 0.")
         object.__setattr__(cfg, "forecast_plot_bins", 1)
         object.__setattr__(cfg, "forecast_plot_profiles_per_bin", int(args.plot_n_forecasts))
+    if args.test_forecast_mode is not None:
+        object.__setattr__(cfg, "test_forecast_mode", str(args.test_forecast_mode))
     if int(cfg.forecast_plot_bins) < 1:
         raise SystemExit("forecast_plot_bins must be >= 1.")
     if int(cfg.forecast_plot_profiles_per_bin) < 0:
@@ -2410,12 +2432,31 @@ def main() -> None:
     _resolve_branching_target_weights(cfg.branching_target_weights)
     if cfg.strategy not in {"branching", "random"}:
         raise SystemExit("strategy must be branching or random.")
+    test_forecast_mode = str(cfg.test_forecast_mode).replace("-", "_")
+    if test_forecast_mode not in {"autoregressive", "teacher_forcing"}:
+        raise SystemExit("test_forecast_mode must be 'autoregressive' or 'teacher_forcing'.")
     branching_selected_roots = int(cfg.branching["N_r"])
     branching_candidate_roots = int(cfg.branching.get("root_candidate_count", branching_selected_roots))
+    branching_mode = str(cfg.branching.get("branching_mode", "recursive")).replace("-", "_")
+    branching_root_score_metric = str(
+        cfg.branching.get("root_score_metric", "positive_weighted_uncertainty_derivative")
+    )
+    branching_root_score_top_k = cfg.branching.get("root_score_top_k")
     if branching_selected_roots < 1:
         raise SystemExit("branching.N_r must be >= 1.")
     if branching_candidate_roots < branching_selected_roots:
         raise SystemExit("branching.root_candidate_count must be >= branching.N_r.")
+    if branching_mode not in {"recursive", "nonrecursive_finite"}:
+        raise SystemExit("branching.branching_mode must be 'recursive' or 'nonrecursive_finite'.")
+    if float(cfg.branching.get("branch_horizon", 40.0)) <= 0:
+        raise SystemExit("branching.branch_horizon must be > 0.")
+    if branching_root_score_metric != "positive_weighted_uncertainty_derivative":
+        raise SystemExit(
+            "branching.root_score_metric currently supports only "
+            "'positive_weighted_uncertainty_derivative'."
+        )
+    if branching_root_score_top_k is not None and int(branching_root_score_top_k) < 1:
+        raise SystemExit("branching.root_score_top_k must be null or >= 1.")
     if cfg.random_profiles_per_cycle is not None and int(cfg.random_profiles_per_cycle) < 1:
         raise SystemExit("random_profiles_per_cycle must be a positive integer when provided.")
     if bool(cfg.use_single_model_test_eval) and int(cfg.single_model_seed_count) < 1:
@@ -2635,6 +2676,8 @@ def main() -> None:
                 forecast_num_workers=int(cfg.ensemble_forecast_num_workers),
                 plot_bag_distributions=bool(cfg.plot_bag_distributions),
                 save_member_forecasts=save_member_forecasts_for_cycle,
+                save_test_forecasts=train_ensemble_for_eval,
+                test_forecast_mode=str(cfg.test_forecast_mode).replace("-", "_"),
             )
             step_times["ensemble_training_sec"] = perf_counter() - t0
         else:
@@ -2895,6 +2938,7 @@ def main() -> None:
                 ),
                 "model_paths": model_paths,
                 "forecast_h5": str(forecast_h5),
+                "test_forecast_mode": str(cfg.test_forecast_mode).replace("-", "_"),
                 "forecast_pdf": str(forecast_pdf),
                 "forecast_profiles_plotted": len(plotted_forecast_profiles),
                 "save_individual_ensemble_forecasts": save_member_forecasts_for_cycle,
