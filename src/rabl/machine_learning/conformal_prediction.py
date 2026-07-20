@@ -299,3 +299,230 @@ def plot_conformal_forecast_profile_grid(
     if close_figure:
         plt.close(fig)
     return fig
+
+
+def _sigma_floor_vector(sigma_floor: float | np.ndarray, n_targets: int) -> np.ndarray:
+    """Validate and explicitly normalize a scaled-space sigma floor to (targets,)."""
+    floor = np.asarray(sigma_floor, dtype=np.float64)
+    if floor.ndim == 0:
+        floor = np.full(n_targets, float(floor), dtype=np.float64)
+    elif floor.shape != (n_targets,):
+        raise ValueError(f"sigma_floor must be a scalar or shape ({n_targets},); got {floor.shape}.")
+    if not np.all(np.isfinite(floor)) or np.any(floor < 0.0):
+        raise ValueError("sigma_floor values must be finite and nonnegative.")
+    return floor.astype(np.float32)
+
+
+def _ensemble_scaled_forecast(
+    models: list[nn.Module], x_profile: np.ndarray, *, state_dim: int, ddof: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Use the bagging ensemble's autoregressive scaled-space forecast primitive."""
+    if len(models) < 2:
+        raise ValueError("Joint ensemble-normalized conformal prediction requires at least two models.")
+    if ddof < 0 or ddof >= len(models):
+        raise ValueError(f"ddof must be in [0, {len(models) - 1}]; got {ddof}.")
+    # Import locally to keep ordinary conformal prediction independent of bagging.
+    from .bagging_ensemble import ensemble_member_predictions_scaled
+
+    member_predictions, mean, _default_spread = ensemble_member_predictions_scaled(models, x_profile, state_dim=state_dim)
+    spread = np.std(member_predictions, axis=0, ddof=ddof).astype(np.float32)
+    if not (member_predictions.ndim == 3 and mean.shape == spread.shape == member_predictions.shape[1:]):
+        raise ValueError("Invalid ensemble forecast shapes.")
+    return member_predictions, mean.astype(np.float32), spread
+
+
+def calibrate_joint_ensemble_normalized_conformal(
+    models: list[nn.Module],
+    cal_profile_ds: Iterable[tuple[str, torch.Tensor, torch.Tensor]],
+    *,
+    alpha: float = 0.05,
+    sigma_floor: float | np.ndarray = 1e-6,
+    state_dim: int = STATE_DIM,
+    ddof: int = 0,
+) -> dict[str, Any]:
+    """Calibrate one max-over-time-and-target normalized score per profile.
+
+    Calibration remains entirely in scaled target space.  Each profile is one
+    exchangeable calibration observation; individual timesteps are never pooled.
+    """
+    if not (0.0 < float(alpha) < 1.0):
+        raise ValueError("alpha must be in (0, 1).")
+    scores: list[float] = []
+    profile_names: list[str] = []
+    raw_below_floor: list[np.ndarray] = []
+    n_targets: int | None = None
+    horizons: list[int] = []
+    for profile_name, x_profile, y_profile in cal_profile_ds:
+        x_np = x_profile.detach().cpu().numpy() if isinstance(x_profile, torch.Tensor) else np.asarray(x_profile)
+        y_true = y_profile.detach().cpu().numpy() if isinstance(y_profile, torch.Tensor) else np.asarray(y_profile)
+        members, mean, spread = _ensemble_scaled_forecast(models, x_np, state_dim=state_dim, ddof=ddof)
+        if y_true.shape != mean.shape:
+            raise ValueError(f"Calibration truth/mean shape mismatch for {profile_name}: {y_true.shape} vs {mean.shape}.")
+        if n_targets is None:
+            n_targets = int(mean.shape[1])
+            floor = _sigma_floor_vector(sigma_floor, n_targets)
+        elif mean.shape[1] != n_targets:
+            raise ValueError("Calibration profiles have inconsistent target dimensions.")
+        effective_scale = spread + floor[None, :]
+        normalized_error = np.abs(y_true - mean) / effective_scale
+        score = float(np.max(normalized_error))
+        if not np.isfinite(score):
+            raise ValueError(f"Non-finite calibration score for profile {profile_name}.")
+        scores.append(score)
+        profile_names.append(str(profile_name))
+        horizons.append(int(mean.shape[0]))
+        raw_below_floor.append(spread < floor[None, :])
+    if not scores or n_targets is None:
+        raise ValueError("No calibration profiles were provided; a non-empty cal split is required.")
+    scores_array = np.asarray(scores, dtype=np.float32)
+    q_joint = _conformal_quantile(scores_array, alpha=alpha)
+    below = np.concatenate(raw_below_floor, axis=0)
+    return {
+        "conformal_method": "joint_ensemble_normalized",
+        "alpha": float(alpha),
+        "q_joint": float(q_joint),
+        "calibration_scores": scores_array,
+        "calibration_profile_names": profile_names,
+        "n_cal_profiles": len(scores),
+        "n_targets": n_targets,
+        "n_horizons_min": int(min(horizons)),
+        "n_horizons_max": int(max(horizons)),
+        "ensemble_ddof": int(ddof),
+        "sigma_floor": floor,
+        "raw_spread_below_floor_fraction": float(np.mean(below)),
+        "raw_spread_below_floor_fraction_by_target": np.mean(below, axis=0).astype(np.float32),
+        "residual_space": "scaled",
+    }
+
+
+def joint_ensemble_conformal_forecast_profile(
+    models: list[nn.Module], profile_name: str, x_profile: np.ndarray, y_profile: np.ndarray, *,
+    conformal_result: dict[str, Any], scaling_stats: dict[str, Any], state_dim: int = STATE_DIM,
+    control_channel: int = 0,
+) -> dict[str, Any]:
+    """Forecast one profile with profile/time/target adaptive joint intervals."""
+    x_np = np.asarray(x_profile, dtype=np.float32)
+    y_scaled = np.asarray(y_profile, dtype=np.float32)
+    members, mean_scaled, spread_scaled = _ensemble_scaled_forecast(
+        models, x_np, state_dim=state_dim, ddof=int(conformal_result["ensemble_ddof"])
+    )
+    if y_scaled.shape != mean_scaled.shape:
+        raise ValueError(f"Truth/ensemble mean shape mismatch for {profile_name}.")
+    floor = _sigma_floor_vector(conformal_result["sigma_floor"], mean_scaled.shape[1])
+    effective_scale = spread_scaled + floor[None, :]
+    q_joint = float(conformal_result["q_joint"])
+    if not np.isfinite(q_joint):
+        raise ValueError("q_joint must be finite.")
+    lower_scaled = mean_scaled - q_joint * effective_scale
+    upper_scaled = mean_scaled + q_joint * effective_scale
+    if not np.all(np.isfinite(lower_scaled)) or not np.all(lower_scaled <= upper_scaled):
+        raise ValueError(f"Invalid joint conformal intervals for {profile_name}.")
+    normalized_abs_error = np.abs(y_scaled - mean_scaled) / effective_scale
+    y_true = _descale_targets_from_stats(scaling_stats, y_scaled)
+    y_mean = _descale_targets_from_stats(scaling_stats, mean_scaled)
+    lower = _descale_targets_from_stats(scaling_stats, lower_scaled)
+    upper = _descale_targets_from_stats(scaling_stats, upper_scaled)
+    t = np.arange(mean_scaled.shape[0], dtype=np.float32)
+    u = _extract_control_series(x_np, state_dim=state_dim, control_channel=control_channel)
+    u = _descale_feature_from_stats(scaling_stats, u, state_dim + control_channel)
+    return {
+        "profile": str(profile_name), "t": t, "u": u, "y_true": y_true, "y_pred": y_mean,
+        "lower": lower, "upper": upper,
+        "member_predictions_scaled": members, "mean_scaled": mean_scaled, "spread_scaled": spread_scaled,
+        "effective_scale_scaled": effective_scale, "normalized_abs_error": normalized_abs_error,
+        "scaled": {"y_true": y_scaled, "lower": lower_scaled, "upper": upper_scaled},
+    }
+
+
+def _spearman_rank_correlation(x: np.ndarray, y: np.ndarray) -> float:
+    mask = np.isfinite(x) & np.isfinite(y)
+    if np.sum(mask) < 3:
+        return float("nan")
+    x_rank = np.argsort(np.argsort(np.asarray(x)[mask]))
+    y_rank = np.argsort(np.argsort(np.asarray(y)[mask]))
+    if np.std(x_rank) == 0.0 or np.std(y_rank) == 0.0:
+        return float("nan")
+    return float(np.corrcoef(x_rank, y_rank)[0, 1])
+
+
+def joint_ensemble_coverage_metrics(
+    forecasts: list[dict[str, Any]], target_names: list[str], *, sigma_floor: float | np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Compute complete-trajectory coverage separately from marginal coverage."""
+    if not forecasts:
+        raise ValueError("Cannot compute coverage for no forecasts.")
+    covered_profiles: list[np.ndarray] = []
+    widths: list[np.ndarray] = []
+    spreads: list[np.ndarray] = []
+    errors: list[np.ndarray] = []
+    for entry in forecasts:
+        inside = (entry["lower"] <= entry["y_true"]) & (entry["y_true"] <= entry["upper"])
+        covered_profiles.append(inside)
+        widths.append(entry["upper"] - entry["lower"])
+        spreads.append(entry["spread_scaled"])
+        errors.append(np.abs(entry["mean_scaled"] - entry["scaled"]["y_true"]))
+    trajectory = np.asarray([bool(np.all(mask)) for mask in covered_profiles])
+    targetwise = np.asarray([np.all(mask, axis=0) for mask in covered_profiles])
+    points = np.concatenate(covered_profiles, axis=0)
+    width = np.concatenate(widths, axis=0)
+    spread = np.concatenate(spreads, axis=0)
+    error = np.concatenate(errors, axis=0)
+    metrics: dict[str, Any] = {
+        "primary_joint_trajectory_coverage": float(np.mean(trajectory)),
+        "trajectory_covered_by_profile": trajectory.tolist(),
+        "targetwise_trajectory_coverage": {name: float(value) for name, value in zip(target_names, np.mean(targetwise, axis=0))},
+        "marginal_pointwise_coverage_overall": float(np.mean(points)),
+        "marginal_pointwise_coverage_by_target": {name: float(value) for name, value in zip(target_names, np.mean(points, axis=0))},
+        "mean_interval_width_overall": float(np.mean(width)), "median_interval_width_overall": float(np.median(width)),
+        "mean_interval_width_by_target": {name: float(value) for name, value in zip(target_names, np.mean(width, axis=0))},
+        "mean_ensemble_spread": float(np.mean(spread)), "median_ensemble_spread": float(np.median(spread)),
+        "spearman_spread_absolute_error_overall": _spearman_rank_correlation(spread.ravel(), error.ravel()),
+        "spearman_spread_absolute_error_by_target": {
+            name: _spearman_rank_correlation(spread[:, idx], error[:, idx])
+            for idx, name in enumerate(target_names)
+        },
+    }
+    if sigma_floor is not None:
+        floor = _sigma_floor_vector(sigma_floor, spread.shape[1])
+        below = spread < floor[None, :]
+        metrics["raw_spread_below_floor_fraction"] = float(np.mean(below))
+        metrics["raw_spread_below_floor_fraction_by_target"] = {
+            name: float(value) for name, value in zip(target_names, np.mean(below, axis=0))
+        }
+    # Variable horizons are represented without zero padding.
+    max_horizon = max(entry["y_true"].shape[0] for entry in forecasts)
+    metrics["marginal_pointwise_coverage_by_horizon"] = [
+        float(np.mean(np.concatenate([mask[t:t + 1] for mask in covered_profiles if mask.shape[0] > t], axis=0)))
+        for t in range(max_horizon)
+    ]
+    metrics["mean_interval_width_by_horizon"] = [
+        float(np.mean(np.concatenate([arr[t:t + 1] for arr in widths if arr.shape[0] > t], axis=0)))
+        for t in range(max_horizon)
+    ]
+    return metrics
+
+
+def save_joint_ensemble_conformal_forecasts_hdf5(
+    forecasts: list[dict[str, Any]], *, output_path: Path, metadata: dict[str, Any],
+    target_names: list[str] | None = None, save_member_forecasts: bool = True,
+) -> None:
+    """Save auditable joint conformal arrays without overwriting plain outputs."""
+    names = list(TARGET_NAMES if target_names is None else target_names)
+    output_path = Path(output_path); output_path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(output_path, "w") as h5f:
+        h5f.attrs["conformal_method"] = "joint_ensemble_normalized"
+        h5f.attrs["target_names"] = np.asarray(names, dtype="S")
+        for key, value in metadata.items():
+            if isinstance(value, (str, int, float, np.integer, np.floating)):
+                h5f.attrs[key] = value
+            elif isinstance(value, np.ndarray):
+                h5f.attrs[key] = value
+        for entry in forecasts:
+            group = h5f.create_group(entry["profile"])
+            group.create_dataset("t", data=entry["t"])
+            group.create_dataset("u", data=entry["u"])
+            for key in ("y_true", "y_pred", "lower", "upper", "mean_scaled", "spread_scaled", "effective_scale_scaled", "normalized_abs_error"):
+                group.create_dataset(key, data=entry[key], compression="gzip")
+            group.create_dataset("interval_width", data=entry["upper"] - entry["lower"], compression="gzip")
+            if save_member_forecasts:
+                group.create_dataset("member_predictions_scaled", data=entry["member_predictions_scaled"], compression="gzip")

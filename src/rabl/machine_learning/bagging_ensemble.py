@@ -469,7 +469,7 @@ def create_bagged_training_hdf5(
         dst.attrs["bagging_split_mode"] = bag_split_mode
         dst.attrs["bagging_seed"] = seed
 
-        for group_name in ("val", "test", "scaling"):
+        for group_name in ("val", "cal", "test", "scaling"):
             if group_name in src:
                 src.copy(group_name, dst)
 
@@ -478,6 +478,12 @@ def create_bagged_training_hdf5(
         train_profile_names = sorted(train_files_src.keys())
         if not train_profile_names:
             raise ValueError("No profiles found under train/files in source HDF5.")
+        # Calibration profiles are copied for post-hoc UQ only and must never be bagged.
+        if "cal" in src and "files" in src["cal"]:
+            cal_names = set(src["cal"]["files"].keys())
+            overlap = cal_names.intersection(train_profile_names)
+            if overlap:
+                raise ValueError(f"train/cal profile overlap is invalid for bagging: {sorted(overlap)}")
 
         profile_sample_counts = {name: int(train_files_src[name]["X"].shape[0]) for name in train_profile_names}
         total_train_samples = int(sum(profile_sample_counts.values()))
@@ -709,6 +715,29 @@ def _save_ensemble_rolling_forecasts_hdf5(
                 group.attrs["member_model_count"] = member_count
 
 
+def ensemble_member_predictions_scaled(
+    models: list[torch.nn.Module],
+    x_profile: np.ndarray,
+    *,
+    state_dim: int = STATE_DIM,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return autoregressive scaled member forecasts, mean, and spread.
+
+    This is intentionally independent of HDF5/descaling so post-hoc uncertainty
+    methods can calibrate in the same scaled space used by the LSTM.
+    """
+    if len(models) < 1:
+        raise ValueError("At least one ensemble model is required.")
+    x_np = np.asarray(x_profile, dtype=np.float32)
+    predictions = [rolling_forecast(model, x_np, state_dim=state_dim) for model in models]
+    stack = np.stack(predictions, axis=0).astype(np.float32, copy=False)
+    if stack.ndim != 3:
+        raise ValueError(f"Member prediction stack must be (models, steps, targets); got {stack.shape}.")
+    if not np.all(np.isfinite(stack)):
+        raise ValueError("Ensemble member predictions contain non-finite values.")
+    return stack, np.mean(stack, axis=0), np.std(stack, axis=0, ddof=0)
+
+
 def _forecast_ensemble_profile(
     profile_name: str,
     x_profile: torch.Tensor,
@@ -725,13 +754,10 @@ def _forecast_ensemble_profile(
     x_np = x_profile.numpy()
     y_true = _descale_targets_from_stats(scaling_stats, y_profile.numpy())
 
-    per_model_preds: list[np.ndarray] = []
-    for model in models:
-        y_pred = rolling_forecast(model, x_np, state_dim=state_dim)
-        y_pred = _descale_targets_from_stats(scaling_stats, y_pred)
-        per_model_preds.append(y_pred)
-
-    pred_stack = np.stack(per_model_preds, axis=0)
+    scaled_stack, _scaled_mean, _scaled_std = ensemble_member_predictions_scaled(
+        models, x_np, state_dim=state_dim
+    )
+    pred_stack = _descale_targets_from_stats(scaling_stats, scaled_stack)
     y_mean = np.mean(pred_stack, axis=0)
     y_two_sigma = 2.0 * np.std(pred_stack, axis=0, ddof=0)
 
@@ -1113,6 +1139,9 @@ def run_bagging_ensemble(
         "bagged_h5_path": bagged_h5_path,
         "forecast_output_path": forecast_output_path,
         "model_dirs": [out_dir / f"model_{idx}" for idx in range(config.n_models)],
+        "model_paths": [out_dir / f"model_{idx}" / "model.pt" for idx in range(config.n_models)],
+        "models": models,
+        "bag_profile_names": [_get_profile_names(bagged_h5_path, f"train/bag_{idx}") for idx in range(config.n_models)],
         "used_devices": used_devices,
         "histories": histories,
         "bag_distribution_overlap_plot": bag_distribution_overlap_plot,

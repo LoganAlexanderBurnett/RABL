@@ -38,5 +38,12 @@
   "prefer_gpu": true,
   "alpha": 0.05,
   "horizon_mode": "per_horizon",
-  "max_plots": 5
+  "max_plots": 5,
+  "conformal_method": "joint_ensemble_normalized",
+  "n_models": 5,
+  "bag_fraction": 0.7,
+  "bag_split_mode": "profile",
+  "sigma_floor": 1e-06,
+  "ensemble_ddof": 0,
+  "save_member_forecasts": true
 }

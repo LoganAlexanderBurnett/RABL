@@ -181,28 +181,31 @@ def load_forecasts(
 ) -> dict[str, Any]:
     profile_records: list[dict[str, Any]] = []
     with h5py.File(forecasts_h5, "r") as h5f:
+        is_joint = str(h5f.attrs.get("conformal_method", "")) == "joint_ensemble_normalized"
         profile_names = sorted(h5f.keys())
         if not profile_names:
             raise ValueError(f"No profile groups found in {forecasts_h5}.")
         for profile_name in profile_names:
             group = h5f[profile_name]
-            if "data" not in group:
-                raise KeyError(f"Profile {profile_name!r} is missing dataset 'data'.")
-            columns = _decode_columns(group.attrs.get("columns", h5f.attrs.get("columns", [])))
-            table = group["data"][...].astype(np.float64)
-            t, u, y_true, y_pred, lower, upper, width = _extract_profile_arrays(table, columns, target_names)
-            profile_records.append(
-                {
-                    "profile": str(profile_name),
-                    "t": t,
-                    "u": u,
-                    "y_true": y_true,
-                    "y_pred": y_pred,
-                    "lower": lower,
-                    "upper": upper,
-                    "width": width,
-                }
-            )
+            if is_joint:
+                required = {"t", "u", "y_true", "y_pred", "lower", "upper", "interval_width", "spread_scaled"}
+                missing = required.difference(group.keys())
+                if missing:
+                    raise KeyError(f"Joint profile {profile_name!r} is missing datasets: {sorted(missing)}")
+                profile_records.append({
+                    "profile": str(profile_name), "t": group["t"][...], "u": group["u"][...],
+                    "y_true": group["y_true"][...], "y_pred": group["y_pred"][...],
+                    "lower": group["lower"][...], "upper": group["upper"][...],
+                    "width": group["interval_width"][...], "spread_scaled": group["spread_scaled"][...],
+                })
+            else:
+                if "data" not in group:
+                    raise KeyError(f"Profile {profile_name!r} is missing dataset 'data'.")
+                columns = _decode_columns(group.attrs.get("columns", h5f.attrs.get("columns", [])))
+                table = group["data"][...].astype(np.float64)
+                t, u, y_true, y_pred, lower, upper, width = _extract_profile_arrays(table, columns, target_names)
+                profile_records.append({"profile": str(profile_name), "t": t, "u": u, "y_true": y_true,
+                    "y_pred": y_pred, "lower": lower, "upper": upper, "width": width})
 
     max_steps = max(record["y_true"].shape[0] for record in profile_records)
     n_profiles = len(profile_records)
@@ -232,6 +235,7 @@ def load_forecasts(
         "upper": upper_all,
         "width": width_all,
         "t": t_all,
+        "conformal_method": "joint_ensemble_normalized" if is_joint else "absolute",
     }
 
 
@@ -287,6 +291,11 @@ def compute_analysis(
     inside = (lower <= y_true) & (y_true <= upper)
     inside = np.where(np.isfinite(abs_error), inside.astype(np.float64), np.nan)
     half_width = width / 2.0
+    joint_trajectory_coverage = float(np.mean([np.all((record["lower"] <= record["y_true"]) & (record["y_true"] <= record["upper"])) for record in forecast_data["profiles"]]))
+    targetwise_trajectory_coverage = {
+        name: float(np.mean([np.all((record["lower"][:, idx] <= record["y_true"][:, idx]) & (record["y_true"][:, idx] <= record["upper"][:, idx])) for record in forecast_data["profiles"]]))
+        for idx, name in enumerate(target_names)
+    }
 
     coverage_by_horizon_target = np.nanmean(inside, axis=0)
     mean_abs_error_by_horizon_target = np.nanmean(abs_error, axis=0)
@@ -354,6 +363,9 @@ def compute_analysis(
         "alpha": float(metadata.get("alpha", float("nan"))),
         "nominal_coverage": float(1.0 - float(metadata.get("alpha", 0.05))),
         "horizon_mode": str(metadata.get("horizon_mode", "")),
+        "conformal_method": str(forecast_data.get("conformal_method", metadata.get("conformal_method", "absolute"))),
+        "primary_joint_trajectory_coverage": joint_trajectory_coverage,
+        "targetwise_trajectory_coverage": targetwise_trajectory_coverage,
         "n_profiles": int(y_true.shape[0]),
         "n_horizons": int(y_true.shape[1]),
         "n_targets": int(y_true.shape[2]),

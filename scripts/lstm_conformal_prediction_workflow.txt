@@ -392,3 +392,40 @@ forecasting utilities:
 
 The analysis script uses Matplotlib mathtext labels for cleaner subscripts and
 ratios. It does not require a system LaTeX installation.
+
+JOINT ENSEMBLE-NORMALIZED TRAJECTORY CONFORMAL MODE
+====================================================
+Set "conformal_method": "joint_ensemble_normalized" in the JSON configuration.
+This mode trains a profile-bagged ensemble only from the train split. Validation
+profiles are used only for each member's early stopping; calibration profiles
+are never put in a bag and are used only once for calibration; test profiles are
+used only for final evaluation. Profile split names are checked for disjointness.
+
+For member predictions y_hat[i,m,t,j] in standardized/scaled target space, the
+implementation uses mu[i,t,j] = mean_m y_hat[i,m,t,j] and sigma[i,t,j] =
+std_m(y_hat[i,m,t,j], ddof=ensemble_ddof). sigma_floor is tau_j in scaled target
+units (a scalar is broadcast to every target, or a per-target vector may be
+provided). The effective scale is sigma + tau; it is not a hidden clipping rule.
+No target weights are used because calibration occurs in standardized target
+space.
+
+Each calibration profile is exactly one exchangeable observation. Its score is
+s_i = max_{t,j} |y[i,t,j] - mu[i,t,j]| / (sigma[i,t,j] + tau_j). The finite-sample
+quantile q_joint is the ceil((N_cal + 1) * (1-alpha)) order statistic, clipped
+to N_cal. Test intervals are mu +/- q_joint * (sigma + tau), still in scaled
+space, and are descaled only after their construction.
+
+The primary reported metric is joint trajectory coverage: a test profile counts
+as covered only when every target at every valid horizon is inside its interval.
+Targetwise trajectory coverage and marginal pointwise coverage are reported
+separately and do not make the joint coverage claim. Because sigma is computed
+per profile, time, and target, interval width is locally adaptive to ensemble
+spread.
+
+Example:
+python scripts/run_lstm_conformal_prediction.py --config scripts/lstm_conformal_prediction_config.json
+
+Joint artifacts are written under <out_dir>/joint_ensemble_normalized/ and do
+not overwrite ordinary per-horizon/global absolute-conformal artifacts. The HDF5
+files retain truth, ensemble mean, raw spread, effective scale, normalized error,
+intervals, widths, and optionally scaled member forecasts.

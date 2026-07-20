@@ -15,8 +15,12 @@ from rabl.machine_learning import build_lstm_dataset
 from rabl.machine_learning.conformal_prediction import (
     calibrate_autoregressive_conformal,
     conformal_rolling_forecast_profile,
+    joint_ensemble_conformal_forecast_profile,
+    joint_ensemble_coverage_metrics,
+    calibrate_joint_ensemble_normalized_conformal,
     plot_conformal_forecast_profile_grid,
     save_conformal_forecasts_hdf5,
+    save_joint_ensemble_conformal_forecasts_hdf5,
 )
 from rabl.machine_learning.dataset_scaling import LSTMDatasetScalerSplitter
 from rabl.machine_learning.lstm_pipeline import (
@@ -28,6 +32,7 @@ from rabl.machine_learning.lstm_pipeline import (
     _load_scaling_stats,
     cleanup_cuda,
     test_and_save_forecasts,
+    ProfileDataset,
 )
 
 
@@ -67,6 +72,13 @@ class LSTMConformalRunConfig:
     prefer_gpu: bool = True
     alpha: float = 0.05
     horizon_mode: str = "per_horizon"
+    conformal_method: str = "per_horizon_absolute"
+    n_models: int = 5
+    bag_fraction: float = 0.70
+    bag_split_mode: str = "profile"
+    sigma_floor: float | list[float] = 1e-6
+    ensemble_ddof: int = 0
+    save_member_forecasts: bool = True
     max_plots: int = 5
 
     def __post_init__(self) -> None:
@@ -80,6 +92,14 @@ class LSTMConformalRunConfig:
             raise ValueError("split_mode must be 'profile' or 'sample'.")
         if self.horizon_mode not in {"per_horizon", "global"}:
             raise ValueError("horizon_mode must be 'per_horizon' or 'global'.")
+        if self.conformal_method not in {"per_horizon_absolute", "global_absolute", "joint_ensemble_normalized"}:
+            raise ValueError("Unsupported conformal_method.")
+        if self.conformal_method == "joint_ensemble_normalized" and self.n_models < 2:
+            raise ValueError("joint_ensemble_normalized requires n_models >= 2.")
+        if not (0.0 < self.bag_fraction <= 1.0):
+            raise ValueError("bag_fraction must be in (0, 1].")
+        if self.bag_split_mode not in {"profile", "sample"}:
+            raise ValueError("bag_split_mode must be 'profile' or 'sample'.")
         if len(tuple(self.fc_hidden)) != self.n_fc:
             raise ValueError("fc_hidden must provide exactly n_fc values.")
 
@@ -223,17 +243,17 @@ def _run_conformal_uq(
     target_names = TARGET_NAMES[:num_targets]
     scaling_stats = _load_scaling_stats(scaled_h5_path)
 
+    absolute_horizon_mode = (
+        "global" if args.conformal_method == "global_absolute" else
+        "per_horizon" if args.conformal_method == "per_horizon_absolute" else args.horizon_mode
+    )
     conformal_result = calibrate_autoregressive_conformal(
-        model,
-        cal_profile_ds,
-        alpha=args.alpha,
-        horizon_mode=args.horizon_mode,
-        state_dim=STATE_DIM,
+        model, cal_profile_ds, alpha=args.alpha, horizon_mode=absolute_horizon_mode, state_dim=STATE_DIM,
     )
     q_hat = np.asarray(conformal_result["q_hat"])
     expected_shape = (
         (int(conformal_result["n_horizons"]), num_targets)
-        if args.horizon_mode == "per_horizon"
+        if absolute_horizon_mode == "per_horizon"
         else (num_targets,)
     )
     if q_hat.shape != expected_shape:
@@ -300,7 +320,8 @@ def _run_conformal_uq(
 
     metadata = {
         "alpha": float(args.alpha),
-        "horizon_mode": args.horizon_mode,
+        "conformal_method": args.conformal_method,
+        "horizon_mode": absolute_horizon_mode,
         "q_hat_shape": list(q_hat.shape),
         "n_cal_profiles": int(conformal_result["n_cal_profiles"]),
         "n_horizons": int(conformal_result["n_horizons"]),
@@ -320,6 +341,76 @@ def _run_conformal_uq(
     print(f"Saved conformal forecasts to: {output_h5}")
 
 
+def _assert_profile_disjoint(datasets: dict[str, Any]) -> None:
+    sets = {name: set(datasets.get(f"{name}_profile_names", [])) for name in ("train", "val", "cal", "test")}
+    for left in sets:
+        for right in sets:
+            if left < right and sets[left].intersection(sets[right]):
+                raise ValueError(f"Profile splits overlap: {left} and {right}.")
+
+
+def _run_joint_ensemble_uq(args: LSTMConformalRunConfig, scaled_h5_path: Path) -> None:
+    from rabl.machine_learning.bagging_ensemble import run_bagging_ensemble
+    from rabl.machine_learning.lstm_pipeline import build_datasets
+
+    if args.bag_split_mode != "profile":
+        raise ValueError("joint_ensemble_normalized requires profile-level bagging.")
+    datasets = build_datasets(scaled_h5_path, args.batch_size, args.seed)
+    if not datasets.get("cal_profile_names"):
+        raise ValueError("joint_ensemble_normalized requires a non-empty profile-disjoint cal split.")
+    _assert_profile_disjoint(datasets)
+    joint_dir = Path(args.out_dir) / "joint_ensemble_normalized"
+    result = run_bagging_ensemble(
+        scaled_h5_path, out_dir=joint_dir / "ensemble_training", n_models=args.n_models,
+        bag_fraction=args.bag_fraction, bag_split_mode="profile", seed=args.seed,
+        batch_size=args.batch_size, epochs=args.epochs, early_stopping_patience=args.early_stopping_patience,
+        early_stopping_min_delta=args.early_stopping_min_delta, learning_rate=args.learning_rate,
+        n_lstm=args.n_lstm, lstm_hidden=args.lstm_hidden, lstm_dropout=args.lstm_dropout,
+        n_fc=args.n_fc, fc_hidden=tuple(args.fc_hidden), prefer_gpu=args.prefer_gpu,
+        save_member_forecasts=args.save_member_forecasts,
+    )
+    cal_names = set(datasets["cal_profile_names"])
+    if any(cal_names.intersection(names) for names in result["bag_profile_names"]):
+        raise AssertionError("Calibration profiles appeared in a training bag.")
+    scaling_stats = _load_scaling_stats(scaled_h5_path)
+    target_names = list(TARGET_NAMES[:int(datasets["target_shape"][1])])
+    models = result["models"]
+    cal_ds = ProfileDataset(scaled_h5_path, datasets["cal_profile_names"], "cal")
+    test_ds = ProfileDataset(scaled_h5_path, datasets["test_profile_names"], "test")
+    conformal = calibrate_joint_ensemble_normalized_conformal(
+        models, cal_ds, alpha=args.alpha, sigma_floor=np.asarray(args.sigma_floor),
+        state_dim=STATE_DIM, ddof=args.ensemble_ddof,
+    )
+    if not np.isscalar(conformal["q_joint"]):
+        raise ValueError("q_joint must be scalar.")
+    def forecast_all(profile_ds):
+        return [joint_ensemble_conformal_forecast_profile(
+            models, str(name), x.numpy(), y.numpy(), conformal_result=conformal,
+            scaling_stats=scaling_stats, state_dim=STATE_DIM,
+        ) for name, x, y in profile_ds]
+    cal_forecasts = forecast_all(cal_ds)
+    test_forecasts = forecast_all(test_ds)
+    test_metrics = joint_ensemble_coverage_metrics(test_forecasts, target_names, sigma_floor=conformal["sigma_floor"])
+    cal_metrics = joint_ensemble_coverage_metrics(cal_forecasts, target_names, sigma_floor=conformal["sigma_floor"])
+    metadata = {
+        **conformal, "target_names": target_names, "scaling_type": args.scaling_type,
+        "model_checkpoint_paths": [str(path) for path in result["model_paths"]],
+        "train_calibration_overlap_check": False, "calibration_profile_names": datasets["cal_profile_names"],
+    }
+    joint_dir.mkdir(parents=True, exist_ok=True)
+    save_joint_ensemble_conformal_forecasts_hdf5(
+        cal_forecasts, output_path=joint_dir / "calibration_joint_ensemble_forecasts.h5", metadata=metadata,
+        target_names=target_names, save_member_forecasts=args.save_member_forecasts,
+    )
+    save_joint_ensemble_conformal_forecasts_hdf5(
+        test_forecasts, output_path=joint_dir / "test_joint_ensemble_forecasts.h5", metadata=metadata,
+        target_names=target_names, save_member_forecasts=args.save_member_forecasts,
+    )
+    (joint_dir / "joint_ensemble_calibration_metadata.json").write_text(json.dumps(_json_safe(metadata), indent=2))
+    (joint_dir / "joint_ensemble_coverage_metrics.json").write_text(json.dumps(_json_safe({"calibration": cal_metrics, "test": test_metrics}), indent=2))
+    print(f"Joint trajectory coverage (primary): {test_metrics['primary_joint_trajectory_coverage']:.4f}")
+
+
 def main() -> None:
     cli_args = parse_args()
     args = _load_cfg(cli_args.config)
@@ -329,40 +420,27 @@ def main() -> None:
     scaled_h5_path = _scale_and_split_dataset(args, unscaled_h5_path)
     print(f"Using scaled train/val/cal/test dataset: {scaled_h5_path}")
 
-    pipeline, model, used_device, weights_path = _train_model(args, scaled_h5_path)
-
-    print("Evaluating deterministic rolling forecasts on the test split...")
-    test_and_save_forecasts(
-        model,
-        pipeline.datasets["test_profile_ds"],
-        out_dir=Path(args.out_dir),
-        h5_path=scaled_h5_path,
-        state_dim=pipeline.config.state_dim,
-        control_channel=pipeline.config.control_channel,
-        target_names=pipeline.config.target_names,
-        max_plots=0,
-        plot_callback=None,
-        use_tqdm=pipeline.config.use_tqdm,
-    )
-
-    _run_conformal_uq(
-        args,
-        pipeline=pipeline,
-        model=model,
-        scaled_h5_path=scaled_h5_path,
-        weights_path=weights_path,
-    )
+    weights_path: Path | None = None
+    used_device: torch.device | None = None
+    if args.conformal_method == "joint_ensemble_normalized":
+        _run_joint_ensemble_uq(args, scaled_h5_path)
+    else:
+        pipeline, model, used_device, weights_path = _train_model(args, scaled_h5_path)
+        print("Evaluating deterministic rolling forecasts on the test split...")
+        test_and_save_forecasts(model, pipeline.datasets["test_profile_ds"], out_dir=Path(args.out_dir),
+            h5_path=scaled_h5_path, state_dim=pipeline.config.state_dim,
+            control_channel=pipeline.config.control_channel, target_names=pipeline.config.target_names,
+            max_plots=0, plot_callback=None, use_tqdm=pipeline.config.use_tqdm)
+        _run_conformal_uq(args, pipeline=pipeline, model=model, scaled_h5_path=scaled_h5_path, weights_path=weights_path)
 
     run_metadata = {
-        "unscaled_h5_path": str(unscaled_h5_path),
-        "scaled_h5_path": str(scaled_h5_path),
-        "weights_path": str(weights_path),
-        "config_path": str(cli_args.config),
-        "config": args.__dict__,
+        "unscaled_h5_path": str(unscaled_h5_path), "scaled_h5_path": str(scaled_h5_path),
+        "weights_path": None if weights_path is None else str(weights_path),
+        "config_path": str(cli_args.config), "config": args.__dict__,
     }
     (Path(args.out_dir) / "end_to_end_conformal_run_metadata.json").write_text(json.dumps(_json_safe(run_metadata), indent=2))
 
-    if "cuda" in str(used_device).lower():
+    if used_device is not None and "cuda" in str(used_device).lower():
         cleanup_cuda(model, used_device)
 
 
