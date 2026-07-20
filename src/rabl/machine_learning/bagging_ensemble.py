@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
 import importlib.util
+import json
 from typing import Any, Iterable
 
 import h5py
@@ -738,6 +739,8 @@ def load_bagged_lstm_ensemble_checkpoints(
         raise FileNotFoundError(f"Model checkpoint path(s) not found: {missing_paths}")
 
     resolved_device = torch.device(device)
+    bag_overlap_diagnostics = save_bag_overlap_diagnostics(bagged_h5_path, out_dir / "bag_diagnostics", n_models=config.n_models)
+
     models: list[torch.nn.Module] = []
     for model_path in model_paths:
         model = build_model(
@@ -1036,6 +1039,119 @@ def plot_ensemble_forecast_profile_grid(
     return fig
 
 
+
+def bag_profile_names_from_hdf5(bagged_h5_path: Path, n_models: int | None = None) -> list[list[str]]:
+    """Return exact profile membership for each train/bag_i group."""
+    bagged_h5_path = Path(bagged_h5_path)
+    with h5py.File(bagged_h5_path, "r") as h5f:
+        if "train" not in h5f:
+            raise ValueError(f"Bagged HDF5 is missing train group: {bagged_h5_path}")
+        if n_models is None:
+            indices = sorted(
+                int(name.removeprefix("bag_")) for name in h5f["train"].keys()
+                if str(name).startswith("bag_")
+            )
+        else:
+            indices = list(range(int(n_models)))
+        memberships: list[list[str]] = []
+        for idx in indices:
+            files_path = f"train/bag_{idx}/files"
+            if files_path not in h5f:
+                raise ValueError(f"Bagged HDF5 is missing required membership group: {files_path}")
+            names = sorted(str(name) for name in h5f[files_path].keys())
+            if not names:
+                raise ValueError(f"Bag {idx} contains no profiles.")
+            memberships.append(names)
+    return memberships
+
+
+def save_bag_overlap_diagnostics(bagged_h5_path: Path, output_dir: Path, *, n_models: int | None = None) -> dict[str, Any]:
+    """Save profile-overlap matrices, inclusion frequencies, and diagnostic plots."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    memberships = bag_profile_names_from_hdf5(bagged_h5_path, n_models=n_models)
+    bag_sets = [set(names) for names in memberships]
+    n_bags = len(bag_sets)
+    counts = np.zeros((n_bags, n_bags), dtype=np.int64)
+    fractions = np.zeros((n_bags, n_bags), dtype=np.float64)
+    jaccard = np.zeros((n_bags, n_bags), dtype=np.float64)
+    for i, left in enumerate(bag_sets):
+        for j, right in enumerate(bag_sets):
+            inter = len(left.intersection(right))
+            union = len(left.union(right))
+            counts[i, j] = inter
+            fractions[i, j] = inter / max(1, len(left))
+            jaccard[i, j] = inter / union if union else 0.0
+
+    all_profiles = sorted(set().union(*bag_sets) if bag_sets else set())
+    inclusion_frequency = {name: int(sum(name in bag for bag in bag_sets)) for name in all_profiles}
+    payload = {
+        "pairwise_profile_overlap_counts": counts.tolist(),
+        "pairwise_profile_overlap_fractions": fractions.tolist(),
+        "jaccard_similarity_matrix": jaccard.tolist(),
+        "profile_inclusion_frequency": inclusion_frequency,
+        "n_bags": n_bags,
+    }
+    (output_dir / "bag_overlap_diagnostics.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    im = ax.imshow(jaccard, vmin=0.0, vmax=1.0, cmap="viridis")
+    ax.set_xlabel("Bag index")
+    ax.set_ylabel("Bag index")
+    ax.set_title("Bag profile Jaccard similarity")
+    fig.colorbar(im, ax=ax, label="Jaccard similarity")
+    fig.tight_layout()
+    heatmap_path = output_dir / "bag_jaccard_heatmap.png"
+    fig.savefig(heatmap_path, dpi=150)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.hist(list(inclusion_frequency.values()), bins=np.arange(0.5, n_bags + 1.5, 1.0), color="C0", edgecolor="black")
+    ax.set_xlabel("Number of bags containing profile")
+    ax.set_ylabel("Profile count")
+    ax.set_title("Training profile inclusion frequency")
+    fig.tight_layout()
+    histogram_path = output_dir / "profile_inclusion_frequency_histogram.png"
+    fig.savefig(histogram_path, dpi=150)
+    plt.close(fig)
+    payload["overlap_heatmap_path"] = str(heatmap_path)
+    payload["inclusion_frequency_histogram_path"] = str(histogram_path)
+    return payload
+
+
+def _member_metadata_payload(
+    *,
+    model_idx: int,
+    seed: int,
+    history: dict[str, list[float]],
+    datasets: dict[str, Any],
+    used_device: str,
+    config: BaggingEnsembleConfig,
+) -> dict[str, Any]:
+    val_losses = [float(v) for v in history.get("val_loss", [])]
+    best_epoch = int(np.argmin(val_losses) + 1) if val_losses else None
+    best_val = float(np.min(val_losses)) if val_losses else None
+    final_val = float(val_losses[-1]) if val_losses else None
+    return {
+        "member_index": int(model_idx),
+        "seed": int(seed),
+        "architecture": {
+            "n_lstm": config.n_lstm,
+            "lstm_hidden": config.lstm_hidden,
+            "lstm_dropout": config.lstm_dropout,
+            "n_fc": config.n_fc,
+            "fc_hidden": list(config.fc_hidden),
+        },
+        "best_epoch": best_epoch,
+        "best_validation_loss": best_val,
+        "final_validation_loss": final_val,
+        "train_profile_count": len(datasets.get("train_profile_names", [])),
+        "train_sample_count": int(datasets.get("train_num_samples", 0)),
+        "val_profile_count": len(datasets.get("val_profile_names", [])),
+        "val_sample_count": int(datasets.get("val_num_samples", 0)),
+        "device": used_device,
+    }
+
 def run_bagging_ensemble(
     scaled_h5_path: Path,
     *,
@@ -1057,7 +1173,11 @@ def run_bagging_ensemble(
     n_fc: int = 1,
     fc_hidden: tuple[int, ...] = (64,),
     prefer_gpu: bool = True,
+    preload_train_to_device: bool = True,
     preload_val_to_device: bool = True,
+    restore_best_weights: bool = True,
+    member_seeds: list[int] | tuple[int, ...] | None = None,
+    resume: bool = False,
     use_tqdm: bool = True,
     verbose: int = 1,
     forecast_num_workers: int = 4,
@@ -1087,6 +1207,14 @@ def run_bagging_ensemble(
         plot_bag_distributions=plot_bag_distributions,
     )
     config.validate()
+    if member_seeds is None:
+        resolved_member_seeds = [int(config.seed) + idx for idx in range(config.n_models)]
+    else:
+        resolved_member_seeds = [int(seed) for seed in member_seeds]
+    if len(resolved_member_seeds) != config.n_models:
+        raise ValueError("member_seeds must contain exactly n_models values when provided.")
+    if len(set(resolved_member_seeds)) != len(resolved_member_seeds):
+        raise ValueError("member_seeds must be distinct for ensemble training.")
 
     scaled_h5_path = Path(scaled_h5_path)
     out_dir = Path(out_dir)
@@ -1116,6 +1244,8 @@ def run_bagging_ensemble(
             else:
                 print(f"[bagging] saved bag distribution overlap plot: {bag_distribution_overlap_plot}")
 
+    bag_overlap_diagnostics = save_bag_overlap_diagnostics(bagged_h5_path, out_dir / "bag_diagnostics", n_models=config.n_models)
+
     models: list[torch.nn.Module] = []
     histories: list[dict[str, list[float]]] = []
     used_devices: list[str] = []
@@ -1124,12 +1254,41 @@ def run_bagging_ensemble(
         model_dir = out_dir / f"model_{model_idx}"
         model_dir.mkdir(parents=True, exist_ok=True)
 
+        member_seed = resolved_member_seeds[model_idx]
         datasets = build_datasets_for_train_split(
             bagged_h5_path,
             train_split=f"train/bag_{model_idx}",
             batch_size=config.batch_size,
-            seed=config.seed,
+            seed=member_seed,
         )
+        model_path = model_dir / "model.pt"
+        metadata_path = model_dir / "member_metadata.json"
+        history_path = model_dir / "training_history.json"
+        if resume and model_path.exists() and metadata_path.exists():
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if int(metadata.get("seed", -1)) == member_seed:
+                x_shape = datasets["sample_shape"]
+                y_shape = datasets["target_shape"]
+                model = load_bagged_lstm_ensemble_checkpoints(
+                    [model_path, model_path],
+                    timesteps=int(x_shape[1]),
+                    num_features=int(x_shape[2]),
+                    num_targets=int(y_shape[1]),
+                    n_lstm=config.n_lstm,
+                    lstm_hidden=config.lstm_hidden,
+                    lstm_dropout=config.lstm_dropout,
+                    n_fc=config.n_fc,
+                    fc_hidden=config.fc_hidden,
+                    device="cuda" if config.prefer_gpu and torch.cuda.is_available() else "cpu",
+                )[0]
+                history = json.loads(history_path.read_text(encoding="utf-8")) if history_path.exists() else {"loss": [], "val_loss": []}
+                used_device = torch.device(next(model.parameters()).device)
+                if config.verbose >= 1:
+                    print(f"[bagging] resumed member {model_idx} from validated checkpoint: {model_path}")
+                models.append(model)
+                histories.append(history)
+                used_devices.append(str(used_device))
+                continue
 
         model, history, used_device = train_with_fallback(
             datasets,
@@ -1145,18 +1304,27 @@ def run_bagging_ensemble(
             step_lr_gamma=config.step_lr_gamma,
             verbose=config.verbose,
             prefer_gpu=config.prefer_gpu,
-            preload_train_to_device=True,
+            preload_train_to_device=preload_train_to_device,
             preload_val_to_device=preload_val_to_device,
-            deterministic_seed=config.seed,
+            deterministic_seed=member_seed,
             early_stopping_patience=config.early_stopping_patience,
             early_stopping_min_delta=config.early_stopping_min_delta,
-            restore_best_weights=True,
+            restore_best_weights=restore_best_weights,
             use_tqdm=config.use_tqdm,
             save_training_curves=False,
         )
 
-        model_path = model_dir / "model.pt"
         torch.save(model.state_dict(), model_path)
+        metadata = _member_metadata_payload(
+            model_idx=model_idx,
+            seed=member_seed,
+            history=history,
+            datasets=datasets,
+            used_device=str(used_device),
+            config=config,
+        )
+        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
         models.append(model)
         histories.append(history)
@@ -1190,6 +1358,8 @@ def run_bagging_ensemble(
         "used_devices": used_devices,
         "histories": histories,
         "bag_distribution_overlap_plot": bag_distribution_overlap_plot,
+        "bag_overlap_diagnostics": bag_overlap_diagnostics,
         "training_curves_plot": training_curves_plot,
+        "member_seeds": resolved_member_seeds,
         "save_member_forecasts": bool(save_member_forecasts),
     }
