@@ -429,3 +429,54 @@ Joint artifacts are written under <out_dir>/joint_ensemble_normalized/ and do
 not overwrite ordinary per-horizon/global absolute-conformal artifacts. The HDF5
 files retain truth, ensemble mean, raw spread, effective scale, normalized error,
 intervals, widths, and optionally scaled member forecasts.
+
+Checkpoint-based joint ensemble mode
+------------------------------------
+The joint ensemble-normalized conformal workflow can either train the bagging
+ensemble during the current run or load an already-trained ensemble. Configure
+this with ensemble_source:
+
+  ensemble_source = "train"
+      Build profile-disjoint training bags from the current train split, train
+      one LSTM per bag, and then calibrate/evaluate the resulting ensemble.
+
+  ensemble_source = "checkpoints"
+      Load existing member .pt files from ensemble_checkpoint_paths and read
+      their original bag memberships and scaling statistics from
+      ensemble_bagged_h5_path. This mode is intended for reusing a previously
+      trained profile-bagged ensemble without retraining.
+
+In checkpoint mode the workflow performs the following checks before any
+calibration or test forecasting is run:
+
+  1. At least two checkpoint paths are provided and every file exists.
+  2. The current scaled HDF5 and ensemble_bagged_h5_path have exactly matching
+     scaling statistics. This prevents calibrating/evaluating an ensemble whose
+     weights were trained under a different scaled target space.
+  3. Each train/bag_i/files group exists in the bagged HDF5, allowing the run to
+     recover the exact profile names used to train every member.
+  4. No calibration or test profile appears in any recovered training bag.
+  5. Models are rebuilt from the configured LSTM architecture and checkpoints
+     are loaded with strict state-dict validation. If the configured input
+     window, feature count, target count, LSTM depth/width, or fully connected
+     layers do not match the checkpoint tensors, the run fails before UQ.
+
+After the models are acquired, checkpoint mode and training mode share the same
+calibration, forecasting, metric, and HDF5/JSON output logic. In particular, the
+calibration profiles are still the exchangeable units, q_joint remains a single
+scalar multiplier, and the primary reported metric remains complete multivariate
+trajectory coverage on the test profiles.
+
+Example checkpoint configuration fields:
+
+  "conformal_method": "joint_ensemble_normalized",
+  "ensemble_source": "checkpoints",
+  "ensemble_checkpoint_paths": [
+    "outputs/ml_results/lstm_conformal/joint_ensemble_normalized/ensemble_training/model_0/model.pt",
+    "outputs/ml_results/lstm_conformal/joint_ensemble_normalized/ensemble_training/model_1/model.pt"
+  ],
+  "ensemble_bagged_h5_path": "outputs/ml_results/lstm_conformal/joint_ensemble_normalized/ensemble_training/bagged_training.h5"
+
+The metadata JSON records ensemble_source, checkpoint paths, the bagged HDF5
+path, architecture validation details, whether scaling matched, and the
+train/calibration/test overlap checks used to audit the separation of splits.

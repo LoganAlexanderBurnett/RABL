@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import h5py
 import numpy as np
 import torch
 
@@ -79,6 +80,9 @@ class LSTMConformalRunConfig:
     sigma_floor: float | list[float] = 1e-6
     ensemble_ddof: int = 0
     save_member_forecasts: bool = True
+    ensemble_source: str = "train"
+    ensemble_checkpoint_paths: list[str] | tuple[str, ...] = ()
+    ensemble_bagged_h5_path: str | None = None
     max_plots: int = 5
 
     def __post_init__(self) -> None:
@@ -94,8 +98,12 @@ class LSTMConformalRunConfig:
             raise ValueError("horizon_mode must be 'per_horizon' or 'global'.")
         if self.conformal_method not in {"per_horizon_absolute", "global_absolute", "joint_ensemble_normalized"}:
             raise ValueError("Unsupported conformal_method.")
-        if self.conformal_method == "joint_ensemble_normalized" and self.n_models < 2:
-            raise ValueError("joint_ensemble_normalized requires n_models >= 2.")
+        if self.ensemble_source not in {"train", "checkpoints"}:
+            raise ValueError("ensemble_source must be 'train' or 'checkpoints'.")
+        if self.conformal_method == "joint_ensemble_normalized" and self.ensemble_source == "train" and self.n_models < 2:
+            raise ValueError("joint_ensemble_normalized training mode requires n_models >= 2.")
+        if self.conformal_method == "joint_ensemble_normalized" and self.ensemble_source == "checkpoints" and len(self.ensemble_checkpoint_paths) < 2:
+            raise ValueError("joint_ensemble_normalized checkpoint mode requires at least two ensemble_checkpoint_paths.")
         if not (0.0 < self.bag_fraction <= 1.0):
             raise ValueError("bag_fraction must be in (0, 1].")
         if self.bag_split_mode not in {"profile", "sample"}:
@@ -341,6 +349,126 @@ def _run_conformal_uq(
     print(f"Saved conformal forecasts to: {output_h5}")
 
 
+
+def _choose_device(prefer_gpu: bool) -> torch.device:
+    return torch.device("cuda" if prefer_gpu and torch.cuda.is_available() else "cpu")
+
+
+def _scaling_stats_equal(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if left.get("type") != right.get("type"):
+        return False
+    for group in ("x", "y"):
+        if set(left[group]) != set(right[group]):
+            return False
+        for key in left[group]:
+            if not np.array_equal(np.asarray(left[group][key]), np.asarray(right[group][key])):
+                return False
+    return True
+
+
+def _bag_training_profile_names(bagged_h5_path: Path, n_members: int) -> list[list[str]]:
+    if not bagged_h5_path.exists():
+        raise FileNotFoundError(f"ensemble_bagged_h5_path does not exist: {bagged_h5_path}")
+    bag_profile_names: list[list[str]] = []
+    with h5py.File(bagged_h5_path, "r") as h5f:
+        if "scaling" not in h5f:
+            raise ValueError(f"Bagged HDF5 is missing required scaling metadata: {bagged_h5_path}")
+        for idx in range(n_members):
+            split_path = f"train/bag_{idx}/files"
+            if split_path not in h5f:
+                raise ValueError(f"Bagged HDF5 is missing required bag membership group: {split_path}")
+            names = sorted(str(name) for name in h5f[split_path].keys())
+            if not names:
+                raise ValueError(f"Bagged HDF5 bag_{idx} contains no training profiles.")
+            bag_profile_names.append(names)
+    return bag_profile_names
+
+
+def _assert_no_bag_leakage(
+    bag_profile_names: list[list[str]],
+    *,
+    cal_profile_names: list[str],
+    test_profile_names: list[str],
+) -> dict[str, Any]:
+    cal_names = set(cal_profile_names)
+    test_names = set(test_profile_names)
+    cal_leaks = sorted({name for bag in bag_profile_names for name in set(bag).intersection(cal_names)})
+    test_leaks = sorted({name for bag in bag_profile_names for name in set(bag).intersection(test_names)})
+    if cal_leaks or test_leaks:
+        raise ValueError(f"Training bags leak held-out profiles: cal={cal_leaks[:5]}, test={test_leaks[:5]}")
+    return {
+        "train_calibration_overlap_detected": False,
+        "train_test_overlap_detected": False,
+        "checked_training_bag_count": len(bag_profile_names),
+    }
+
+
+def _load_joint_ensemble_from_checkpoints(
+    args: LSTMConformalRunConfig,
+    *,
+    scaled_h5_path: Path,
+    datasets: dict[str, Any],
+    scaling_stats: dict[str, Any],
+) -> dict[str, Any]:
+    from rabl.machine_learning.bagging_ensemble import load_bagged_lstm_ensemble_checkpoints
+
+    checkpoint_paths = [Path(path) for path in args.ensemble_checkpoint_paths]
+    if len(checkpoint_paths) < 2:
+        raise ValueError("ensemble_checkpoint_paths must contain at least two checkpoints.")
+    missing = [path for path in checkpoint_paths if not path.exists()]
+    if missing:
+        raise FileNotFoundError(f"Missing ensemble checkpoint path(s): {missing}")
+    if args.ensemble_bagged_h5_path in (None, ""):
+        raise ValueError("ensemble_bagged_h5_path is required when ensemble_source='checkpoints'.")
+    bagged_h5_path = Path(args.ensemble_bagged_h5_path)
+    bag_scaling_stats = _load_scaling_stats(bagged_h5_path)
+    scaling_match = _scaling_stats_equal(scaling_stats, bag_scaling_stats)
+    if not scaling_match:
+        raise ValueError("Current scaled HDF5 scaling statistics do not exactly match ensemble_bagged_h5_path.")
+
+    bag_profile_names = _bag_training_profile_names(bagged_h5_path, len(checkpoint_paths))
+    overlap = _assert_no_bag_leakage(
+        bag_profile_names,
+        cal_profile_names=datasets["cal_profile_names"],
+        test_profile_names=datasets["test_profile_names"],
+    )
+    x_shape = datasets["sample_shape"]
+    y_shape = datasets["target_shape"]
+    device = _choose_device(args.prefer_gpu)
+    models = load_bagged_lstm_ensemble_checkpoints(
+        checkpoint_paths,
+        timesteps=int(x_shape[1]),
+        num_features=int(x_shape[2]),
+        num_targets=int(y_shape[1]),
+        n_lstm=args.n_lstm,
+        lstm_hidden=args.lstm_hidden,
+        lstm_dropout=args.lstm_dropout,
+        n_fc=args.n_fc,
+        fc_hidden=tuple(args.fc_hidden),
+        device=device,
+    )
+    return {
+        "models": models,
+        "model_paths": checkpoint_paths,
+        "bagged_h5_path": bagged_h5_path,
+        "bag_profile_names": bag_profile_names,
+        "used_devices": [str(device)] * len(models),
+        "ensemble_source": "checkpoints",
+        "architecture_validation": {
+            "strict_state_dict_load": True,
+            "timesteps": int(x_shape[1]),
+            "num_features": int(x_shape[2]),
+            "num_targets": int(y_shape[1]),
+            "n_lstm": args.n_lstm,
+            "lstm_hidden": args.lstm_hidden,
+            "lstm_dropout": args.lstm_dropout,
+            "n_fc": args.n_fc,
+            "fc_hidden": list(args.fc_hidden),
+        },
+        "scaling_match": scaling_match,
+        "overlap_checks": overlap,
+    }
+
 def _assert_profile_disjoint(datasets: dict[str, Any]) -> None:
     sets = {name: set(datasets.get(f"{name}_profile_names", [])) for name in ("train", "val", "cal", "test")}
     for left in sets:
@@ -360,19 +488,29 @@ def _run_joint_ensemble_uq(args: LSTMConformalRunConfig, scaled_h5_path: Path) -
         raise ValueError("joint_ensemble_normalized requires a non-empty profile-disjoint cal split.")
     _assert_profile_disjoint(datasets)
     joint_dir = Path(args.out_dir) / "joint_ensemble_normalized"
-    result = run_bagging_ensemble(
-        scaled_h5_path, out_dir=joint_dir / "ensemble_training", n_models=args.n_models,
-        bag_fraction=args.bag_fraction, bag_split_mode="profile", seed=args.seed,
-        batch_size=args.batch_size, epochs=args.epochs, early_stopping_patience=args.early_stopping_patience,
-        early_stopping_min_delta=args.early_stopping_min_delta, learning_rate=args.learning_rate,
-        n_lstm=args.n_lstm, lstm_hidden=args.lstm_hidden, lstm_dropout=args.lstm_dropout,
-        n_fc=args.n_fc, fc_hidden=tuple(args.fc_hidden), prefer_gpu=args.prefer_gpu,
-        save_member_forecasts=args.save_member_forecasts,
-    )
-    cal_names = set(datasets["cal_profile_names"])
-    if any(cal_names.intersection(names) for names in result["bag_profile_names"]):
-        raise AssertionError("Calibration profiles appeared in a training bag.")
     scaling_stats = _load_scaling_stats(scaled_h5_path)
+    if args.ensemble_source == "train":
+        result = run_bagging_ensemble(
+            scaled_h5_path, out_dir=joint_dir / "ensemble_training", n_models=args.n_models,
+            bag_fraction=args.bag_fraction, bag_split_mode="profile", seed=args.seed,
+            batch_size=args.batch_size, epochs=args.epochs, early_stopping_patience=args.early_stopping_patience,
+            early_stopping_min_delta=args.early_stopping_min_delta, learning_rate=args.learning_rate,
+            n_lstm=args.n_lstm, lstm_hidden=args.lstm_hidden, lstm_dropout=args.lstm_dropout,
+            n_fc=args.n_fc, fc_hidden=tuple(args.fc_hidden), prefer_gpu=args.prefer_gpu,
+            save_member_forecasts=args.save_member_forecasts,
+        )
+        result["ensemble_source"] = "train"
+        result["architecture_validation"] = {"strict_state_dict_load": False, "trained_in_current_run": True}
+        result["scaling_match"] = True
+        result["overlap_checks"] = _assert_no_bag_leakage(
+            result["bag_profile_names"],
+            cal_profile_names=datasets["cal_profile_names"],
+            test_profile_names=datasets["test_profile_names"],
+        )
+    else:
+        result = _load_joint_ensemble_from_checkpoints(
+            args, scaled_h5_path=scaled_h5_path, datasets=datasets, scaling_stats=scaling_stats,
+        )
     target_names = list(TARGET_NAMES[:int(datasets["target_shape"][1])])
     models = result["models"]
     cal_ds = ProfileDataset(scaled_h5_path, datasets["cal_profile_names"], "cal")
@@ -393,9 +531,17 @@ def _run_joint_ensemble_uq(args: LSTMConformalRunConfig, scaled_h5_path: Path) -
     test_metrics = joint_ensemble_coverage_metrics(test_forecasts, target_names, sigma_floor=conformal["sigma_floor"])
     cal_metrics = joint_ensemble_coverage_metrics(cal_forecasts, target_names, sigma_floor=conformal["sigma_floor"])
     metadata = {
-        **conformal, "target_names": target_names, "scaling_type": args.scaling_type,
+        **conformal,
+        "target_names": target_names,
+        "scaling_type": args.scaling_type,
+        "ensemble_source": result["ensemble_source"],
         "model_checkpoint_paths": [str(path) for path in result["model_paths"]],
-        "train_calibration_overlap_check": False, "calibration_profile_names": datasets["cal_profile_names"],
+        "ensemble_bagged_h5_path": str(result["bagged_h5_path"]),
+        "architecture_validation": result["architecture_validation"],
+        "scaling_match": bool(result["scaling_match"]),
+        "overlap_checks": result["overlap_checks"],
+        "calibration_profile_names": datasets["cal_profile_names"],
+        "test_profile_names": datasets["test_profile_names"],
     }
     joint_dir.mkdir(parents=True, exist_ok=True)
     save_joint_ensemble_conformal_forecasts_hdf5(

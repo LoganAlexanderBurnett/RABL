@@ -30,6 +30,7 @@ from .lstm_pipeline import (
     _load_scaling_stats,
     rolling_forecast,
     train_with_fallback,
+    build_model,
 )
 
 
@@ -714,6 +715,50 @@ def _save_ensemble_rolling_forecasts_hdf5(
                 group.attrs["member_target_names"] = member_target_attr
                 group.attrs["member_model_count"] = member_count
 
+
+
+def load_bagged_lstm_ensemble_checkpoints(
+    model_paths: list[Path],
+    *,
+    timesteps: int,
+    num_features: int,
+    num_targets: int,
+    n_lstm: int = 1,
+    lstm_hidden: int = 64,
+    lstm_dropout: float = 0.0,
+    n_fc: int = 1,
+    fc_hidden: tuple[int, ...] = (64,),
+    device: str | torch.device = "cpu",
+) -> list[torch.nn.Module]:
+    """Load LSTM ensemble checkpoints with strict architecture validation."""
+    if len(model_paths) < 2:
+        raise ValueError("joint ensemble checkpoint mode requires at least two model checkpoints.")
+    missing_paths = [Path(path) for path in model_paths if not Path(path).exists()]
+    if missing_paths:
+        raise FileNotFoundError(f"Model checkpoint path(s) not found: {missing_paths}")
+
+    resolved_device = torch.device(device)
+    models: list[torch.nn.Module] = []
+    for model_path in model_paths:
+        model = build_model(
+            timesteps=timesteps,
+            num_features=num_features,
+            num_targets=num_targets,
+            n_lstm=n_lstm,
+            lstm_hidden=lstm_hidden,
+            lstm_dropout=lstm_dropout,
+            n_fc=n_fc,
+            fc_hidden=fc_hidden,
+        )
+        state_dict = torch.load(Path(model_path), map_location=resolved_device)
+        try:
+            model.load_state_dict(state_dict, strict=True)
+        except RuntimeError as exc:
+            raise ValueError(f"Checkpoint architecture is incompatible with configured model: {model_path}") from exc
+        model.to(resolved_device)
+        model.eval()
+        models.append(model)
+    return models
 
 def ensemble_member_predictions_scaled(
     models: list[torch.nn.Module],

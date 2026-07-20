@@ -45,5 +45,8 @@
   "bag_split_mode": "profile",
   "sigma_floor": 1e-06,
   "ensemble_ddof": 0,
-  "save_member_forecasts": true
+  "save_member_forecasts": true,
+  "ensemble_source": "train",
+  "ensemble_checkpoint_paths": [],
+  "ensemble_bagged_h5_path": null
 }
