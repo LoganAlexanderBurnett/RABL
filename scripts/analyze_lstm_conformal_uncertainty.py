@@ -40,9 +40,10 @@ def parse_args() -> argparse.Namespace:
             "from conformal LSTM forecast outputs."
         ),
     )
-    parser.add_argument("--metadata-json", type=Path, required=True, help="Path to conformal_calibration_metadata.json.")
-    parser.add_argument("--coverage-metrics-json", type=Path, required=True, help="Path to conformal_coverage_metrics.json.")
-    parser.add_argument("--forecasts-h5", type=Path, required=True, help="Path to conformal_forecasts.h5.")
+    parser.add_argument("--methods-manifest-json", type=Path, default=None, help="Primary input: uq_methods_manifest.json from run_lstm_conformal_prediction.py.")
+    parser.add_argument("--metadata-json", type=Path, default=None, help="Legacy path to conformal_calibration_metadata.json.")
+    parser.add_argument("--coverage-metrics-json", type=Path, default=None, help="Legacy path to conformal_coverage_metrics.json.")
+    parser.add_argument("--forecasts-h5", type=Path, default=None, help="Legacy path to conformal_forecasts.h5.")
     parser.add_argument("--out-dir", type=Path, required=True, help="Directory for analysis JSON/CSVs/plots.")
     parser.add_argument("--difficulty-quantile", type=float, default=0.20, help="Tail fraction for easy/hard bins.")
     parser.add_argument(
@@ -701,9 +702,181 @@ def save_plots(analysis: dict[str, Any], out_dir: Path, *, show_titles: bool) ->
     _plot_interval_efficiency(analysis, out_dir, show_titles=show_titles)
 
 
+
+METHOD_COLORS = {
+    "ensemble_conformal_target_trajectory": "#1f77b4",
+    "ensemble_conformal_target_horizon": "#ff7f0e",
+    "absolute_conformal_target_horizon": "#2ca02c",
+    "absolute_conformal_target_trajectory": "#d62728",
+    "raw_ensemble_2sigma": "#9467bd",
+}
+
+
+def _load_standardized_method_h5(path: Path) -> dict[str, Any]:
+    with h5py.File(path, "r") as h5f:
+        target_names = _decode_columns(h5f.attrs["target_names"])
+        alpha = float(h5f.attrs.get("alpha", np.nan))
+        nominal = float(h5f.attrs.get("nominal_coverage", np.nan))
+        profiles: dict[str, dict[str, np.ndarray]] = {}
+        for profile_name in sorted(h5f.keys()):
+            group = h5f[profile_name]
+            profiles[profile_name] = {key: group[key][...] for key in group.keys()}
+    return {"target_names": target_names, "alpha": alpha, "nominal_coverage": nominal, "profiles": profiles}
+
+
+def _validate_method_comparison(method_data: dict[str, dict[str, Any]]) -> None:
+    first_id = next(iter(method_data))
+    first = method_data[first_id]
+    profile_names = sorted(first["profiles"])
+    target_names = first["target_names"]
+    for method_id, data in method_data.items():
+        if data["target_names"] != target_names:
+            raise ValueError(f"Target order mismatch for {method_id}.")
+        if sorted(data["profiles"]) != profile_names:
+            raise ValueError(f"Profile set mismatch for {method_id}.")
+        if not np.isclose(data["alpha"], first["alpha"], equal_nan=True):
+            raise ValueError(f"Alpha mismatch for {method_id}.")
+        for profile in profile_names:
+            base = first["profiles"][profile]
+            cur = data["profiles"][profile]
+            for key in ("t", "u", "y_true", "y_true_scaled", "y_pred", "y_pred_scaled"):
+                if not np.allclose(base[key], cur[key], rtol=0.0, atol=1e-7):
+                    raise ValueError(f"Controlled comparison field {key!r} differs for method {method_id}, profile {profile}.")
+
+
+def _method_arrays(data: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    profiles = data["profiles"]
+    y_true = np.stack([profiles[name]["y_true"] for name in sorted(profiles)], axis=0)
+    y_pred = np.stack([profiles[name]["y_pred"] for name in sorted(profiles)], axis=0)
+    lower = np.stack([profiles[name]["lower"] for name in sorted(profiles)], axis=0)
+    upper = np.stack([profiles[name]["upper"] for name in sorted(profiles)], axis=0)
+    width = np.stack([profiles[name]["interval_width"] for name in sorted(profiles)], axis=0)
+    return y_true, y_pred, lower, upper, width
+
+
+def _interval_score(y_true: np.ndarray, lower: np.ndarray, upper: np.ndarray, alpha: float) -> np.ndarray:
+    width = upper - lower
+    return width + (2.0 / float(alpha)) * (np.maximum(lower - y_true, 0.0) + np.maximum(y_true - upper, 0.0))
+
+
+def analyze_methods_manifest(manifest_json: Path, out_dir: Path, *, max_forecast_plots: int = 0) -> None:
+    manifest = _load_json(manifest_json)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    methods = manifest.get("uq_methods", [])
+    if not methods:
+        raise ValueError("uq_methods_manifest.json contains no uq_methods entries.")
+    method_data = {entry["method_id"]: _load_standardized_method_h5(Path(entry["test_forecasts_path"])) for entry in methods}
+    _validate_method_comparison(method_data)
+    target_names = next(iter(method_data.values()))["target_names"]
+    alpha = float(manifest["alpha"])
+    nominal = 1.0 - alpha
+    overall_rows = []
+    target_rows = []
+    horizon_rows = []
+    tradeoff_rows = []
+    all_json: dict[str, Any] = {"methods": {}}
+    for entry in methods:
+        method_id = entry["method_id"]
+        label = entry["method_label"]
+        metrics = _load_json(Path(entry["metrics_path"]))
+        y_true, y_pred, lower, upper, width = _method_arrays(method_data[method_id])
+        covered = (lower <= y_true) & (y_true <= upper)
+        score = _interval_score(y_true, lower, upper, alpha)
+        target_point = np.mean(covered, axis=(0, 1))
+        target_traj = np.mean(np.all(covered, axis=1), axis=0)
+        target_std = np.std(y_true.reshape(-1, y_true.shape[-1]), axis=0)
+        mean_width_target = np.mean(width, axis=(0, 1))
+        primary_type = metrics.get("primary_coverage_type", entry.get("primary_coverage_type", ""))
+        overall_rows.append({
+            "method_id": method_id,
+            "method_label": label,
+            "primary_coverage_type": primary_type,
+            "primary_empirical_coverage": metrics.get("primary_empirical_coverage", np.nan),
+            "overall_pointwise_coverage": float(np.mean(covered)),
+            "mean_targetwise_trajectory_coverage": float(np.mean(target_traj)),
+            "complete_multivariate_trajectory_coverage": float(np.mean(np.all(covered, axis=(1, 2)))),
+            "mean_width": float(np.mean(width)),
+            "median_width": float(np.median(width)),
+            "mean_normalized_width": float(np.nanmean(mean_width_target / np.where(target_std > 0, target_std, np.nan))),
+            "mean_interval_score": float(np.mean(score)),
+            "worst_target_coverage": float(np.min(target_point)),
+            "max_abs_target_coverage_deviation_from_nominal": float(np.max(np.abs(target_point - nominal))),
+            "mean_abs_target_coverage_deviation_from_nominal": float(np.mean(np.abs(target_point - nominal))),
+        })
+        tradeoff_rows.append({"method_id": method_id, "method_label": label, "coverage": float(np.mean(covered)), "mean_width": float(np.mean(width))})
+        for j, target in enumerate(target_names):
+            target_rows.append({
+                "method_id": method_id, "method_label": label, "target": target,
+                "targetwise_trajectory_coverage": float(target_traj[j]),
+                "pointwise_coverage": float(target_point[j]),
+                "mean_width": float(np.mean(width[:, :, j])),
+                "median_width": float(np.median(width[:, :, j])),
+                "p90_width": float(np.quantile(width[:, :, j], 0.9)),
+                "normalized_width_by_std": float(np.mean(width[:, :, j]) / target_std[j]) if target_std[j] > 0 else float("nan"),
+                "interval_score": float(np.mean(score[:, :, j])),
+                "coverage_gap_from_nominal": float(target_point[j] - nominal),
+            })
+        for t in range(y_true.shape[1]):
+            horizon_rows.append({
+                "method_id": method_id, "method_label": label, "horizon": t,
+                "pointwise_coverage": float(np.mean(covered[:, t, :])),
+                "mean_width": float(np.mean(width[:, t, :])),
+                "mean_absolute_error": float(np.mean(np.abs(y_true[:, t, :] - y_pred[:, t, :]))),
+                "interval_score": float(np.mean(score[:, t, :])),
+                "n_valid_profiles": int(y_true.shape[0]),
+            })
+        all_json["methods"][method_id] = {"overall": overall_rows[-1]}
+    def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+        with path.open("w", newline="") as fp:
+            writer = csv.DictWriter(fp, fieldnames=list(rows[0].keys()))
+            writer.writeheader(); writer.writerows(rows)
+    write_csv(out_dir / "method_overall_summary.csv", overall_rows)
+    write_csv(out_dir / "method_target_summary.csv", target_rows)
+    write_csv(out_dir / "method_horizon_summary.csv", horizon_rows)
+    write_csv(out_dir / "coverage_width_tradeoff.csv", tradeoff_rows)
+    (out_dir / "uq_comparison_analysis.json").write_text(json.dumps(all_json, indent=2), encoding="utf-8")
+    _plot_multi_method_summaries(out_dir, overall_rows, target_rows, horizon_rows, target_names, nominal)
+    print(f"Saved multi-method UQ comparison analysis to: {out_dir}")
+
+
+def _plot_multi_method_summaries(out_dir: Path, overall_rows, target_rows, horizon_rows, target_names, nominal: float) -> None:
+    plot_dir = out_dir / "plots"; plot_dir.mkdir(parents=True, exist_ok=True)
+    methods = [row["method_id"] for row in overall_rows]
+    labels = {row["method_id"]: row["method_label"] for row in overall_rows}
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for method_id in methods:
+        rows = [r for r in horizon_rows if r["method_id"] == method_id]
+        ax.plot([r["horizon"] for r in rows], [r["pointwise_coverage"] for r in rows], label=labels[method_id], color=METHOD_COLORS.get(method_id))
+    ax.axhline(nominal, color="black", linestyle="--", linewidth=1.0, label="Nominal")
+    ax.set_xlabel("Forecast horizon"); ax.set_ylabel("Pointwise coverage"); ax.legend(fontsize=9); ax.grid(True, alpha=0.2)
+    fig.tight_layout(); fig.savefig(plot_dir / "pointwise_coverage_by_horizon.png", dpi=150); plt.close(fig)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for method_id in methods:
+        rows = [r for r in horizon_rows if r["method_id"] == method_id]
+        ax.plot([r["horizon"] for r in rows], [r["mean_width"] for r in rows], label=labels[method_id], color=METHOD_COLORS.get(method_id))
+    ax.set_xlabel("Forecast horizon"); ax.set_ylabel("Mean interval width"); ax.legend(fontsize=9); ax.grid(True, alpha=0.2)
+    fig.tight_layout(); fig.savefig(plot_dir / "mean_interval_width_by_horizon.png", dpi=150); plt.close(fig)
+    x = np.arange(len(target_names)); width = 0.8 / max(1, len(methods))
+    fig, ax = plt.subplots(figsize=(14, 6))
+    for idx, method_id in enumerate(methods):
+        rows = [r for r in target_rows if r["method_id"] == method_id]
+        ax.bar(x + (idx - (len(methods)-1)/2)*width, [r["targetwise_trajectory_coverage"] for r in rows], width=width, label=labels[method_id], color=METHOD_COLORS.get(method_id))
+    ax.axhline(nominal, color="black", linestyle="--", linewidth=1.0); ax.set_xticks(x); ax.set_xticklabels(target_names, rotation=45, ha="right")
+    ax.set_ylabel("Targetwise trajectory coverage"); ax.legend(fontsize=8); fig.tight_layout(); fig.savefig(plot_dir / "targetwise_trajectory_coverage_by_target.png", dpi=150); plt.close(fig)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for row in overall_rows:
+        ax.scatter(row["mean_width"], row["overall_pointwise_coverage"], label=row["method_label"], color=METHOD_COLORS.get(row["method_id"]), s=60)
+    ax.axhline(nominal, color="black", linestyle="--", linewidth=1.0); ax.set_xlabel("Mean interval width"); ax.set_ylabel("Overall pointwise coverage")
+    ax.legend(fontsize=8); ax.grid(True, alpha=0.2); fig.tight_layout(); fig.savefig(plot_dir / "coverage_width_tradeoff.png", dpi=150); plt.close(fig)
+
 def main() -> None:
     args = parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.methods_manifest_json is not None:
+        analyze_methods_manifest(args.methods_manifest_json, args.out_dir, max_forecast_plots=args.max_forecast_plots)
+        return
+    if args.metadata_json is None or args.coverage_metrics_json is None or args.forecasts_h5 is None:
+        raise ValueError("Provide --methods-manifest-json, or provide all legacy inputs: --metadata-json, --coverage-metrics-json, and --forecasts-h5.")
     metadata = _load_json(args.metadata_json)
     coverage_metrics = _load_json(args.coverage_metrics_json)
     target_names = [str(name) for name in metadata.get("target_names", [])]

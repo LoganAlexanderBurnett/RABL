@@ -526,3 +526,409 @@ def save_joint_ensemble_conformal_forecasts_hdf5(
             group.create_dataset("interval_width", data=entry["upper"] - entry["lower"], compression="gzip")
             if save_member_forecasts:
                 group.create_dataset("member_predictions_scaled", data=entry["member_predictions_scaled"], compression="gzip")
+
+
+UQ_METHODS: dict[str, dict[str, Any]] = {
+    "ensemble_conformal_target_trajectory": {
+        "label": "Ensemble conformal — target trajectory",
+        "temporal_mode": "trajectory",
+        "residual_type": "ensemble_normalized",
+        "primary_coverage_type": "targetwise_trajectory_coverage",
+        "uses_conformal_quantile": True,
+        "uses_ensemble_normalization": True,
+    },
+    "ensemble_conformal_target_horizon": {
+        "label": "Ensemble conformal — target/horizon",
+        "temporal_mode": "per_horizon",
+        "residual_type": "ensemble_normalized",
+        "primary_coverage_type": "marginal_pointwise_coverage_by_horizon_target",
+        "uses_conformal_quantile": True,
+        "uses_ensemble_normalization": True,
+    },
+    "absolute_conformal_target_horizon": {
+        "label": "Absolute conformal — target/horizon",
+        "temporal_mode": "per_horizon",
+        "residual_type": "absolute",
+        "primary_coverage_type": "marginal_pointwise_coverage_by_horizon_target",
+        "uses_conformal_quantile": True,
+        "uses_ensemble_normalization": False,
+    },
+    "absolute_conformal_target_trajectory": {
+        "label": "Absolute conformal — target trajectory",
+        "temporal_mode": "trajectory",
+        "residual_type": "absolute",
+        "primary_coverage_type": "targetwise_trajectory_coverage",
+        "uses_conformal_quantile": True,
+        "uses_ensemble_normalization": False,
+    },
+    "raw_ensemble_2sigma": {
+        "label": "Raw ensemble ±2σ",
+        "temporal_mode": "pointwise_uncalibrated",
+        "residual_type": "raw_ensemble_spread",
+        "primary_coverage_type": "empirical_only_no_conformal_guarantee",
+        "uses_conformal_quantile": False,
+        "uses_ensemble_normalization": False,
+    },
+}
+DEFAULT_UQ_METHODS = tuple(UQ_METHODS.keys())
+
+
+def _quantile_and_index(values: np.ndarray, *, alpha: float) -> tuple[float, int, int]:
+    clean = np.asarray(values, dtype=np.float64)
+    clean = clean[np.isfinite(clean)]
+    if clean.size < 1:
+        raise ValueError("Cannot compute conformal quantile from an empty score set.")
+    sorted_values = np.sort(clean)
+    k = int(ceil((clean.size + 1) * (1.0 - float(alpha))))
+    k = min(max(k, 1), clean.size)
+    return float(sorted_values[k - 1]), int(k), int(clean.size)
+
+
+def compute_ensemble_profile_forecast(
+    models: list[nn.Module],
+    profile_name: str,
+    x_profile: np.ndarray,
+    y_profile: np.ndarray,
+    *,
+    scaling_stats: dict[str, Any],
+    state_dim: int = STATE_DIM,
+    control_channel: int = 0,
+    ddof: int = 0,
+) -> dict[str, Any]:
+    """Compute one reusable scaled-space ensemble forecast for one profile."""
+    x_np = np.asarray(x_profile, dtype=np.float32)
+    y_scaled = np.asarray(y_profile, dtype=np.float32)
+    members, mean_scaled, spread_scaled = _ensemble_scaled_forecast(models, x_np, state_dim=state_dim, ddof=ddof)
+    if y_scaled.shape != mean_scaled.shape:
+        raise ValueError(f"Truth/ensemble mean shape mismatch for {profile_name}: {y_scaled.shape} vs {mean_scaled.shape}.")
+    t = np.arange(mean_scaled.shape[0], dtype=np.float32)
+    u_scaled = _extract_control_series(x_np, state_dim=state_dim, control_channel=control_channel)
+    u = _descale_feature_from_stats(scaling_stats, u_scaled, state_dim + control_channel)
+    return {
+        "profile": str(profile_name),
+        "t": t,
+        "u": u.astype(np.float32),
+        "y_true_scaled": y_scaled.astype(np.float32),
+        "member_predictions_scaled": members.astype(np.float32),
+        "mean_scaled": mean_scaled.astype(np.float32),
+        "spread_scaled": spread_scaled.astype(np.float32),
+        "y_true": _descale_targets_from_stats(scaling_stats, y_scaled).astype(np.float32),
+        "y_pred": _descale_targets_from_stats(scaling_stats, mean_scaled).astype(np.float32),
+    }
+
+
+def calibrate_ensemble_normalized_conformal(
+    calibration_forecasts: list[dict[str, Any]],
+    *,
+    alpha: float,
+    sigma_floor: float | np.ndarray = 1e-6,
+    temporal_mode: str,
+) -> dict[str, Any]:
+    """Calibrate ensemble-normalized conformal quantiles per target."""
+    if temporal_mode not in {"trajectory", "per_horizon"}:
+        raise ValueError("temporal_mode must be 'trajectory' or 'per_horizon'.")
+    if not calibration_forecasts:
+        raise ValueError("At least one calibration forecast is required.")
+    n_targets = int(calibration_forecasts[0]["mean_scaled"].shape[1])
+    floor = _sigma_floor_vector(sigma_floor, n_targets)
+    normalized: list[np.ndarray] = []
+    profile_names: list[str] = []
+    for entry in calibration_forecasts:
+        y_true = np.asarray(entry["y_true_scaled"], dtype=np.float32)
+        mean = np.asarray(entry["mean_scaled"], dtype=np.float32)
+        spread = np.asarray(entry["spread_scaled"], dtype=np.float32)
+        if y_true.shape != mean.shape or mean.shape != spread.shape or mean.shape[1] != n_targets:
+            raise ValueError(f"Invalid calibration forecast shapes for profile {entry['profile']}.")
+        normalized.append(np.abs(y_true - mean) / (spread + floor[None, :]))
+        profile_names.append(str(entry["profile"]))
+    max_horizon = max(arr.shape[0] for arr in normalized)
+    if temporal_mode == "trajectory":
+        scores = np.vstack([np.max(arr, axis=0) for arr in normalized]).astype(np.float32)
+        q = np.empty(n_targets, dtype=np.float32)
+        k = np.empty(n_targets, dtype=np.int32)
+        n = np.empty(n_targets, dtype=np.int32)
+        for j in range(n_targets):
+            q[j], k[j], n[j] = _quantile_and_index(scores[:, j], alpha=alpha)
+        return {
+            "method_id": "ensemble_conformal_target_trajectory",
+            "alpha": float(alpha),
+            "temporal_mode": temporal_mode,
+            "residual_type": "ensemble_normalized",
+            "q_by_target": q,
+            "calibration_scores_by_profile_target": scores,
+            "quantile_index_by_target": k,
+            "score_count_by_target": n,
+            "calibration_profile_names": profile_names,
+            "sigma_floor": floor,
+        }
+    q_ht = np.empty((max_horizon, n_targets), dtype=np.float32)
+    k_ht = np.empty((max_horizon, n_targets), dtype=np.int32)
+    n_h = np.empty(max_horizon, dtype=np.int32)
+    for t in range(max_horizon):
+        rows = [arr[t] for arr in normalized if arr.shape[0] > t]
+        n_h[t] = len(rows)
+        stacked = np.vstack(rows)
+        for j in range(n_targets):
+            q_ht[t, j], k_ht[t, j], _ = _quantile_and_index(stacked[:, j], alpha=alpha)
+    return {
+        "method_id": "ensemble_conformal_target_horizon",
+        "alpha": float(alpha),
+        "temporal_mode": temporal_mode,
+        "residual_type": "ensemble_normalized",
+        "q_by_horizon_target": q_ht,
+        "calibration_count_by_horizon": n_h,
+        "quantile_index_by_horizon_target": k_ht,
+        "calibration_profile_names": profile_names,
+        "sigma_floor": floor,
+    }
+
+
+def calibrate_absolute_conformal(
+    calibration_forecasts: list[dict[str, Any]],
+    *,
+    alpha: float,
+    temporal_mode: str,
+) -> dict[str, Any]:
+    """Calibrate absolute-residual conformal quantiles around ensemble means."""
+    if temporal_mode not in {"trajectory", "per_horizon"}:
+        raise ValueError("temporal_mode must be 'trajectory' or 'per_horizon'.")
+    if not calibration_forecasts:
+        raise ValueError("At least one calibration forecast is required.")
+    residuals: list[np.ndarray] = []
+    profile_names: list[str] = []
+    n_targets = int(calibration_forecasts[0]["mean_scaled"].shape[1])
+    for entry in calibration_forecasts:
+        y_true = np.asarray(entry["y_true_scaled"], dtype=np.float32)
+        mean = np.asarray(entry["mean_scaled"], dtype=np.float32)
+        if y_true.shape != mean.shape or mean.shape[1] != n_targets:
+            raise ValueError(f"Invalid absolute calibration shapes for profile {entry['profile']}.")
+        residuals.append(np.abs(y_true - mean).astype(np.float32))
+        profile_names.append(str(entry["profile"]))
+    max_horizon = max(arr.shape[0] for arr in residuals)
+    if temporal_mode == "trajectory":
+        scores = np.vstack([np.max(arr, axis=0) for arr in residuals]).astype(np.float32)
+        q = np.empty(n_targets, dtype=np.float32)
+        k = np.empty(n_targets, dtype=np.int32)
+        n = np.empty(n_targets, dtype=np.int32)
+        for j in range(n_targets):
+            q[j], k[j], n[j] = _quantile_and_index(scores[:, j], alpha=alpha)
+        return {
+            "method_id": "absolute_conformal_target_trajectory",
+            "alpha": float(alpha),
+            "temporal_mode": temporal_mode,
+            "residual_type": "absolute",
+            "q_by_target": q,
+            "calibration_scores_by_profile_target": scores,
+            "quantile_index_by_target": k,
+            "score_count_by_target": n,
+            "calibration_profile_names": profile_names,
+        }
+    q_ht = np.empty((max_horizon, n_targets), dtype=np.float32)
+    k_ht = np.empty((max_horizon, n_targets), dtype=np.int32)
+    n_h = np.empty(max_horizon, dtype=np.int32)
+    for t in range(max_horizon):
+        rows = [arr[t] for arr in residuals if arr.shape[0] > t]
+        n_h[t] = len(rows)
+        stacked = np.vstack(rows)
+        for j in range(n_targets):
+            q_ht[t, j], k_ht[t, j], _ = _quantile_and_index(stacked[:, j], alpha=alpha)
+    return {
+        "method_id": "absolute_conformal_target_horizon",
+        "alpha": float(alpha),
+        "temporal_mode": temporal_mode,
+        "residual_type": "absolute",
+        "q_by_horizon_target": q_ht,
+        "calibration_count_by_horizon": n_h,
+        "quantile_index_by_horizon_target": k_ht,
+        "calibration_profile_names": profile_names,
+    }
+
+
+def apply_uq_method(
+    forecast: dict[str, Any],
+    *,
+    method_id: str,
+    calibration_result: dict[str, Any] | None,
+    scaling_stats: dict[str, Any],
+    alpha: float,
+    sigma_floor: float | np.ndarray = 1e-6,
+    include_member_predictions: bool = False,
+) -> dict[str, Any]:
+    """Apply one of the five UQ methods to a cached ensemble forecast."""
+    if method_id not in UQ_METHODS:
+        raise ValueError(f"Unsupported UQ method: {method_id}")
+    mean = np.asarray(forecast["mean_scaled"], dtype=np.float32)
+    spread = np.asarray(forecast["spread_scaled"], dtype=np.float32)
+    n_steps, n_targets = mean.shape
+    effective_scale = None
+    normalized_abs_error = None
+    if method_id == "raw_ensemble_2sigma":
+        lower_scaled = mean - 2.0 * spread
+        upper_scaled = mean + 2.0 * spread
+    else:
+        if calibration_result is None:
+            raise ValueError(f"calibration_result is required for method {method_id}.")
+        if UQ_METHODS[method_id]["uses_ensemble_normalization"]:
+            floor = _sigma_floor_vector(calibration_result.get("sigma_floor", sigma_floor), n_targets)
+            effective_scale = spread + floor[None, :]
+            normalized_abs_error = np.abs(np.asarray(forecast["y_true_scaled"]) - mean) / effective_scale
+            scale = effective_scale
+        else:
+            scale = np.ones_like(mean, dtype=np.float32)
+        if "q_by_target" in calibration_result:
+            q = np.asarray(calibration_result["q_by_target"], dtype=np.float32)[None, :]
+        elif "q_by_horizon_target" in calibration_result:
+            q_all = np.asarray(calibration_result["q_by_horizon_target"], dtype=np.float32)
+            if q_all.shape[0] < n_steps or q_all.shape[1] != n_targets:
+                raise ValueError(f"Quantile shape {q_all.shape} cannot cover forecast shape {mean.shape}.")
+            q = q_all[:n_steps, :]
+        else:
+            raise ValueError(f"Calibration result for {method_id} has no recognized quantile array.")
+        lower_scaled = mean - q * scale
+        upper_scaled = mean + q * scale
+    if not np.all(np.isfinite(lower_scaled)) or not np.all(lower_scaled <= upper_scaled):
+        raise ValueError(f"Invalid intervals for method {method_id}, profile {forecast['profile']}.")
+    y_true = np.asarray(forecast["y_true"], dtype=np.float32)
+    y_pred = np.asarray(forecast["y_pred"], dtype=np.float32)
+    lower = _descale_targets_from_stats(scaling_stats, lower_scaled).astype(np.float32)
+    upper = _descale_targets_from_stats(scaling_stats, upper_scaled).astype(np.float32)
+    entry = {
+        "profile": str(forecast["profile"]),
+        "t": np.asarray(forecast["t"], dtype=np.float32),
+        "u": np.asarray(forecast["u"], dtype=np.float32),
+        "y_true": y_true,
+        "y_pred": y_pred,
+        "lower": lower,
+        "upper": upper,
+        "interval_width": upper - lower,
+        "y_true_scaled": np.asarray(forecast["y_true_scaled"], dtype=np.float32),
+        "y_pred_scaled": mean,
+        "lower_scaled": lower_scaled.astype(np.float32),
+        "upper_scaled": upper_scaled.astype(np.float32),
+        "spread_scaled": spread,
+    }
+    if effective_scale is not None:
+        entry["effective_scale_scaled"] = effective_scale.astype(np.float32)
+        entry["normalized_abs_error"] = normalized_abs_error.astype(np.float32)
+    if include_member_predictions:
+        entry["member_predictions_scaled"] = np.asarray(forecast["member_predictions_scaled"], dtype=np.float32)
+    return entry
+
+
+def compute_uq_coverage_metrics(
+    forecasts: list[dict[str, Any]],
+    target_names: list[str],
+    *,
+    alpha: float,
+    primary_coverage_type: str,
+    no_conformal_guarantee: bool = False,
+) -> dict[str, Any]:
+    """Compute standardized coverage/efficiency metrics for any UQ method."""
+    if not forecasts:
+        raise ValueError("Cannot compute UQ coverage metrics for no forecasts.")
+    nominal = 1.0 - float(alpha)
+    covered = [(e["lower"] <= e["y_true"]) & (e["y_true"] <= e["upper"]) for e in forecasts]
+    widths = [np.asarray(e["interval_width"], dtype=np.float64) for e in forecasts]
+    errors = [np.abs(np.asarray(e["y_true"], dtype=np.float64) - np.asarray(e["y_pred"], dtype=np.float64)) for e in forecasts]
+    y_true_all = np.concatenate([np.asarray(e["y_true"], dtype=np.float64) for e in forecasts], axis=0)
+    points = np.concatenate(covered, axis=0)
+    width_all = np.concatenate(widths, axis=0)
+    err_all = np.concatenate(errors, axis=0)
+    target_std = np.std(y_true_all, axis=0)
+    target_range = np.ptp(y_true_all, axis=0)
+    safe_std = np.where(target_std > 0, target_std, np.nan)
+    safe_range = np.where(target_range > 0, target_range, np.nan)
+    lower_miss = [np.maximum(np.asarray(e["lower"]) - np.asarray(e["y_true"]), 0.0) for e in forecasts]
+    upper_miss = [np.maximum(np.asarray(e["y_true"]) - np.asarray(e["upper"]), 0.0) for e in forecasts]
+    interval_scores = [w + (2.0 / float(alpha)) * (lo + hi) for w, lo, hi in zip(widths, lower_miss, upper_miss)]
+    score_all = np.concatenate(interval_scores, axis=0)
+    targetwise_trajectory = np.asarray([np.all(mask, axis=0) for mask in covered], dtype=bool)
+    complete_trajectory = np.asarray([np.all(mask) for mask in covered], dtype=bool)
+    max_horizon = max(mask.shape[0] for mask in covered)
+    by_horizon = []
+    by_horizon_target = np.full((max_horizon, len(target_names)), np.nan, dtype=np.float64)
+    width_by_horizon = []
+    mae_by_horizon = []
+    score_by_horizon = []
+    n_valid = []
+    for t in range(max_horizon):
+        masks_t = [mask[t] for mask in covered if mask.shape[0] > t]
+        widths_t = [arr[t] for arr in widths if arr.shape[0] > t]
+        errors_t = [arr[t] for arr in errors if arr.shape[0] > t]
+        scores_t = [arr[t] for arr in interval_scores if arr.shape[0] > t]
+        stacked_mask = np.vstack(masks_t)
+        by_horizon.append(float(np.mean(stacked_mask)))
+        by_horizon_target[t, :] = np.mean(stacked_mask, axis=0)
+        width_by_horizon.append(float(np.mean(np.vstack(widths_t))))
+        mae_by_horizon.append(float(np.mean(np.vstack(errors_t))))
+        score_by_horizon.append(float(np.mean(np.vstack(scores_t))))
+        n_valid.append(len(masks_t))
+    point_by_target = np.mean(points, axis=0)
+    target_traj = np.mean(targetwise_trajectory, axis=0)
+    primary = float(np.nanmean(target_traj)) if primary_coverage_type == "targetwise_trajectory_coverage" else float(np.nanmean(by_horizon_target))
+    target_gap = point_by_target - nominal
+    return {
+        "alpha": float(alpha),
+        "nominal_coverage": nominal,
+        "primary_coverage_type": primary_coverage_type,
+        "primary_empirical_coverage": primary,
+        "no_conformal_guarantee": bool(no_conformal_guarantee),
+        "marginal_pointwise_coverage_overall": float(np.mean(points)),
+        "marginal_pointwise_coverage_by_target": {n: float(v) for n, v in zip(target_names, point_by_target)},
+        "marginal_pointwise_coverage_by_horizon": by_horizon,
+        "marginal_pointwise_coverage_by_horizon_target": by_horizon_target.tolist(),
+        "targetwise_trajectory_coverage": {n: float(v) for n, v in zip(target_names, target_traj)},
+        "complete_multivariate_trajectory_coverage": float(np.mean(complete_trajectory)),
+        "mean_interval_width_overall": float(np.mean(width_all)),
+        "median_interval_width_overall": float(np.median(width_all)),
+        "p90_interval_width_overall": float(np.quantile(width_all, 0.9)),
+        "mean_interval_width_by_target": {n: float(v) for n, v in zip(target_names, np.mean(width_all, axis=0))},
+        "median_interval_width_by_target": {n: float(v) for n, v in zip(target_names, np.median(width_all, axis=0))},
+        "p90_interval_width_by_target": {n: float(v) for n, v in zip(target_names, np.quantile(width_all, 0.9, axis=0))},
+        "mean_interval_width_by_horizon": width_by_horizon,
+        "mean_absolute_error_by_horizon": mae_by_horizon,
+        "mean_width_normalized_by_target_std": {n: float(v) for n, v in zip(target_names, np.nanmean(width_all, axis=0) / safe_std)},
+        "mean_width_normalized_by_target_range": {n: float(v) for n, v in zip(target_names, np.nanmean(width_all, axis=0) / safe_range)},
+        "mean_interval_score_overall": float(np.mean(score_all)),
+        "mean_interval_score_by_target": {n: float(v) for n, v in zip(target_names, np.mean(score_all, axis=0))},
+        "mean_interval_score_by_horizon": score_by_horizon,
+        "worst_target_coverage": float(np.min(point_by_target)),
+        "maximum_absolute_targetwise_coverage_deviation_from_nominal": float(np.max(np.abs(target_gap))),
+        "mean_absolute_targetwise_coverage_deviation_from_nominal": float(np.mean(np.abs(target_gap))),
+        "valid_profile_count_by_horizon": n_valid,
+    }
+
+
+def save_shared_ensemble_predictions_hdf5(
+    forecasts: list[dict[str, Any]], *, output_path: Path, target_names: list[str], ensemble_ddof: int
+) -> None:
+    output_path = Path(output_path); output_path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(output_path, "w") as h5f:
+        h5f.attrs["target_names"] = np.asarray(target_names, dtype="S")
+        h5f.attrs["ensemble_member_count"] = int(forecasts[0]["member_predictions_scaled"].shape[0]) if forecasts else 0
+        h5f.attrs["ensemble_ddof"] = int(ensemble_ddof)
+        for entry in forecasts:
+            group = h5f.create_group(str(entry["profile"]))
+            for key in ("t", "u", "y_true_scaled", "member_predictions_scaled", "mean_scaled", "spread_scaled"):
+                group.create_dataset(key, data=entry[key], compression="gzip", chunks=True)
+
+
+def save_uq_forecasts_hdf5(
+    forecasts: list[dict[str, Any]], *, output_path: Path, metadata: dict[str, Any], target_names: list[str]
+) -> None:
+    output_path = Path(output_path); output_path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(output_path, "w") as h5f:
+        for key, value in metadata.items():
+            if isinstance(value, (str, int, float, bool, np.integer, np.floating, np.bool_)):
+                h5f.attrs[key] = value
+        h5f.attrs["target_names"] = np.asarray(target_names, dtype="S")
+        for entry in forecasts:
+            group = h5f.create_group(str(entry["profile"]))
+            for key in (
+                "t", "u", "y_true", "y_pred", "lower", "upper", "interval_width",
+                "y_true_scaled", "y_pred_scaled", "lower_scaled", "upper_scaled", "spread_scaled",
+            ):
+                group.create_dataset(key, data=entry[key], compression="gzip", chunks=True)
+            for key in ("effective_scale_scaled", "normalized_abs_error", "member_predictions_scaled"):
+                if key in entry:
+                    group.create_dataset(key, data=entry[key], compression="gzip", chunks=True)

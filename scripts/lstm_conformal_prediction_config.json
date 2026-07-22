@@ -48,5 +48,12 @@
   "save_member_forecasts": true,
   "ensemble_source": "train",
   "ensemble_checkpoint_paths": [],
-  "ensemble_bagged_h5_path": null
+  "ensemble_bagged_h5_path": null,
+  "uq_methods": [
+    "ensemble_conformal_target_trajectory",
+    "ensemble_conformal_target_horizon",
+    "absolute_conformal_target_horizon",
+    "absolute_conformal_target_trajectory",
+    "raw_ensemble_2sigma"
+  ]
 }

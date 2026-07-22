@@ -22,6 +22,15 @@ from rabl.machine_learning.conformal_prediction import (
     plot_conformal_forecast_profile_grid,
     save_conformal_forecasts_hdf5,
     save_joint_ensemble_conformal_forecasts_hdf5,
+    DEFAULT_UQ_METHODS,
+    UQ_METHODS,
+    apply_uq_method,
+    calibrate_absolute_conformal,
+    calibrate_ensemble_normalized_conformal,
+    compute_ensemble_profile_forecast,
+    compute_uq_coverage_metrics,
+    save_shared_ensemble_predictions_hdf5,
+    save_uq_forecasts_hdf5,
 )
 from rabl.machine_learning.dataset_scaling import LSTMDatasetScalerSplitter
 from rabl.machine_learning.lstm_pipeline import (
@@ -83,6 +92,7 @@ class LSTMConformalRunConfig:
     ensemble_source: str = "train"
     ensemble_checkpoint_paths: list[str] | tuple[str, ...] = ()
     ensemble_bagged_h5_path: str | None = None
+    uq_methods: list[str] | tuple[str, ...] | None = None
     max_plots: int = 5
 
     def __post_init__(self) -> None:
@@ -108,6 +118,10 @@ class LSTMConformalRunConfig:
             raise ValueError("bag_fraction must be in (0, 1].")
         if self.bag_split_mode not in {"profile", "sample"}:
             raise ValueError("bag_split_mode must be 'profile' or 'sample'.")
+        methods = tuple(DEFAULT_UQ_METHODS if self.uq_methods is None else self.uq_methods)
+        unknown_methods = sorted(set(methods) - set(DEFAULT_UQ_METHODS))
+        if unknown_methods:
+            raise ValueError(f"Unsupported uq_methods: {unknown_methods}")
         if len(tuple(self.fc_hidden)) != self.n_fc:
             raise ValueError("fc_hidden must provide exactly n_fc values.")
 
@@ -477,7 +491,66 @@ def _assert_profile_disjoint(datasets: dict[str, Any]) -> None:
                 raise ValueError(f"Profile splits overlap: {left} and {right}.")
 
 
-def _run_joint_ensemble_uq(args: LSTMConformalRunConfig, scaled_h5_path: Path) -> None:
+def _method_calibration_result(method_id: str, cal_forecasts: list[dict[str, Any]], args: LSTMConformalRunConfig) -> dict[str, Any] | None:
+    if method_id == "ensemble_conformal_target_trajectory":
+        return calibrate_ensemble_normalized_conformal(
+            cal_forecasts, alpha=args.alpha, sigma_floor=np.asarray(args.sigma_floor), temporal_mode="trajectory",
+        )
+    if method_id == "ensemble_conformal_target_horizon":
+        return calibrate_ensemble_normalized_conformal(
+            cal_forecasts, alpha=args.alpha, sigma_floor=np.asarray(args.sigma_floor), temporal_mode="per_horizon",
+        )
+    if method_id == "absolute_conformal_target_horizon":
+        return calibrate_absolute_conformal(cal_forecasts, alpha=args.alpha, temporal_mode="per_horizon")
+    if method_id == "absolute_conformal_target_trajectory":
+        return calibrate_absolute_conformal(cal_forecasts, alpha=args.alpha, temporal_mode="trajectory")
+    if method_id == "raw_ensemble_2sigma":
+        return None
+    raise ValueError(f"Unsupported UQ method: {method_id}")
+
+
+def _calibration_metadata_json(calibration: dict[str, Any] | None, *, method_id: str, method_dir: Path) -> dict[str, Any]:
+    info = UQ_METHODS[method_id]
+    if calibration is None:
+        return {
+            "method_id": method_id,
+            "method_label": info["label"],
+            "temporal_mode": info["temporal_mode"],
+            "residual_type": info["residual_type"],
+            "uses_conformal_quantile": False,
+            "no_conformal_guarantee": True,
+        }
+    payload = {
+        "method_id": method_id,
+        "method_label": info["label"],
+        "alpha": calibration["alpha"],
+        "temporal_mode": calibration["temporal_mode"],
+        "residual_type": calibration["residual_type"],
+        "calibration_profile_names": calibration["calibration_profile_names"],
+    }
+    for key in ("q_by_target", "q_by_horizon_target", "quantile_index_by_target", "score_count_by_target", "calibration_count_by_horizon", "quantile_index_by_horizon_target", "sigma_floor"):
+        if key in calibration:
+            payload[key] = _json_safe(calibration[key])
+    scores_path = method_dir / "calibration_scores.h5"
+    with h5py.File(scores_path, "w") as h5f:
+        for key in ("calibration_scores_by_profile_target",):
+            if key in calibration:
+                h5f.create_dataset(key, data=calibration[key], compression="gzip", chunks=True)
+    payload["calibration_scores_h5"] = str(scores_path)
+    return payload
+
+
+def _forecast_shared_profiles(models, profile_ds, *, scaling_stats, ddof: int) -> list[dict[str, Any]]:
+    return [
+        compute_ensemble_profile_forecast(
+            models, str(name), x.numpy(), y.numpy(), scaling_stats=scaling_stats,
+            state_dim=STATE_DIM, ddof=ddof,
+        )
+        for name, x, y in profile_ds
+    ]
+
+
+def _run_joint_ensemble_uq(args: LSTMConformalRunConfig, scaled_h5_path: Path, *, config_path: Path | None = None) -> None:
     from rabl.machine_learning.bagging_ensemble import run_bagging_ensemble
     from rabl.machine_learning.lstm_pipeline import build_datasets
 
@@ -487,11 +560,13 @@ def _run_joint_ensemble_uq(args: LSTMConformalRunConfig, scaled_h5_path: Path) -
     if not datasets.get("cal_profile_names"):
         raise ValueError("joint_ensemble_normalized requires a non-empty profile-disjoint cal split.")
     _assert_profile_disjoint(datasets)
-    joint_dir = Path(args.out_dir) / "joint_ensemble_normalized"
+    methods = list(DEFAULT_UQ_METHODS if args.uq_methods is None else args.uq_methods)
+    comparison_dir = Path(args.out_dir) / "uq_comparison"
+    comparison_dir.mkdir(parents=True, exist_ok=True)
     scaling_stats = _load_scaling_stats(scaled_h5_path)
     if args.ensemble_source == "train":
         result = run_bagging_ensemble(
-            scaled_h5_path, out_dir=joint_dir / "ensemble_training", n_models=args.n_models,
+            scaled_h5_path, out_dir=comparison_dir / "ensemble_training", n_models=args.n_models,
             bag_fraction=args.bag_fraction, bag_split_mode="profile", seed=args.seed,
             batch_size=args.batch_size, epochs=args.epochs, early_stopping_patience=args.early_stopping_patience,
             early_stopping_min_delta=args.early_stopping_min_delta, learning_rate=args.learning_rate,
@@ -515,47 +590,94 @@ def _run_joint_ensemble_uq(args: LSTMConformalRunConfig, scaled_h5_path: Path) -
     models = result["models"]
     cal_ds = ProfileDataset(scaled_h5_path, datasets["cal_profile_names"], "cal")
     test_ds = ProfileDataset(scaled_h5_path, datasets["test_profile_names"], "test")
-    conformal = calibrate_joint_ensemble_normalized_conformal(
-        models, cal_ds, alpha=args.alpha, sigma_floor=np.asarray(args.sigma_floor),
-        state_dim=STATE_DIM, ddof=args.ensemble_ddof,
+
+    cal_shared = _forecast_shared_profiles(models, cal_ds, scaling_stats=scaling_stats, ddof=args.ensemble_ddof)
+    test_shared = _forecast_shared_profiles(models, test_ds, scaling_stats=scaling_stats, ddof=args.ensemble_ddof)
+    save_shared_ensemble_predictions_hdf5(
+        cal_shared, output_path=comparison_dir / "calibration_ensemble_predictions.h5",
+        target_names=target_names, ensemble_ddof=args.ensemble_ddof,
     )
-    if not np.isscalar(conformal["q_joint"]):
-        raise ValueError("q_joint must be scalar.")
-    def forecast_all(profile_ds):
-        return [joint_ensemble_conformal_forecast_profile(
-            models, str(name), x.numpy(), y.numpy(), conformal_result=conformal,
-            scaling_stats=scaling_stats, state_dim=STATE_DIM,
-        ) for name, x, y in profile_ds]
-    cal_forecasts = forecast_all(cal_ds)
-    test_forecasts = forecast_all(test_ds)
-    test_metrics = joint_ensemble_coverage_metrics(test_forecasts, target_names, sigma_floor=conformal["sigma_floor"])
-    cal_metrics = joint_ensemble_coverage_metrics(cal_forecasts, target_names, sigma_floor=conformal["sigma_floor"])
-    metadata = {
-        **conformal,
-        "target_names": target_names,
-        "scaling_type": args.scaling_type,
+    save_shared_ensemble_predictions_hdf5(
+        test_shared, output_path=comparison_dir / "test_ensemble_predictions.h5",
+        target_names=target_names, ensemble_ddof=args.ensemble_ddof,
+    )
+    shared_metadata = {
         "ensemble_source": result["ensemble_source"],
         "model_checkpoint_paths": [str(path) for path in result["model_paths"]],
         "ensemble_bagged_h5_path": str(result["bagged_h5_path"]),
         "architecture_validation": result["architecture_validation"],
         "scaling_match": bool(result["scaling_match"]),
         "overlap_checks": result["overlap_checks"],
+        "scaled_h5_path": str(scaled_h5_path),
+        "target_names": target_names,
         "calibration_profile_names": datasets["cal_profile_names"],
         "test_profile_names": datasets["test_profile_names"],
+        "alpha": float(args.alpha),
+        "nominal_coverage": 1.0 - float(args.alpha),
+        "sigma_floor": _json_safe(np.asarray(args.sigma_floor)),
+        "ensemble_ddof": int(args.ensemble_ddof),
+        "ensemble_member_count": len(models),
+        "config_path": None if config_path is None else str(config_path),
     }
-    joint_dir.mkdir(parents=True, exist_ok=True)
-    save_joint_ensemble_conformal_forecasts_hdf5(
-        cal_forecasts, output_path=joint_dir / "calibration_joint_ensemble_forecasts.h5", metadata=metadata,
-        target_names=target_names, save_member_forecasts=args.save_member_forecasts,
-    )
-    save_joint_ensemble_conformal_forecasts_hdf5(
-        test_forecasts, output_path=joint_dir / "test_joint_ensemble_forecasts.h5", metadata=metadata,
-        target_names=target_names, save_member_forecasts=args.save_member_forecasts,
-    )
-    (joint_dir / "joint_ensemble_calibration_metadata.json").write_text(json.dumps(_json_safe(metadata), indent=2))
-    (joint_dir / "joint_ensemble_coverage_metrics.json").write_text(json.dumps(_json_safe({"calibration": cal_metrics, "test": test_metrics}), indent=2))
-    print(f"Joint trajectory coverage (primary): {test_metrics['primary_joint_trajectory_coverage']:.4f}")
+    (comparison_dir / "shared_ensemble_metadata.json").write_text(json.dumps(_json_safe(shared_metadata), indent=2))
 
+    manifest_methods: list[dict[str, Any]] = []
+    for method_id in methods:
+        info = UQ_METHODS[method_id]
+        method_dir = comparison_dir / method_id
+        method_dir.mkdir(parents=True, exist_ok=True)
+        calibration = _method_calibration_result(method_id, cal_shared, args)
+        cal_entries = [
+            apply_uq_method(forecast, method_id=method_id, calibration_result=calibration, scaling_stats=scaling_stats,
+                            alpha=args.alpha, sigma_floor=np.asarray(args.sigma_floor), include_member_predictions=args.save_member_forecasts)
+            for forecast in cal_shared
+        ]
+        test_entries = [
+            apply_uq_method(forecast, method_id=method_id, calibration_result=calibration, scaling_stats=scaling_stats,
+                            alpha=args.alpha, sigma_floor=np.asarray(args.sigma_floor), include_member_predictions=args.save_member_forecasts)
+            for forecast in test_shared
+        ]
+        h5_metadata = {
+            "method_id": method_id,
+            "method_label": info["label"],
+            "alpha": float(args.alpha),
+            "nominal_coverage": 1.0 - float(args.alpha),
+            "ensemble_member_count": len(models),
+            "ensemble_ddof": int(args.ensemble_ddof),
+            "residual_space": "scaled",
+            "temporal_calibration_mode": info["temporal_mode"],
+            "uses_ensemble_normalization": bool(info["uses_ensemble_normalization"]),
+        }
+        calibration_forecasts_path = method_dir / "calibration_forecasts.h5"
+        test_forecasts_path = method_dir / "test_forecasts.h5"
+        save_uq_forecasts_hdf5(cal_entries, output_path=calibration_forecasts_path, metadata=h5_metadata, target_names=target_names)
+        save_uq_forecasts_hdf5(test_entries, output_path=test_forecasts_path, metadata=h5_metadata, target_names=target_names)
+        metrics = compute_uq_coverage_metrics(
+            test_entries, target_names, alpha=args.alpha, primary_coverage_type=info["primary_coverage_type"],
+            no_conformal_guarantee=(method_id == "raw_ensemble_2sigma"),
+        )
+        metrics_path = method_dir / "coverage_metrics.json"
+        metrics_path.write_text(json.dumps(_json_safe(metrics), indent=2))
+        metadata_name = "method_metadata.json" if method_id == "raw_ensemble_2sigma" else "calibration_metadata.json"
+        metadata_path = method_dir / metadata_name
+        metadata = _calibration_metadata_json(calibration, method_id=method_id, method_dir=method_dir)
+        metadata_path.write_text(json.dumps(_json_safe(metadata), indent=2))
+        manifest_methods.append({
+            "method_id": method_id,
+            "method_label": info["label"],
+            "temporal_mode": info["temporal_mode"],
+            "residual_type": info["residual_type"],
+            "normalized": bool(info["uses_ensemble_normalization"]),
+            "calibration_metadata_path": str(metadata_path),
+            "calibration_forecasts_path": str(calibration_forecasts_path),
+            "test_forecasts_path": str(test_forecasts_path),
+            "metrics_path": str(metrics_path),
+        })
+        print(f"{method_id}: primary coverage={metrics['primary_empirical_coverage']:.4f}, mean width={metrics['mean_interval_width_overall']:.6g}")
+
+    manifest = {**shared_metadata, "experiment": Path(args.out_dir).name, "uq_methods": manifest_methods}
+    (comparison_dir / "uq_methods_manifest.json").write_text(json.dumps(_json_safe(manifest), indent=2))
+    print(f"Saved UQ comparison manifest to: {comparison_dir / 'uq_methods_manifest.json'}")
 
 def main() -> None:
     cli_args = parse_args()
@@ -569,7 +691,7 @@ def main() -> None:
     weights_path: Path | None = None
     used_device: torch.device | None = None
     if args.conformal_method == "joint_ensemble_normalized":
-        _run_joint_ensemble_uq(args, scaled_h5_path)
+        _run_joint_ensemble_uq(args, scaled_h5_path, config_path=cli_args.config)
     else:
         pipeline, model, used_device, weights_path = _train_model(args, scaled_h5_path)
         print("Evaluating deterministic rolling forecasts on the test split...")

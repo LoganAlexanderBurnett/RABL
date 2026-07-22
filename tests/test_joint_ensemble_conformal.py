@@ -156,3 +156,82 @@ def test_checkpoint_loader_reports_incompatible_architecture(tmp_path):
         load_bagged_lstm_ensemble_checkpoints(
             [bad_a, bad_b], timesteps=3, num_features=2, num_targets=1, device="cpu"
         )
+
+
+def _shared_forecast(name, truth, mean, spread):
+    return {
+        "profile": name,
+        "t": np.arange(truth.shape[0], dtype=np.float32),
+        "u": np.zeros(truth.shape[0], dtype=np.float32),
+        "y_true_scaled": truth.astype(np.float32),
+        "mean_scaled": mean.astype(np.float32),
+        "spread_scaled": spread.astype(np.float32),
+        "member_predictions_scaled": np.stack([mean - spread, mean + spread], axis=0).astype(np.float32),
+        "y_true": truth.astype(np.float32),
+        "y_pred": mean.astype(np.float32),
+    }
+
+
+def test_five_uq_method_quantile_shapes_and_centers(tmp_path):
+    scaling = {"type": "standard", "y": {"mean": np.zeros(2, dtype=np.float32), "std": np.ones(2, dtype=np.float32)}}
+    cal = [
+        _shared_forecast("c0", np.array([[1.0, 0.0], [0.0, 2.0]]), np.zeros((2, 2)), np.ones((2, 2))),
+        _shared_forecast("c1", np.array([[2.0, 0.0], [0.0, 4.0]]), np.zeros((2, 2)), np.ones((2, 2))),
+        _shared_forecast("c2", np.array([[3.0, 0.0], [0.0, 6.0]]), np.zeros((2, 2)), np.ones((2, 2))),
+    ]
+    test = _shared_forecast("t0", np.zeros((2, 2)), np.full((2, 2), 0.5), np.ones((2, 2)))
+    ens_traj = cp.calibrate_ensemble_normalized_conformal(cal, alpha=0.25, sigma_floor=1.0, temporal_mode="trajectory")
+    ens_horizon = cp.calibrate_ensemble_normalized_conformal(cal, alpha=0.25, sigma_floor=np.array([1.0, 2.0]), temporal_mode="per_horizon")
+    abs_horizon = cp.calibrate_absolute_conformal(cal, alpha=0.25, temporal_mode="per_horizon")
+    abs_traj = cp.calibrate_absolute_conformal(cal, alpha=0.25, temporal_mode="trajectory")
+    assert ens_traj["q_by_target"].shape == (2,)
+    assert ens_horizon["q_by_horizon_target"].shape == (2, 2)
+    assert abs_horizon["q_by_horizon_target"].shape == (2, 2)
+    assert abs_traj["q_by_target"].shape == (2,)
+    assert ens_traj["q_by_target"] == pytest.approx([1.5, 3.0])
+    assert abs_traj["q_by_target"] == pytest.approx([3.0, 6.0])
+    methods = {
+        "ensemble_conformal_target_trajectory": ens_traj,
+        "ensemble_conformal_target_horizon": ens_horizon,
+        "absolute_conformal_target_horizon": abs_horizon,
+        "absolute_conformal_target_trajectory": abs_traj,
+        "raw_ensemble_2sigma": None,
+    }
+    entries = []
+    for method_id, calibration in methods.items():
+        entry = cp.apply_uq_method(test, method_id=method_id, calibration_result=calibration, scaling_stats=scaling, alpha=0.25, sigma_floor=1.0)
+        entries.append(entry)
+        assert np.allclose(entry["y_pred_scaled"], test["mean_scaled"])
+    centers = [entry["y_pred_scaled"] for entry in entries]
+    assert all(np.array_equal(centers[0], center) for center in centers[1:])
+    raw = entries[-1]
+    assert np.allclose(raw["lower_scaled"], test["mean_scaled"] - 2.0 * test["spread_scaled"])
+    assert np.allclose(raw["upper_scaled"], test["mean_scaled"] + 2.0 * test["spread_scaled"])
+
+
+def test_per_horizon_calibration_uses_available_profiles_only():
+    cal = [
+        _shared_forecast("c0", np.array([[1.0], [10.0]]), np.zeros((2, 1)), np.ones((2, 1))),
+        _shared_forecast("c1", np.array([[2.0]]), np.zeros((1, 1)), np.ones((1, 1))),
+    ]
+    result = cp.calibrate_absolute_conformal(cal, alpha=0.5, temporal_mode="per_horizon")
+    assert result["q_by_horizon_target"].shape == (2, 1)
+    assert result["calibration_count_by_horizon"].tolist() == [2, 1]
+    assert result["q_by_horizon_target"][:, 0].tolist() == pytest.approx([2.0, 10.0])
+
+
+def test_standardized_uq_hdf5_contains_required_schema(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    entry = {
+        "profile": "p0", "t": np.arange(2), "u": np.zeros(2),
+        "y_true": np.zeros((2, 1)), "y_pred": np.zeros((2, 1)),
+        "lower": -np.ones((2, 1)), "upper": np.ones((2, 1)), "interval_width": 2*np.ones((2, 1)),
+        "y_true_scaled": np.zeros((2, 1)), "y_pred_scaled": np.zeros((2, 1)),
+        "lower_scaled": -np.ones((2, 1)), "upper_scaled": np.ones((2, 1)), "spread_scaled": np.ones((2, 1)),
+    }
+    path = tmp_path / "uq.h5"
+    cp.save_uq_forecasts_hdf5([entry], output_path=path, metadata={"method_id": "raw_ensemble_2sigma", "alpha": 0.05}, target_names=["target"])
+    with h5py.File(path, "r") as h5f:
+        assert h5f.attrs["method_id"] == "raw_ensemble_2sigma"
+        for key in ("t", "u", "y_true", "y_pred", "lower", "upper", "interval_width", "y_true_scaled", "y_pred_scaled", "lower_scaled", "upper_scaled", "spread_scaled"):
+            assert key in h5f["p0"]
