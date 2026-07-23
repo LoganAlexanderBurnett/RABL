@@ -827,7 +827,7 @@ def analyze_methods_manifest(manifest_json: Path, out_dir: Path, *, max_forecast
             })
         all_json["methods"][method_id] = {"overall": overall_rows[-1]}
     def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-        with path.open("w", newline="") as fp:
+        with path.open("w", newline="", encoding="utf-8") as fp:
             writer = csv.DictWriter(fp, fieldnames=list(rows[0].keys()))
             writer.writeheader(); writer.writerows(rows)
     write_csv(out_dir / "method_overall_summary.csv", overall_rows)
