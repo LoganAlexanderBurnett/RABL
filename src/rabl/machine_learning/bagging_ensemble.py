@@ -739,8 +739,6 @@ def load_bagged_lstm_ensemble_checkpoints(
         raise FileNotFoundError(f"Model checkpoint path(s) not found: {missing_paths}")
 
     resolved_device = torch.device(device)
-    bag_overlap_diagnostics = save_bag_overlap_diagnostics(bagged_h5_path, out_dir / "bag_diagnostics", n_models=config.n_models)
-
     models: list[torch.nn.Module] = []
     for model_path in model_paths:
         model = build_model(
@@ -1243,8 +1241,6 @@ def run_bagging_ensemble(
                 print("[bagging] bag distribution overlap plot not created (no bag data found).")
             else:
                 print(f"[bagging] saved bag distribution overlap plot: {bag_distribution_overlap_plot}")
-
-    bag_overlap_diagnostics = save_bag_overlap_diagnostics(bagged_h5_path, out_dir / "bag_diagnostics", n_models=config.n_models)
 
     models: list[torch.nn.Module] = []
     histories: list[dict[str, list[float]]] = []

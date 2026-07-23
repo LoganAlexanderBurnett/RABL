@@ -58,92 +58,6 @@ def test_joint_coverage_is_complete_trajectory_event() -> None:
 
 
 
-def _write_minimal_scaled_h5(path, *, scale_offset=0.0, leak_cal=False):
-    h5py = pytest.importorskip("h5py")
-    with h5py.File(path, "w") as h5f:
-        scaling = h5f.create_group("scaling")
-        scaling.create_dataset("x_mean", data=np.array([0.0 + scale_offset, 0.0], dtype=np.float32))
-        scaling.create_dataset("x_std", data=np.array([1.0, 1.0], dtype=np.float32))
-        scaling.create_dataset("y_mean", data=np.array([0.0], dtype=np.float32))
-        scaling.create_dataset("y_std", data=np.array([1.0], dtype=np.float32))
-        for split, names in {
-            "train": ["train_a"], "val": ["val_a"], "cal": ["cal_a"], "test": ["test_a"],
-        }.items():
-            files = h5f.create_group(f"{split}/files")
-            for name in names:
-                grp = files.create_group(name)
-                grp.create_dataset("X", data=np.zeros((2, 3, 2), dtype=np.float32))
-                grp.create_dataset("Y", data=np.zeros((2, 1), dtype=np.float32))
-        for idx in range(2):
-            files = h5f.create_group(f"train/bag_{idx}/files")
-            name = "cal_a" if leak_cal and idx == 0 else f"bag_train_{idx}"
-            grp = files.create_group(name)
-            grp.create_dataset("X", data=np.zeros((2, 3, 2), dtype=np.float32))
-            grp.create_dataset("Y", data=np.zeros((2, 1), dtype=np.float32))
-
-
-def test_checkpoint_metadata_validation_success_and_leakage(tmp_path):
-    pytest.importorskip("torch")
-    import scripts.run_lstm_conformal_prediction as runner
-
-    current = tmp_path / "current.h5"
-    bagged = tmp_path / "bagged.h5"
-    leaked = tmp_path / "leaked.h5"
-    _write_minimal_scaled_h5(current)
-    _write_minimal_scaled_h5(bagged)
-    _write_minimal_scaled_h5(leaked, leak_cal=True)
-    names = runner._bag_training_profile_names(bagged, 2)
-    assert names == [["bag_train_0"], ["bag_train_1"]]
-    result = runner._assert_no_bag_leakage(names, cal_profile_names=["cal_a"], test_profile_names=["test_a"])
-    assert result["train_calibration_overlap_detected"] is False
-    assert runner._scaling_stats_equal(runner._load_scaling_stats(current), runner._load_scaling_stats(bagged))
-    leaked_names = runner._bag_training_profile_names(leaked, 2)
-    with pytest.raises(ValueError, match="leak"):
-        runner._assert_no_bag_leakage(leaked_names, cal_profile_names=["cal_a"], test_profile_names=["test_a"])
-
-
-def test_checkpoint_mode_missing_file_and_scaler_mismatch(tmp_path, monkeypatch):
-    pytest.importorskip("torch")
-    import scripts.run_lstm_conformal_prediction as runner
-
-    current = tmp_path / "current.h5"
-    bagged = tmp_path / "bagged.h5"
-    mismatch = tmp_path / "mismatch.h5"
-    checkpoint_a = tmp_path / "a.pt"
-    checkpoint_b = tmp_path / "b.pt"
-    checkpoint_a.write_bytes(b"placeholder")
-    checkpoint_b.write_bytes(b"placeholder")
-    _write_minimal_scaled_h5(current)
-    _write_minimal_scaled_h5(bagged)
-    _write_minimal_scaled_h5(mismatch, scale_offset=1.0)
-    datasets = {
-        "sample_shape": (2, 3, 2), "target_shape": (2, 1),
-        "cal_profile_names": ["cal_a"], "test_profile_names": ["test_a"],
-    }
-    args = runner.LSTMConformalRunConfig(
-        sim_root=".", batches=["0001"], lookback=1, config_py_path="scripts/config.py",
-        unscaled_out_dir=str(tmp_path), scaled_out_dir=str(tmp_path), out_dir=str(tmp_path),
-        conformal_method="joint_ensemble_normalized", ensemble_source="checkpoints",
-        ensemble_checkpoint_paths=[str(checkpoint_a), str(tmp_path / "missing.pt")],
-        ensemble_bagged_h5_path=str(bagged),
-    )
-    with pytest.raises(FileNotFoundError):
-        runner._load_joint_ensemble_from_checkpoints(
-            args, scaled_h5_path=current, datasets=datasets, scaling_stats=runner._load_scaling_stats(current)
-        )
-    args = runner.LSTMConformalRunConfig(
-        sim_root=".", batches=["0001"], lookback=1, config_py_path="scripts/config.py",
-        unscaled_out_dir=str(tmp_path), scaled_out_dir=str(tmp_path), out_dir=str(tmp_path),
-        conformal_method="joint_ensemble_normalized", ensemble_source="checkpoints",
-        ensemble_checkpoint_paths=[str(checkpoint_a), str(checkpoint_b)],
-        ensemble_bagged_h5_path=str(mismatch),
-    )
-    with pytest.raises(ValueError, match="scaling statistics"):
-        runner._load_joint_ensemble_from_checkpoints(
-            args, scaled_h5_path=current, datasets=datasets, scaling_stats=runner._load_scaling_stats(current)
-        )
-
-
 def test_checkpoint_loader_reports_incompatible_architecture(tmp_path):
     torch = pytest.importorskip("torch")
     from rabl.machine_learning.bagging_ensemble import load_bagged_lstm_ensemble_checkpoints
@@ -235,3 +149,60 @@ def test_standardized_uq_hdf5_contains_required_schema(tmp_path):
         assert h5f.attrs["method_id"] == "raw_ensemble_2sigma"
         for key in ("t", "u", "y_true", "y_pred", "lower", "upper", "interval_width", "y_true_scaled", "y_pred_scaled", "lower_scaled", "upper_scaled", "spread_scaled"):
             assert key in h5f["p0"]
+
+
+def test_saved_audit_forecast_config_rejects_deprecated_fields(tmp_path):
+    import scripts.run_lstm_conformal_prediction as runner
+
+    cfg_path = tmp_path / "bad_config.json"
+    cfg_path.write_text(
+        '{"scaled_h5_path":"x.h5","calibration_ensemble_forecasts_audit_h5_path":"cal.h5",'
+        '"test_ensemble_forecasts_audit_h5_path":"test.h5","uq_output_dir":"out",'
+        '"train_manifest_path":"train.json","val_manifest_path":"val.json",'
+        '"cal_manifest_path":"cal.json","test_manifest_path":"test.json",'
+        '"ensemble_source":"checkpoints"}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="unsupported dataset/training/checkpoint keys"):
+        runner._load_cfg(cfg_path)
+
+
+def test_load_saved_audit_ensemble_forecasts_schema(tmp_path):
+    import h5py
+    import scripts.run_lstm_conformal_prediction as runner
+
+    scaled = tmp_path / "scaled.h5"
+    with h5py.File(scaled, "w") as h5f:
+        scaling = h5f.create_group("scaling")
+        scaling.create_dataset("x_mean", data=np.zeros(16, dtype=np.float32))
+        scaling.create_dataset("x_std", data=np.ones(16, dtype=np.float32))
+        scaling.create_dataset("y_mean", data=np.array([10.0], dtype=np.float32))
+        scaling.create_dataset("y_std", data=np.array([2.0], dtype=np.float32))
+
+    forecast_h5 = tmp_path / "forecast_audit.h5"
+    with h5py.File(forecast_h5, "w") as h5f:
+        h5f.attrs["target_names"] = np.asarray(["target"], dtype="S")
+        h5f.attrs["member_count"] = 2
+        h5f.attrs["ensemble_std_ddof"] = 0
+        grp = h5f.create_group("p0")
+        grp.create_dataset("t", data=np.arange(2, dtype=np.float32))
+        grp.create_dataset("control", data=np.zeros(2, dtype=np.float32))
+        grp.create_dataset("y_true_scaled", data=np.array([[0.0], [1.0]], dtype=np.float32))
+        grp.create_dataset("member_predictions_scaled", data=np.zeros((2, 2, 1), dtype=np.float32))
+        grp.create_dataset("ensemble_mean_scaled", data=np.array([[0.5], [1.5]], dtype=np.float32))
+        grp.create_dataset("ensemble_std_scaled", data=np.ones((2, 1), dtype=np.float32))
+
+    forecasts = runner._load_audit_ensemble_forecasts(
+        forecast_h5,
+        scaling_stats=runner._load_scaling_stats(scaled),
+        expected_profiles=["p0"],
+        target_names=["target"],
+        expected_ddof=0,
+    )
+    assert len(forecasts) == 1
+    assert forecasts[0]["profile"] == "p0"
+    assert forecasts[0]["mean_scaled"].shape == (2, 1)
+    assert forecasts[0]["spread_scaled"].shape == (2, 1)
+    assert forecasts[0]["member_predictions_scaled"].shape == (2, 2, 1)
+    assert forecasts[0]["y_true"].tolist() == pytest.approx([[10.0], [12.0]])
+    assert forecasts[0]["y_pred"].tolist() == pytest.approx([[11.0], [13.0]])
