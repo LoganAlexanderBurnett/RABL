@@ -35,13 +35,7 @@ METHOD_COLORS = {
     "ensemble_conformal_target_horizon": "#ff7f0e",
     "raw_ensemble_2sigma": "#9467bd",
 }
-METHOD_LINESTYLES = {
-    "absolute_conformal_target_trajectory": "-",
-    "absolute_conformal_target_horizon": "--",
-    "ensemble_conformal_target_trajectory": "-.",
-    "ensemble_conformal_target_horizon": ":",
-    "raw_ensemble_2sigma": (0, (3, 1, 1, 1)),
-}
+METHOD_LINESTYLES = {method_id: "-" for method_id in CANONICAL_METHOD_ORDER}
 TARGET_ORDER = [
     "Tf", "Tm", "Thp", "TN2", "Tsg", "T_steam_out", "x_steam_out",
     "c[1]", "c[2]", "c[3]", "c[4]", "c[5]", "c[6]", "n", "rho_dollars",
@@ -198,9 +192,17 @@ def _plot_profile(profile: str, method_data: dict[str, dict[str, Any]], methods:
         ax.grid(True, alpha=0.2)
     for ax in axes[len(order) + 1:]:
         ax.axis("off")
-    fig.legend(legend_handles, [h.get_label() for h in legend_handles], loc="upper center", ncol=4, fontsize=14)
     fig.suptitle(f"MACE/UQ interval comparison — {profile}", y=0.995)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.legend(
+        legend_handles,
+        [h.get_label() for h in legend_handles],
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.965),
+        ncol=4,
+        fontsize=14,
+        frameon=True,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.90])
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=250, bbox_inches="tight")
     plt.close(fig)
