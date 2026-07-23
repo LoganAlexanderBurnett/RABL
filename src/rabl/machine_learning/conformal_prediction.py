@@ -473,8 +473,8 @@ def joint_ensemble_coverage_metrics(
         "targetwise_trajectory_coverage": {name: float(value) for name, value in zip(target_names, np.mean(targetwise, axis=0))},
         "marginal_pointwise_coverage_overall": float(np.mean(points)),
         "marginal_pointwise_coverage_by_target": {name: float(value) for name, value in zip(target_names, np.mean(points, axis=0))},
-        "mean_interval_width_overall": float(np.mean(width)), "median_interval_width_overall": float(np.median(width)),
-        "mean_interval_width_by_target": {name: float(value) for name, value in zip(target_names, np.mean(width, axis=0))},
+        "mean_interval_width_physical_by_target": {name: float(value) for name, value in zip(target_names, np.mean(width, axis=0))},
+        "median_interval_width_physical_by_target": {name: float(value) for name, value in zip(target_names, np.median(width, axis=0))},
         "mean_ensemble_spread": float(np.mean(spread)), "median_ensemble_spread": float(np.median(spread)),
         "spearman_spread_absolute_error_overall": _spearman_rank_correlation(spread.ravel(), error.ravel()),
         "spearman_spread_absolute_error_by_target": {
@@ -493,10 +493,6 @@ def joint_ensemble_coverage_metrics(
     max_horizon = max(entry["y_true"].shape[0] for entry in forecasts)
     metrics["marginal_pointwise_coverage_by_horizon"] = [
         float(np.mean(np.concatenate([mask[t:t + 1] for mask in covered_profiles if mask.shape[0] > t], axis=0)))
-        for t in range(max_horizon)
-    ]
-    metrics["mean_interval_width_by_horizon"] = [
-        float(np.mean(np.concatenate([arr[t:t + 1] for arr in widths if arr.shape[0] > t], axis=0)))
         for t in range(max_horizon)
     ]
     return metrics
@@ -530,7 +526,7 @@ def save_joint_ensemble_conformal_forecasts_hdf5(
 
 UQ_METHODS: dict[str, dict[str, Any]] = {
     "ensemble_conformal_target_trajectory": {
-        "label": "Ensemble conformal — target trajectory",
+        "label": "MACE-Trajectory",
         "temporal_mode": "trajectory",
         "residual_type": "ensemble_normalized",
         "primary_coverage_type": "targetwise_trajectory_coverage",
@@ -538,7 +534,7 @@ UQ_METHODS: dict[str, dict[str, Any]] = {
         "uses_ensemble_normalization": True,
     },
     "ensemble_conformal_target_horizon": {
-        "label": "Ensemble conformal — target/horizon",
+        "label": "MACE-Horizon",
         "temporal_mode": "per_horizon",
         "residual_type": "ensemble_normalized",
         "primary_coverage_type": "marginal_pointwise_coverage_by_horizon_target",
@@ -823,78 +819,119 @@ def compute_uq_coverage_metrics(
     primary_coverage_type: str,
     no_conformal_guarantee: bool = False,
 ) -> dict[str, Any]:
-    """Compute standardized coverage/efficiency metrics for any UQ method."""
+    """Compute standardized coverage/efficiency metrics for any UQ method.
+
+    Physical-space interval widths are reported only by target because targets
+    have heterogeneous units. Cross-target aggregate width and interval-score
+    summaries use scaled-space intervals.
+    """
     if not forecasts:
         raise ValueError("Cannot compute UQ coverage metrics for no forecasts.")
     nominal = 1.0 - float(alpha)
     covered = [(e["lower"] <= e["y_true"]) & (e["y_true"] <= e["upper"]) for e in forecasts]
-    widths = [np.asarray(e["interval_width"], dtype=np.float64) for e in forecasts]
-    errors = [np.abs(np.asarray(e["y_true"], dtype=np.float64) - np.asarray(e["y_pred"], dtype=np.float64)) for e in forecasts]
-    y_true_all = np.concatenate([np.asarray(e["y_true"], dtype=np.float64) for e in forecasts], axis=0)
+    covered_scaled = [(e["lower_scaled"] <= e["y_true_scaled"]) & (e["y_true_scaled"] <= e["upper_scaled"]) for e in forecasts]
+    widths_physical = [np.asarray(e["interval_width"], dtype=np.float64) for e in forecasts]
+    widths_scaled = [np.asarray(e["upper_scaled"], dtype=np.float64) - np.asarray(e["lower_scaled"], dtype=np.float64) for e in forecasts]
+    errors_scaled = [np.abs(np.asarray(e["y_true_scaled"], dtype=np.float64) - np.asarray(e["y_pred_scaled"], dtype=np.float64)) for e in forecasts]
+    y_true_physical_all = np.concatenate([np.asarray(e["y_true"], dtype=np.float64) for e in forecasts], axis=0)
+    y_true_scaled_all = np.concatenate([np.asarray(e["y_true_scaled"], dtype=np.float64) for e in forecasts], axis=0)
     points = np.concatenate(covered, axis=0)
-    width_all = np.concatenate(widths, axis=0)
-    err_all = np.concatenate(errors, axis=0)
-    target_std = np.std(y_true_all, axis=0)
-    target_range = np.ptp(y_true_all, axis=0)
-    safe_std = np.where(target_std > 0, target_std, np.nan)
-    safe_range = np.where(target_range > 0, target_range, np.nan)
-    lower_miss = [np.maximum(np.asarray(e["lower"]) - np.asarray(e["y_true"]), 0.0) for e in forecasts]
-    upper_miss = [np.maximum(np.asarray(e["y_true"]) - np.asarray(e["upper"]), 0.0) for e in forecasts]
-    interval_scores = [w + (2.0 / float(alpha)) * (lo + hi) for w, lo, hi in zip(widths, lower_miss, upper_miss)]
-    score_all = np.concatenate(interval_scores, axis=0)
+    points_scaled = np.concatenate(covered_scaled, axis=0)
+    width_physical_all = np.concatenate(widths_physical, axis=0)
+    width_scaled_all = np.concatenate(widths_scaled, axis=0)
+    err_scaled_all = np.concatenate(errors_scaled, axis=0)
+    target_std_physical = np.std(y_true_physical_all, axis=0)
+    target_range_physical = np.ptp(y_true_physical_all, axis=0)
+    target_std_scaled = np.std(y_true_scaled_all, axis=0)
+    target_range_scaled = np.ptp(y_true_scaled_all, axis=0)
+    lower_miss_scaled = [
+        np.maximum(np.asarray(e["lower_scaled"]) - np.asarray(e["y_true_scaled"]), 0.0)
+        for e in forecasts
+    ]
+    upper_miss_scaled = [
+        np.maximum(np.asarray(e["y_true_scaled"]) - np.asarray(e["upper_scaled"]), 0.0)
+        for e in forecasts
+    ]
+    interval_scores_scaled = [
+        w + (2.0 / float(alpha)) * (lo + hi)
+        for w, lo, hi in zip(widths_scaled, lower_miss_scaled, upper_miss_scaled)
+    ]
+    score_scaled_all = np.concatenate(interval_scores_scaled, axis=0)
     targetwise_trajectory = np.asarray([np.all(mask, axis=0) for mask in covered], dtype=bool)
     complete_trajectory = np.asarray([np.all(mask) for mask in covered], dtype=bool)
     max_horizon = max(mask.shape[0] for mask in covered)
     by_horizon = []
     by_horizon_target = np.full((max_horizon, len(target_names)), np.nan, dtype=np.float64)
-    width_by_horizon = []
-    mae_by_horizon = []
-    score_by_horizon = []
+    scaled_width_by_horizon = []
+    scaled_mae_by_horizon = []
+    scaled_score_by_horizon = []
     n_valid = []
     for t in range(max_horizon):
         masks_t = [mask[t] for mask in covered if mask.shape[0] > t]
-        widths_t = [arr[t] for arr in widths if arr.shape[0] > t]
-        errors_t = [arr[t] for arr in errors if arr.shape[0] > t]
-        scores_t = [arr[t] for arr in interval_scores if arr.shape[0] > t]
+        widths_t = [arr[t] for arr in widths_scaled if arr.shape[0] > t]
+        errors_t = [arr[t] for arr in errors_scaled if arr.shape[0] > t]
+        scores_t = [arr[t] for arr in interval_scores_scaled if arr.shape[0] > t]
         stacked_mask = np.vstack(masks_t)
         by_horizon.append(float(np.mean(stacked_mask)))
         by_horizon_target[t, :] = np.mean(stacked_mask, axis=0)
-        width_by_horizon.append(float(np.mean(np.vstack(widths_t))))
-        mae_by_horizon.append(float(np.mean(np.vstack(errors_t))))
-        score_by_horizon.append(float(np.mean(np.vstack(scores_t))))
+        scaled_width_by_horizon.append(float(np.mean(np.vstack(widths_t))))
+        scaled_mae_by_horizon.append(float(np.mean(np.vstack(errors_t))))
+        scaled_score_by_horizon.append(float(np.mean(np.vstack(scores_t))))
         n_valid.append(len(masks_t))
     point_by_target = np.mean(points, axis=0)
     target_traj = np.mean(targetwise_trajectory, axis=0)
-    primary = float(np.nanmean(target_traj)) if primary_coverage_type == "targetwise_trajectory_coverage" else float(np.nanmean(by_horizon_target))
-    target_gap = point_by_target - nominal
+    point_target_horizon = by_horizon_target
+    if no_conformal_guarantee:
+        primary = float(np.nanmean(points))
+        primary_worst = float(np.nanmin(point_by_target))
+    elif primary_coverage_type == "targetwise_trajectory_coverage":
+        primary = float(np.nanmean(target_traj))
+        primary_worst = float(np.nanmin(target_traj))
+    else:
+        primary = float(np.nanmean(point_target_horizon))
+        primary_worst = float(np.nanmin(point_target_horizon))
+    point_gap = point_by_target - nominal
+    traj_gap = target_traj - nominal
+    safe_std_physical = np.where(target_std_physical > 0, target_std_physical, np.nan)
+    safe_range_physical = np.where(target_range_physical > 0, target_range_physical, np.nan)
     return {
         "alpha": float(alpha),
         "nominal_coverage": nominal,
         "primary_coverage_type": primary_coverage_type,
         "primary_empirical_coverage": primary,
+        "primary_worst_target_coverage": primary_worst,
         "no_conformal_guarantee": bool(no_conformal_guarantee),
-        "marginal_pointwise_coverage_overall": float(np.mean(points)),
+        "marginal_pointwise_coverage_overall": float(np.mean(points_scaled)),
         "marginal_pointwise_coverage_by_target": {n: float(v) for n, v in zip(target_names, point_by_target)},
         "marginal_pointwise_coverage_by_horizon": by_horizon,
         "marginal_pointwise_coverage_by_horizon_target": by_horizon_target.tolist(),
         "targetwise_trajectory_coverage": {n: float(v) for n, v in zip(target_names, target_traj)},
+        "mean_targetwise_trajectory_coverage": float(np.nanmean(target_traj)),
         "complete_multivariate_trajectory_coverage": float(np.mean(complete_trajectory)),
-        "mean_interval_width_overall": float(np.mean(width_all)),
-        "median_interval_width_overall": float(np.median(width_all)),
-        "p90_interval_width_overall": float(np.quantile(width_all, 0.9)),
-        "mean_interval_width_by_target": {n: float(v) for n, v in zip(target_names, np.mean(width_all, axis=0))},
-        "median_interval_width_by_target": {n: float(v) for n, v in zip(target_names, np.median(width_all, axis=0))},
-        "p90_interval_width_by_target": {n: float(v) for n, v in zip(target_names, np.quantile(width_all, 0.9, axis=0))},
-        "mean_interval_width_by_horizon": width_by_horizon,
-        "mean_absolute_error_by_horizon": mae_by_horizon,
-        "mean_width_normalized_by_target_std": {n: float(v) for n, v in zip(target_names, np.nanmean(width_all, axis=0) / safe_std)},
-        "mean_width_normalized_by_target_range": {n: float(v) for n, v in zip(target_names, np.nanmean(width_all, axis=0) / safe_range)},
-        "mean_interval_score_overall": float(np.mean(score_all)),
-        "mean_interval_score_by_target": {n: float(v) for n, v in zip(target_names, np.mean(score_all, axis=0))},
-        "mean_interval_score_by_horizon": score_by_horizon,
-        "worst_target_coverage": float(np.min(point_by_target)),
-        "maximum_absolute_targetwise_coverage_deviation_from_nominal": float(np.max(np.abs(target_gap))),
-        "mean_absolute_targetwise_coverage_deviation_from_nominal": float(np.mean(np.abs(target_gap))),
+        "worst_target_pointwise_coverage": float(np.nanmin(point_by_target)),
+        "worst_target_trajectory_coverage": float(np.nanmin(target_traj)),
+        "maximum_absolute_pointwise_target_coverage_deviation_from_nominal": float(np.max(np.abs(point_gap))),
+        "mean_absolute_pointwise_target_coverage_deviation_from_nominal": float(np.mean(np.abs(point_gap))),
+        "maximum_absolute_trajectory_target_coverage_deviation_from_nominal": float(np.max(np.abs(traj_gap))),
+        "mean_absolute_trajectory_target_coverage_deviation_from_nominal": float(np.mean(np.abs(traj_gap))),
+        "mean_scaled_interval_width_overall": float(np.mean(width_scaled_all)),
+        "median_scaled_interval_width_overall": float(np.median(width_scaled_all)),
+        "p90_scaled_interval_width_overall": float(np.quantile(width_scaled_all, 0.9)),
+        "mean_scaled_interval_width_by_target": {n: float(v) for n, v in zip(target_names, np.mean(width_scaled_all, axis=0))},
+        "mean_scaled_interval_width_by_horizon": scaled_width_by_horizon,
+        "mean_scaled_absolute_error_by_horizon": scaled_mae_by_horizon,
+        "mean_scaled_interval_score_overall": float(np.mean(score_scaled_all)),
+        "mean_scaled_interval_score_by_target": {n: float(v) for n, v in zip(target_names, np.mean(score_scaled_all, axis=0))},
+        "mean_scaled_interval_score_by_horizon": scaled_score_by_horizon,
+        "mean_interval_width_physical_by_target": {n: float(v) for n, v in zip(target_names, np.mean(width_physical_all, axis=0))},
+        "median_interval_width_physical_by_target": {n: float(v) for n, v in zip(target_names, np.median(width_physical_all, axis=0))},
+        "p90_interval_width_physical_by_target": {n: float(v) for n, v in zip(target_names, np.quantile(width_physical_all, 0.9, axis=0))},
+        "mean_width_physical_normalized_by_target_std": {n: float(v) for n, v in zip(target_names, np.nanmean(width_physical_all, axis=0) / safe_std_physical)},
+        "mean_width_physical_normalized_by_target_range": {n: float(v) for n, v in zip(target_names, np.nanmean(width_physical_all, axis=0) / safe_range_physical)},
+        "target_truth_std_physical": {n: float(v) for n, v in zip(target_names, target_std_physical)},
+        "target_truth_range_physical": {n: float(v) for n, v in zip(target_names, target_range_physical)},
+        "target_truth_std_scaled": {n: float(v) for n, v in zip(target_names, target_std_scaled)},
+        "target_truth_range_scaled": {n: float(v) for n, v in zip(target_names, target_range_scaled)},
         "valid_profile_count_by_horizon": n_valid,
     }
 

@@ -516,7 +516,7 @@ def _run_uq_from_saved_forecasts(args: LSTMConformalRunConfig, *, config_path: P
         )
         print(
             f"{method_id}: primary coverage={metrics['primary_empirical_coverage']:.4f}, "
-            f"mean width={metrics['mean_interval_width_overall']:.6g}"
+            f"mean scaled width={metrics['mean_scaled_interval_width_overall']:.6g}"
         )
 
     manifest = {**shared_metadata, "experiment": Path(args.uq_output_dir).name, "uq_methods": manifest_methods}

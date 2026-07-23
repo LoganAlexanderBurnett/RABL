@@ -22,6 +22,7 @@ from rabl.machine_learning.bagging_ensemble import (
     run_bagging_ensemble,
 )
 from rabl.machine_learning.dataset_scaling import LSTMDatasetScalerSplitter
+from rabl.machine_learning.profile_selection import select_profiles_by_quantile_bins
 from rabl.machine_learning.lstm_pipeline import (
     STATE_DIM,
     TARGET_NAMES,
@@ -315,32 +316,9 @@ def _ensemble_metrics_from_audit_h5(path: Path, target_names: list[str]) -> dict
 
 
 def _select_profiles_for_plots(difficulty_csv: Path, *, metric: str, n_bins: int, per_bin: int, seed: int) -> list[str]:
-    import csv
-
-    rows = []
-    with difficulty_csv.open(newline="") as fp:
-        for row in csv.DictReader(fp):
-            rows.append(row)
-    if not rows:
-        return []
-    values = np.asarray([float(row[metric]) for row in rows], dtype=float)
-    edges = np.quantile(values, np.linspace(0.0, 1.0, int(n_bins) + 1))
-    rng = np.random.default_rng(seed)
-    selected: list[str] = []
-    manifest_rows = []
-    for idx in range(int(n_bins)):
-        lo, hi = edges[idx], edges[idx + 1]
-        mask = (values >= lo) & (values <= hi if idx == int(n_bins) - 1 else values < hi)
-        candidates = [rows[i] for i in np.flatnonzero(mask)]
-        if not candidates:
-            continue
-        take = min(int(per_bin), len(candidates))
-        chosen = rng.choice(len(candidates), size=take, replace=False)
-        for chosen_idx in chosen:
-            profile = str(candidates[int(chosen_idx)]["profile_id"])
-            selected.append(profile)
-            manifest_rows.append({"bin_index": idx, "profile_id": profile, metric: candidates[int(chosen_idx)][metric]})
-    return selected
+    return select_profiles_by_quantile_bins(
+        difficulty_csv, metric=metric, n_bins=n_bins, per_bin=per_bin, seed=seed
+    ).profiles
 
 
 def run(cfg: LSTMEnsembleTrainingConfig) -> Path:
@@ -443,16 +421,17 @@ def run(cfg: LSTMEnsembleTrainingConfig) -> Path:
     evaluate_testset_difficulty(scaled_h5=scaled_h5, out_dir=difficulty_dir / "no_target_overlays", forecast_h5=forecasts_dir / "test_ensemble_forecasts.h5", n_bins=cfg.test_difficulty_bins, config_path=Path(cfg.config_py_path), include_per_target=False, num_workers=cfg.test_difficulty_num_workers)
     evaluate_testset_difficulty(scaled_h5=scaled_h5, out_dir=difficulty_dir / "with_target_overlays", forecast_h5=forecasts_dir / "test_ensemble_forecasts.h5", n_bins=cfg.test_difficulty_bins, config_path=Path(cfg.config_py_path), include_per_target=True, num_workers=cfg.test_difficulty_num_workers)
 
-    selected = _select_profiles_for_plots(
+    selection = select_profiles_by_quantile_bins(
         difficulty_dir / "no_target_overlays" / "per_profile_metrics_and_difficulty.csv",
         metric=cfg.forecast_plot_metric,
         n_bins=cfg.forecast_plot_bins,
         per_bin=cfg.forecast_plot_profiles_per_bin,
         seed=int(seeds["forecast_profile_selection_seed"]),
     )
+    selected = selection.profiles
     plots_dir = experiment_dir / "forecast_plots"
     plots_dir.mkdir(exist_ok=True)
-    (plots_dir / "selected_forecast_profiles.json").write_text(json.dumps({"profiles": selected, "metric": cfg.forecast_plot_metric}, indent=2), encoding="utf-8")
+    (plots_dir / "selected_forecast_profiles.json").write_text(json.dumps(selection.to_json_dict(), indent=2), encoding="utf-8")
     for profile_name in selected:
         plot_ensemble_forecast_profile_grid(
             forecasts_dir / "test_ensemble_forecasts.h5",

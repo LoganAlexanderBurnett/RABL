@@ -710,6 +710,15 @@ METHOD_COLORS = {
     "absolute_conformal_target_trajectory": "#d62728",
     "raw_ensemble_2sigma": "#9467bd",
 }
+METHOD_LABELS = {
+    "ensemble_conformal_target_trajectory": "MACE-Trajectory",
+    "ensemble_conformal_target_horizon": "MACE-Horizon",
+    "absolute_conformal_target_horizon": "Absolute conformal — target/horizon",
+    "absolute_conformal_target_trajectory": "Absolute conformal — target trajectory",
+    "raw_ensemble_2sigma": "Raw ensemble ±2σ",
+}
+POINTWISE_TRADEOFF_PRIMARY = {"ensemble_conformal_target_horizon", "absolute_conformal_target_horizon", "raw_ensemble_2sigma"}
+TRAJECTORY_TRADEOFF_PRIMARY = {"ensemble_conformal_target_trajectory", "absolute_conformal_target_trajectory"}
 
 
 def _load_standardized_method_h5(path: Path) -> dict[str, Any]:
@@ -744,19 +753,166 @@ def _validate_method_comparison(method_data: dict[str, dict[str, Any]]) -> None:
                     raise ValueError(f"Controlled comparison field {key!r} differs for method {method_id}, profile {profile}.")
 
 
-def _method_arrays(data: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _method_arrays(data: dict[str, Any]) -> dict[str, np.ndarray]:
     profiles = data["profiles"]
-    y_true = np.stack([profiles[name]["y_true"] for name in sorted(profiles)], axis=0)
-    y_pred = np.stack([profiles[name]["y_pred"] for name in sorted(profiles)], axis=0)
-    lower = np.stack([profiles[name]["lower"] for name in sorted(profiles)], axis=0)
-    upper = np.stack([profiles[name]["upper"] for name in sorted(profiles)], axis=0)
-    width = np.stack([profiles[name]["interval_width"] for name in sorted(profiles)], axis=0)
-    return y_true, y_pred, lower, upper, width
+    names = sorted(profiles)
+    return {
+        "y_true": np.stack([profiles[name]["y_true"] for name in names], axis=0),
+        "y_pred": np.stack([profiles[name]["y_pred"] for name in names], axis=0),
+        "lower": np.stack([profiles[name]["lower"] for name in names], axis=0),
+        "upper": np.stack([profiles[name]["upper"] for name in names], axis=0),
+        "y_true_scaled": np.stack([profiles[name]["y_true_scaled"] for name in names], axis=0),
+        "y_pred_scaled": np.stack([profiles[name]["y_pred_scaled"] for name in names], axis=0),
+        "lower_scaled": np.stack([profiles[name]["lower_scaled"] for name in names], axis=0),
+        "upper_scaled": np.stack([profiles[name]["upper_scaled"] for name in names], axis=0),
+        "spread_scaled": np.stack([profiles[name]["spread_scaled"] for name in names], axis=0),
+        "profile_names": np.asarray(names),
+    }
 
 
 def _interval_score(y_true: np.ndarray, lower: np.ndarray, upper: np.ndarray, alpha: float) -> np.ndarray:
     width = upper - lower
     return width + (2.0 / float(alpha)) * (np.maximum(lower - y_true, 0.0) + np.maximum(y_true - upper, 0.0))
+
+
+def _primary_worst(method_id: str, target_point: np.ndarray, target_traj: np.ndarray, horizon_target: np.ndarray) -> float:
+    if method_id in TRAJECTORY_TRADEOFF_PRIMARY:
+        return float(np.nanmin(target_traj))
+    if method_id == "raw_ensemble_2sigma":
+        return float(np.nanmin(target_point))
+    return float(np.nanmin(horizon_target))
+
+
+def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        return
+    with path.open("w", newline="", encoding="utf-8") as fp:
+        writer = csv.DictWriter(fp, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _calibration_q(metadata: dict[str, Any], target_idx: int) -> tuple[float, float, float]:
+    if "q_by_target" in metadata:
+        q = np.asarray(metadata["q_by_target"], dtype=float)
+        return float(q[target_idx]), float("nan"), float("nan")
+    if "q_by_horizon_target" in metadata:
+        q = np.asarray(metadata["q_by_horizon_target"], dtype=float)[:, target_idx]
+        return float("nan"), float(np.nanmedian(q)), float(np.nanmax(q))
+    return float("nan"), float("nan"), float("nan")
+
+
+def _write_target_calibration_diagnostics(manifest: dict[str, Any], out_dir: Path, target_names: list[str], alpha: float) -> None:
+    rows: list[dict[str, Any]] = []
+    extremes: list[dict[str, Any]] = []
+    json_payload: dict[str, Any] = {"note": "Low variance in x_steam_out is a plausible reason for a large normalized MACE score only when these diagnostics show small denominators and large normalized score extremes; diagnostics do not alter calibration.", "methods": {}}
+    for method in manifest.get("uq_methods", []):
+        method_id = method["method_id"]
+        if method_id not in {"ensemble_conformal_target_trajectory", "ensemble_conformal_target_horizon"}:
+            continue
+        cal_h5 = Path(method["calibration_forecasts_path"])
+        meta_path = Path(method["calibration_metadata_path"])
+        if not cal_h5.exists() or not meta_path.exists():
+            continue
+        metadata = _load_json(meta_path)
+        data = _load_standardized_method_h5(cal_h5)
+        arrays = _method_arrays(data)
+        y = arrays["y_true"]
+        y_s = arrays["y_true_scaled"]
+        mean_s = arrays["y_pred_scaled"]
+        spread = arrays["spread_scaled"]
+        sigma_floor = np.asarray(metadata.get("sigma_floor", manifest.get("sigma_floor", 1e-6)), dtype=float)
+        if sigma_floor.ndim == 0:
+            sigma_floor = np.full(len(target_names), float(sigma_floor), dtype=float)
+        denom = spread + sigma_floor[None, None, :]
+        abs_err_s = np.abs(y_s - mean_s)
+        norm = abs_err_s / denom
+        json_payload["methods"][method_id] = {"targets": {}}
+        for j, target in enumerate(target_names):
+            q_target, q_h_median, q_h_max = _calibration_q(metadata, j)
+            flat_norm = norm[:, :, j].reshape(-1)
+            max_flat = int(np.nanargmax(flat_norm))
+            prof_idx, horizon = np.unravel_index(max_flat, norm[:, :, j].shape)
+            row = {
+                "method_id": method_id,
+                "method_label": METHOD_LABELS.get(method_id, method.get("method_label", method_id)),
+                "target": target,
+                "truth_std_physical": float(np.nanstd(y[:, :, j])),
+                "truth_range_physical": float(np.nanmax(y[:, :, j]) - np.nanmin(y[:, :, j])),
+                "truth_std_scaled": float(np.nanstd(y_s[:, :, j])),
+                "truth_range_scaled": float(np.nanmax(y_s[:, :, j]) - np.nanmin(y_s[:, :, j])),
+                "spread_mean": float(np.nanmean(spread[:, :, j])),
+                "spread_median": float(np.nanmedian(spread[:, :, j])),
+                "spread_min": float(np.nanmin(spread[:, :, j])),
+                "spread_p01": float(np.nanquantile(spread[:, :, j], 0.01)),
+                "spread_p05": float(np.nanquantile(spread[:, :, j], 0.05)),
+                "denominator_mean": float(np.nanmean(denom[:, :, j])),
+                "denominator_median": float(np.nanmedian(denom[:, :, j])),
+                "denominator_min": float(np.nanmin(denom[:, :, j])),
+                "denominator_p01": float(np.nanquantile(denom[:, :, j], 0.01)),
+                "denominator_p05": float(np.nanquantile(denom[:, :, j], 0.05)),
+                "sigma_floor": float(sigma_floor[j]),
+                "sigma_floor_near_fraction": float(np.nanmean(spread[:, :, j] <= sigma_floor[j] * 1.01)),
+                "q_by_target": q_target,
+                "q_by_horizon_target_median": q_h_median,
+                "q_by_horizon_target_max": q_h_max,
+                "score_mean": float(np.nanmean(flat_norm)),
+                "score_median": float(np.nanmedian(flat_norm)),
+                "score_p95": float(np.nanquantile(flat_norm, 0.95)),
+                "score_max": float(flat_norm[max_flat]),
+                "max_score_profile": str(arrays["profile_names"][prof_idx]),
+                "max_score_horizon": int(horizon),
+                "max_score_abs_error_scaled": float(abs_err_s[prof_idx, horizon, j]),
+                "max_score_spread": float(spread[prof_idx, horizon, j]),
+                "max_score_denominator": float(denom[prof_idx, horizon, j]),
+                "max_score_normalized_error": float(norm[prof_idx, horizon, j]),
+            }
+            rows.append(row)
+            json_payload["methods"][method_id]["targets"][target] = row
+            profile_scores = np.nanmax(norm[:, :, j], axis=1)
+            top_idx = np.argsort(profile_scores)[-10:][::-1]
+            for rank, prof_idx2 in enumerate(top_idx, start=1):
+                horizon2 = int(np.nanargmax(norm[prof_idx2, :, j]))
+                extremes.append({
+                    "method_id": method_id,
+                    "target": target,
+                    "rank": rank,
+                    "profile": str(arrays["profile_names"][prof_idx2]),
+                    "horizon": horizon2,
+                    "normalized_score": float(norm[prof_idx2, horizon2, j]),
+                    "absolute_error_scaled": float(abs_err_s[prof_idx2, horizon2, j]),
+                    "spread": float(spread[prof_idx2, horizon2, j]),
+                    "denominator": float(denom[prof_idx2, horizon2, j]),
+                })
+        _plot_calibration_diagnostics(out_dir, method_id, rows, target_names)
+    _write_csv(out_dir / "target_calibration_diagnostics.csv", rows)
+    _write_csv(out_dir / "calibration_score_extremes.csv", extremes)
+    (out_dir / "target_calibration_diagnostics.json").write_text(json.dumps(json_payload, indent=2), encoding="utf-8")
+
+
+def _plot_calibration_diagnostics(out_dir: Path, method_id: str, rows: list[dict[str, Any]], target_names: list[str]) -> None:
+    method_rows = [r for r in rows if r["method_id"] == method_id]
+    if not method_rows:
+        return
+    plot_dir = out_dir / "plots" / "calibration_diagnostics"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    x = np.arange(len(method_rows))
+    labels = [r["target"] for r in method_rows]
+    for field, ylabel, filename in (
+        ("q_by_target", "Calibrated q by target", f"{method_id}_q_by_target.png"),
+        ("denominator_p01", "1st-percentile denominator", f"{method_id}_denominator_p01.png"),
+        ("sigma_floor_near_fraction", "Near-floor spread fraction", f"{method_id}_near_floor_fraction.png"),
+        ("score_p95", "95th-percentile normalized score", f"{method_id}_score_p95.png"),
+    ):
+        values = [r[field] for r in method_rows]
+        if np.all(~np.isfinite(values)):
+            continue
+        fig, ax = plt.subplots(figsize=(14, 5))
+        ax.bar(x, values, color="#1f77b4")
+        ax.set_xticks(x); ax.set_xticklabels(labels, rotation=45, ha="right")
+        ax.set_ylabel(ylabel); ax.grid(True, axis="y", alpha=0.2)
+        fig.tight_layout(); fig.savefig(plot_dir / filename, dpi=150); plt.close(fig)
 
 
 def analyze_methods_manifest(manifest_json: Path, out_dir: Path, *, max_forecast_plots: int = 0) -> None:
@@ -770,76 +926,128 @@ def analyze_methods_manifest(manifest_json: Path, out_dir: Path, *, max_forecast
     target_names = next(iter(method_data.values()))["target_names"]
     alpha = float(manifest["alpha"])
     nominal = 1.0 - alpha
-    overall_rows = []
-    target_rows = []
-    horizon_rows = []
-    tradeoff_rows = []
+    overall_rows: list[dict[str, Any]] = []
+    target_rows: list[dict[str, Any]] = []
+    horizon_rows: list[dict[str, Any]] = []
+    point_tradeoff_rows: list[dict[str, Any]] = []
+    traj_tradeoff_rows: list[dict[str, Any]] = []
     all_json: dict[str, Any] = {"methods": {}}
     for entry in methods:
         method_id = entry["method_id"]
-        label = entry["method_label"]
+        label = METHOD_LABELS.get(method_id, entry.get("method_label", method_id))
         metrics = _load_json(Path(entry["metrics_path"]))
-        y_true, y_pred, lower, upper, width = _method_arrays(method_data[method_id])
+        arrays = _method_arrays(method_data[method_id])
+        y_true = arrays["y_true"]
+        y_pred = arrays["y_pred"]
+        lower = arrays["lower"]
+        upper = arrays["upper"]
+        y_true_s = arrays["y_true_scaled"]
+        y_pred_s = arrays["y_pred_scaled"]
+        lower_s = arrays["lower_scaled"]
+        upper_s = arrays["upper_scaled"]
+        width_physical = upper - lower
+        width_scaled = upper_s - lower_s
         covered = (lower <= y_true) & (y_true <= upper)
-        score = _interval_score(y_true, lower, upper, alpha)
+        score_scaled = _interval_score(y_true_s, lower_s, upper_s, alpha)
+        score_physical = _interval_score(y_true, lower, upper, alpha)
         target_point = np.mean(covered, axis=(0, 1))
         target_traj = np.mean(np.all(covered, axis=1), axis=0)
-        target_std = np.std(y_true.reshape(-1, y_true.shape[-1]), axis=0)
-        mean_width_target = np.mean(width, axis=(0, 1))
+        horizon_target = np.mean(covered, axis=0)
+        target_std_physical = np.std(y_true.reshape(-1, y_true.shape[-1]), axis=0)
+        target_range_physical = np.ptp(y_true.reshape(-1, y_true.shape[-1]), axis=0)
+        target_std_scaled = np.std(y_true_s.reshape(-1, y_true_s.shape[-1]), axis=0)
         primary_type = metrics.get("primary_coverage_type", entry.get("primary_coverage_type", ""))
-        overall_rows.append({
+        primary_empirical = float(metrics.get("primary_empirical_coverage", np.nan))
+        if not np.isfinite(primary_empirical):
+            primary_empirical = float(np.mean(target_traj)) if method_id in TRAJECTORY_TRADEOFF_PRIMARY else float(np.mean(horizon_target))
+        primary_worst = _primary_worst(method_id, target_point, target_traj, horizon_target)
+        point_dev = np.abs(target_point - nominal)
+        traj_dev = np.abs(target_traj - nominal)
+        overall = {
             "method_id": method_id,
             "method_label": label,
             "primary_coverage_type": primary_type,
-            "primary_empirical_coverage": metrics.get("primary_empirical_coverage", np.nan),
+            "primary_empirical_coverage": primary_empirical,
+            "primary_worst_target_coverage": primary_worst,
             "overall_pointwise_coverage": float(np.mean(covered)),
             "mean_targetwise_trajectory_coverage": float(np.mean(target_traj)),
             "complete_multivariate_trajectory_coverage": float(np.mean(np.all(covered, axis=(1, 2)))),
-            "mean_width": float(np.mean(width)),
-            "median_width": float(np.median(width)),
-            "mean_normalized_width": float(np.nanmean(mean_width_target / np.where(target_std > 0, target_std, np.nan))),
-            "mean_interval_score": float(np.mean(score)),
-            "worst_target_coverage": float(np.min(target_point)),
-            "max_abs_target_coverage_deviation_from_nominal": float(np.max(np.abs(target_point - nominal))),
-            "mean_abs_target_coverage_deviation_from_nominal": float(np.mean(np.abs(target_point - nominal))),
+            "worst_target_pointwise_coverage": float(np.min(target_point)),
+            "worst_target_trajectory_coverage": float(np.min(target_traj)),
+            "maximum_absolute_pointwise_target_coverage_deviation_from_nominal": float(np.max(point_dev)),
+            "mean_absolute_pointwise_target_coverage_deviation_from_nominal": float(np.mean(point_dev)),
+            "maximum_absolute_trajectory_target_coverage_deviation_from_nominal": float(np.max(traj_dev)),
+            "mean_absolute_trajectory_target_coverage_deviation_from_nominal": float(np.mean(traj_dev)),
+            "mean_scaled_interval_width_overall": float(np.mean(width_scaled)),
+            "median_scaled_interval_width_overall": float(np.median(width_scaled)),
+            "p90_scaled_interval_width_overall": float(np.quantile(width_scaled, 0.9)),
+            "mean_scaled_interval_score_overall": float(np.mean(score_scaled)),
+            "no_conformal_guarantee": bool(method_id == "raw_ensemble_2sigma"),
+        }
+        overall_rows.append(overall)
+        point_tradeoff_rows.append({
+            "method_id": method_id, "method_label": label,
+            "coverage_definition": "overall_pointwise_coverage",
+            "coverage": overall["overall_pointwise_coverage"],
+            "mean_scaled_interval_width": overall["mean_scaled_interval_width_overall"],
+            "primary_for_tradeoff": method_id in POINTWISE_TRADEOFF_PRIMARY,
         })
-        tradeoff_rows.append({"method_id": method_id, "method_label": label, "coverage": float(np.mean(covered)), "mean_width": float(np.mean(width))})
+        traj_tradeoff_rows.append({
+            "method_id": method_id, "method_label": label,
+            "coverage_definition": "mean_targetwise_trajectory_coverage",
+            "coverage": overall["mean_targetwise_trajectory_coverage"],
+            "mean_scaled_interval_width": overall["mean_scaled_interval_width_overall"],
+            "primary_for_tradeoff": method_id in TRAJECTORY_TRADEOFF_PRIMARY,
+        })
         for j, target in enumerate(target_names):
             target_rows.append({
-                "method_id": method_id, "method_label": label, "target": target,
+                "method_id": method_id,
+                "method_label": label,
+                "target": target,
+                "physical_unit": "",
                 "targetwise_trajectory_coverage": float(target_traj[j]),
                 "pointwise_coverage": float(target_point[j]),
-                "mean_width": float(np.mean(width[:, :, j])),
-                "median_width": float(np.median(width[:, :, j])),
-                "p90_width": float(np.quantile(width[:, :, j], 0.9)),
-                "normalized_width_by_std": float(np.mean(width[:, :, j]) / target_std[j]) if target_std[j] > 0 else float("nan"),
-                "interval_score": float(np.mean(score[:, :, j])),
+                "mean_interval_width_physical": float(np.mean(width_physical[:, :, j])),
+                "median_interval_width_physical": float(np.median(width_physical[:, :, j])),
+                "p90_interval_width_physical": float(np.quantile(width_physical[:, :, j], 0.9)),
+                "mean_half_width_physical": float(0.5 * np.mean(width_physical[:, :, j])),
+                "physical_interval_score": float(np.mean(score_physical[:, :, j])),
+                "mean_scaled_interval_width": float(np.mean(width_scaled[:, :, j])),
+                "normalized_width_by_physical_std": float(np.mean(width_physical[:, :, j]) / target_std_physical[j]) if target_std_physical[j] > 0 else float("nan"),
+                "normalized_width_by_physical_range": float(np.mean(width_physical[:, :, j]) / target_range_physical[j]) if target_range_physical[j] > 0 else float("nan"),
                 "coverage_gap_from_nominal": float(target_point[j] - nominal),
             })
         for t in range(y_true.shape[1]):
             horizon_rows.append({
-                "method_id": method_id, "method_label": label, "horizon": t,
+                "method_id": method_id,
+                "method_label": label,
+                "horizon": t,
                 "pointwise_coverage": float(np.mean(covered[:, t, :])),
-                "mean_width": float(np.mean(width[:, t, :])),
-                "mean_absolute_error": float(np.mean(np.abs(y_true[:, t, :] - y_pred[:, t, :]))),
-                "interval_score": float(np.mean(score[:, t, :])),
+                "mean_scaled_interval_width": float(np.mean(width_scaled[:, t, :])),
+                "mean_scaled_absolute_error": float(np.mean(np.abs(y_true_s[:, t, :] - y_pred_s[:, t, :]))),
+                "mean_scaled_interval_score": float(np.mean(score_scaled[:, t, :])),
                 "n_valid_profiles": int(y_true.shape[0]),
             })
-        all_json["methods"][method_id] = {"overall": overall_rows[-1]}
-    def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-        with path.open("w", newline="", encoding="utf-8") as fp:
-            writer = csv.DictWriter(fp, fieldnames=list(rows[0].keys()))
-            writer.writeheader(); writer.writerows(rows)
-    write_csv(out_dir / "method_overall_summary.csv", overall_rows)
-    write_csv(out_dir / "method_target_summary.csv", target_rows)
-    write_csv(out_dir / "method_horizon_summary.csv", horizon_rows)
-    write_csv(out_dir / "coverage_width_tradeoff.csv", tradeoff_rows)
+        all_json["methods"][method_id] = {
+            "overall": overall,
+            "mean_scaled_interval_width_by_target": {target: float(np.mean(width_scaled[:, :, j])) for j, target in enumerate(target_names)},
+            "mean_scaled_interval_width_by_horizon": [float(v) for v in np.mean(width_scaled, axis=(0, 2))],
+            "target_truth_std_scaled": {target: float(target_std_scaled[j]) for j, target in enumerate(target_names)},
+        }
+    _write_csv(out_dir / "method_overall_summary.csv", overall_rows)
+    _write_csv(out_dir / "method_target_summary.csv", target_rows)
+    _write_csv(out_dir / "method_horizon_summary.csv", horizon_rows)
+    _write_csv(out_dir / "pointwise_coverage_width_tradeoff.csv", point_tradeoff_rows)
+    _write_csv(out_dir / "trajectory_coverage_width_tradeoff.csv", traj_tradeoff_rows)
+    all_json["pointwise_coverage_width_tradeoff"] = point_tradeoff_rows
+    all_json["trajectory_coverage_width_tradeoff"] = traj_tradeoff_rows
     (out_dir / "uq_comparison_analysis.json").write_text(json.dumps(all_json, indent=2), encoding="utf-8")
-    _plot_multi_method_summaries(out_dir, overall_rows, target_rows, horizon_rows, target_names, nominal)
+    _write_target_calibration_diagnostics(manifest, out_dir, target_names, alpha)
+    _plot_multi_method_summaries(out_dir, overall_rows, target_rows, horizon_rows, point_tradeoff_rows, traj_tradeoff_rows, target_names, nominal)
     print(f"Saved multi-method UQ comparison analysis to: {out_dir}")
 
 
-def _plot_multi_method_summaries(out_dir: Path, overall_rows, target_rows, horizon_rows, target_names, nominal: float) -> None:
+def _plot_multi_method_summaries(out_dir: Path, overall_rows, target_rows, horizon_rows, point_tradeoff_rows, traj_tradeoff_rows, target_names, nominal: float) -> None:
     plot_dir = out_dir / "plots"; plot_dir.mkdir(parents=True, exist_ok=True)
     methods = [row["method_id"] for row in overall_rows]
     labels = {row["method_id"]: row["method_label"] for row in overall_rows}
@@ -853,9 +1061,9 @@ def _plot_multi_method_summaries(out_dir: Path, overall_rows, target_rows, horiz
     fig, ax = plt.subplots(figsize=(10, 6))
     for method_id in methods:
         rows = [r for r in horizon_rows if r["method_id"] == method_id]
-        ax.plot([r["horizon"] for r in rows], [r["mean_width"] for r in rows], label=labels[method_id], color=METHOD_COLORS.get(method_id))
-    ax.set_xlabel("Forecast horizon"); ax.set_ylabel("Mean interval width"); ax.legend(fontsize=9); ax.grid(True, alpha=0.2)
-    fig.tight_layout(); fig.savefig(plot_dir / "mean_interval_width_by_horizon.png", dpi=150); plt.close(fig)
+        ax.plot([r["horizon"] for r in rows], [r["mean_scaled_interval_width"] for r in rows], label=labels[method_id], color=METHOD_COLORS.get(method_id))
+    ax.set_xlabel("Forecast horizon"); ax.set_ylabel("Mean scaled interval width"); ax.legend(fontsize=9); ax.grid(True, alpha=0.2)
+    fig.tight_layout(); fig.savefig(plot_dir / "mean_scaled_interval_width_by_horizon.png", dpi=150); plt.close(fig)
     x = np.arange(len(target_names)); width = 0.8 / max(1, len(methods))
     fig, ax = plt.subplots(figsize=(14, 6))
     for idx, method_id in enumerate(methods):
@@ -863,11 +1071,20 @@ def _plot_multi_method_summaries(out_dir: Path, overall_rows, target_rows, horiz
         ax.bar(x + (idx - (len(methods)-1)/2)*width, [r["targetwise_trajectory_coverage"] for r in rows], width=width, label=labels[method_id], color=METHOD_COLORS.get(method_id))
     ax.axhline(nominal, color="black", linestyle="--", linewidth=1.0); ax.set_xticks(x); ax.set_xticklabels(target_names, rotation=45, ha="right")
     ax.set_ylabel("Targetwise trajectory coverage"); ax.legend(fontsize=8); fig.tight_layout(); fig.savefig(plot_dir / "targetwise_trajectory_coverage_by_target.png", dpi=150); plt.close(fig)
+    _plot_tradeoff(plot_dir / "pointwise_coverage_width_tradeoff.png", point_tradeoff_rows, "Pointwise coverage", nominal)
+    _plot_tradeoff(plot_dir / "trajectory_coverage_width_tradeoff.png", traj_tradeoff_rows, "Mean targetwise trajectory coverage", nominal)
+
+
+def _plot_tradeoff(path: Path, rows: list[dict[str, Any]], ylabel: str, nominal: float) -> None:
     fig, ax = plt.subplots(figsize=(8, 6))
-    for row in overall_rows:
-        ax.scatter(row["mean_width"], row["overall_pointwise_coverage"], label=row["method_label"], color=METHOD_COLORS.get(row["method_id"]), s=60)
-    ax.axhline(nominal, color="black", linestyle="--", linewidth=1.0); ax.set_xlabel("Mean interval width"); ax.set_ylabel("Overall pointwise coverage")
-    ax.legend(fontsize=8); ax.grid(True, alpha=0.2); fig.tight_layout(); fig.savefig(plot_dir / "coverage_width_tradeoff.png", dpi=150); plt.close(fig)
+    for row in rows:
+        alpha = 1.0 if row.get("primary_for_tradeoff") else 0.35
+        marker = "o" if row.get("primary_for_tradeoff") else "x"
+        ax.scatter(row["mean_scaled_interval_width"], row["coverage"], label=row["method_label"], color=METHOD_COLORS.get(row["method_id"]), s=70, alpha=alpha, marker=marker)
+    ax.axhline(nominal, color="black", linestyle="--", linewidth=1.0)
+    ax.set_xlabel("Mean scaled interval width")
+    ax.set_ylabel(ylabel)
+    ax.legend(fontsize=8); ax.grid(True, alpha=0.2); fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)
 
 def main() -> None:
     args = parse_args()

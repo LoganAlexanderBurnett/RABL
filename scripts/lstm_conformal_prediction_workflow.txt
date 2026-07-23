@@ -1,4 +1,4 @@
-LSTM conformal prediction workflow from saved ensemble forecasts
+MACE conformal prediction workflow from saved ensemble forecasts
 ===============================================================
 
 This document describes the current role of scripts/run_lstm_conformal_prediction.py.
@@ -7,7 +7,7 @@ loads ensemble checkpoints, or runs ensemble autoregressive inference.  Those st
 belong upstream, for example in scripts/train_lstm_ensemble.py.
 
 The conformal script now consumes saved ensemble audit forecast files and applies
-the five UQ methods to exactly the same cached calibration and test predictions.
+the five UQ methods, including Multivariate Adaptive Conformal Ensemble (MACE) variants to exactly the same cached calibration and test predictions.
 
 Required inputs
 ---------------
@@ -80,11 +80,11 @@ UQ methods applied
 Unless uq_methods is explicitly provided, all five methods are run:
 
   1. ensemble_conformal_target_trajectory
-     Per-target trajectory-wise ensemble-normalized conformal intervals.  Each
+     MACE-Trajectory: per-target trajectory-wise ensemble-normalized conformal intervals.  Each
      calibration profile contributes one max-over-horizon score per target.
 
   2. ensemble_conformal_target_horizon
-     Per-target/per-horizon ensemble-normalized conformal intervals.  Quantiles
+     MACE-Horizon: per-target/per-horizon ensemble-normalized conformal intervals.  Quantiles
      are computed independently for each horizon and target.
 
   3. absolute_conformal_target_horizon
@@ -141,3 +141,29 @@ coverage deviations from the nominal level.  The primary coverage type depends
 on the method metadata: trajectory methods emphasize targetwise trajectory
 coverage, horizon methods emphasize marginal pointwise horizon/target coverage,
 and raw_ensemble_2sigma reports empirical metrics without a conformal guarantee.
+
+
+Simultaneous MACE/UQ profile visualization
+------------------------------------------
+
+Use scripts/plot_mace_uq_profile_comparison.py to overlay several UQ methods on
+the same 4x4 profile figure.  The preferred input is the exact
+forecast_plots/selected_forecast_profiles.json produced by train_lstm_ensemble.py:
+
+    PYTHONPATH=src python scripts/plot_mace_uq_profile_comparison.py \
+      --methods-manifest-json <uq_output_dir>/uq_comparison/uq_methods_manifest.json \
+      --selected-profiles-json <ensemble_output_dir>/forecast_plots/selected_forecast_profiles.json \
+      --out-dir <plot_output_dir>
+
+If --uq-methods is omitted, all five methods are plotted.  A fallback can select
+profiles from a difficulty CSV using the shared quantile-bin selection helper in
+rabl.machine_learning.profile_selection.
+
+Multi-method analysis outputs
+-----------------------------
+
+The analyzer writes separate pointwise and trajectory coverage-width tradeoff
+CSVs/plots.  Cross-target aggregate widths and interval scores use scaled-space
+intervals; per-target physical-width columns remain in each target variable's own
+physical units.  Additional target calibration diagnostics quantify low-spread or
+near-sigma-floor behavior for every target, including x_steam_out.

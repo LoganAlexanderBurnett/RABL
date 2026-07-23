@@ -206,3 +206,33 @@ def test_load_saved_audit_ensemble_forecasts_schema(tmp_path):
     assert forecasts[0]["member_predictions_scaled"].shape == (2, 2, 1)
     assert forecasts[0]["y_true"].tolist() == pytest.approx([[10.0], [12.0]])
     assert forecasts[0]["y_pred"].tolist() == pytest.approx([[11.0], [13.0]])
+
+
+def test_uq_metrics_separate_pointwise_and_trajectory_worst_coverage() -> None:
+    forecasts = []
+    for idx, miss_last in enumerate([False, True]):
+        y_true = np.zeros((2, 2), dtype=np.float32)
+        lower = -np.ones((2, 2), dtype=np.float32)
+        upper = np.ones((2, 2), dtype=np.float32)
+        if miss_last:
+            y_true[1, 1] = 3.0
+        forecasts.append({
+            "profile": f"p{idx}", "t": np.arange(2), "u": np.zeros(2),
+            "y_true": y_true, "y_pred": np.zeros((2, 2), dtype=np.float32),
+            "lower": lower, "upper": upper, "interval_width": upper - lower,
+            "y_true_scaled": y_true, "y_pred_scaled": np.zeros((2, 2), dtype=np.float32),
+            "lower_scaled": lower, "upper_scaled": upper, "spread_scaled": np.ones((2, 2), dtype=np.float32),
+        })
+    metrics = cp.compute_uq_coverage_metrics(
+        forecasts,
+        ["a", "b"],
+        alpha=0.05,
+        primary_coverage_type="targetwise_trajectory_coverage",
+    )
+    assert "worst_target_pointwise_coverage" in metrics
+    assert "worst_target_trajectory_coverage" in metrics
+    assert metrics["worst_target_pointwise_coverage"] == pytest.approx(0.75)
+    assert metrics["worst_target_trajectory_coverage"] == pytest.approx(0.5)
+    assert metrics["primary_worst_target_coverage"] == pytest.approx(0.5)
+    assert "mean_scaled_interval_width_overall" in metrics
+    assert "mean_interval_width_overall" not in metrics
