@@ -1,0 +1,24 @@
+{
+  "manifest_generation_seed": 12345,
+  "total_profiles": 9000,
+  "source_batches": {
+    "batch_0001": {
+      "expected_count": 3000,
+      "control_sampling_seed": 456
+    },
+    "batch_0002": {
+      "expected_count": 1000,
+      "control_sampling_seed": 789
+    },
+    "batch_0003": {
+      "expected_count": 5000,
+      "control_sampling_seed": 123
+    }
+  },
+  "split_counts": {
+    "train": 5000,
+    "val": 1000,
+    "cal": 1000,
+    "test": 2000
+  }
+}

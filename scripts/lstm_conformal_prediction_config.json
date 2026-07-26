@@ -1,14 +1,14 @@
 {
-  "scaled_h5_path": "outputs/datasets/scaled_split/lstm_merged_batches_0001-0002_k12_minmax_train500profiles_val1000profiles_cal500profiles_test2000profiles.h5",
+  "scaled_h5_path": "outputs/datasets/scaled_split/lstm_merged_batches_0001-0002-0003_k12_minmax_train5000profiles_val1000profiles_cal1000profiles_test2000profiles.h5",
   "calibration_ensemble_forecasts_audit_h5_path": "outputs/ml_results/lstm_ensembles/lstm_10member_ensemble_v1/forecasts/calibration_ensemble_forecasts_audit.h5",
   "test_ensemble_forecasts_audit_h5_path": "outputs/ml_results/lstm_ensembles/lstm_10member_ensemble_v1/forecasts/test_ensemble_forecasts_audit.h5",
-  "uq_output_dir": "outputs/ml_results/lstm_conformal_from_saved_forecasts",
+  "uq_output_dir": "outputs/ml_results/lstm_conformal/sigma_floor_1e-3",
   "train_manifest_path": "scripts/manifests/train_manifest.json",
   "val_manifest_path": "scripts/manifests/val_manifest.json",
   "cal_manifest_path": "scripts/manifests/cal_manifest.json",
   "test_manifest_path": "scripts/manifests/test_manifest.json",
   "alpha": 0.05,
-  "sigma_floor": 1e-6,
+  "sigma_floor": 1e-3,
   "ensemble_ddof": 0,
   "save_member_forecasts": true,
   "uq_methods": [
