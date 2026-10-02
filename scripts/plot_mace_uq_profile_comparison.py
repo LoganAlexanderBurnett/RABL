@@ -183,7 +183,7 @@ def _plot_profile(profile: str, method_data: dict[str, dict[str, Any]], methods:
         name_to_idx = {name: idx for idx, name in enumerate(target_names)}
         t_seconds = _forecast_time_seconds(first["t"])
 
-        fig, axes = plt.subplots(4, 4, figsize=(10.0, 6.6), sharex=True)
+        fig, axes = plt.subplots(4, 4, figsize=(10.0, 5.2), sharex=True)
         axes = np.asarray(axes).ravel()
 
         axes[0].plot(t_seconds, first["u"], color="black", linewidth=1.4)
@@ -261,7 +261,7 @@ def _plot_profile(profile: str, method_data: dict[str, dict[str, Any]], methods:
             ax.tick_params(axis="x", labelbottom=False)
         for ax in axes[-4:]:
             ax.tick_params(axis="x", labelbottom=True)
-        fig.supxlabel("Forecast time [s]", y=0.015, fontsize=14)
+        fig.supxlabel("Forecast time [s]", y=0.025, fontsize=14)
 
         legend_method_order = [
             "raw_ensemble_2sigma",
@@ -288,9 +288,9 @@ def _plot_profile(profile: str, method_data: dict[str, dict[str, Any]], methods:
             handlelength=2.2,
         )
 
-        fig.tight_layout(rect=[0.01, 0.04, 0.995, 0.93], h_pad=0.5, w_pad=0.7)
+        fig.tight_layout(rect=[0.005, 0.035, 0.998, 0.93], h_pad=0.35, w_pad=0.55)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out_path, dpi=300, bbox_inches="tight")
+        fig.savefig(out_path, dpi=300, bbox_inches="tight", pad_inches=0.02)
         plt.close(fig)
 
 def main() -> None:
