@@ -26,7 +26,7 @@ METHOD_LABELS = {
     "absolute_conformal_target_horizon": "Horizon CP",
     "ensemble_conformal_target_trajectory": "MACE-Trajectory",
     "ensemble_conformal_target_horizon": "MACE-Horizon",
-    "raw_ensemble_2sigma": r"Raw ensemble $\\pm 2\\sigma$",
+    "raw_ensemble_2sigma": r"Raw ensemble $\pm 2\sigma$",
 }
 METHOD_COLORS = {
     "absolute_conformal_target_trajectory": "#d62728",
@@ -47,10 +47,10 @@ TARGET_AXIS_LABELS = {
     "Thp": r"$T_{hp}$ [K]",
     "TN2": r"$T_{N_2}$ [K]",
     "Tsg": r"$T_{sg}$ [K]",
-    "T_steam_out": r"$T_{\\mathrm{steam,out}}$ [K]",
-    "x_steam_out": r"$x_{\\mathrm{steam,out}}$ [-]",
+    "T_steam_out": r"$T_{\mathrm{steam,out}}$ [K]",
+    "x_steam_out": r"$x_{\mathrm{steam,out}}$ [-]",
     "n": r"$n$ [-]",
-    "rho_dollars": r"$\\rho_{\\$}$ [dollars]",
+    "rho_dollars": r"$\rho_{\$}$ [dollars]",
 }
 
 
@@ -187,7 +187,7 @@ def _plot_profile(profile: str, method_data: dict[str, dict[str, Any]], methods:
         axes = np.asarray(axes).ravel()
 
         axes[0].plot(t_seconds, first["u"], color="black", linewidth=1.4)
-        axes[0].set_ylabel(r"$\\theta$ [deg]", labelpad=3)
+        axes[0].set_ylabel(r"$\theta$ [deg]", labelpad=3)
         axes[0].grid(True, alpha=0.2)
 
         truth_handle = None
