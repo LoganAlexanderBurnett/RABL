@@ -49,8 +49,8 @@ TARGET_AXIS_LABELS = {
     "Tsg": r"$T_{sg}$ [K]",
     "T_steam_out": r"$T_{\mathrm{steam,out}}$ [K]",
     "x_steam_out": r"$x_{\mathrm{steam,out}}$ [-]",
-    "n": r"$n$ [-]",
-    "rho_dollars": r"$\rho_{\$}$ [dollars]",
+    "n": r"$n$",
+    "rho_dollars": r"$\rho$ [\$]",
 }
 
 
@@ -144,7 +144,7 @@ def _ordered_targets(target_names: list[str]) -> list[str]:
 
 def _target_axis_label(name: str) -> str:
     if name.startswith("c[") and name.endswith("]"):
-        return rf"$c_{{{name[2:-1]}}}$ [-]"
+        return rf"$c_{{{name[2:-1]}}}$"
     return TARGET_AXIS_LABELS.get(name, name.replace("_", r"\_"))
 
 
@@ -170,11 +170,11 @@ def _plot_profile(profile: str, method_data: dict[str, dict[str, Any]], methods:
         "font.family": "serif",
         "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
         "mathtext.fontset": "stix",
-        "font.size": 10,
-        "axes.labelsize": 9,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
-        "legend.fontsize": 8,
+        "font.size": 12,
+        "axes.labelsize": 12,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "legend.fontsize": 12,
     }
     with plt.rc_context(publication_rc):
         first = method_data[methods[0]]["profiles"][profile]
@@ -261,7 +261,7 @@ def _plot_profile(profile: str, method_data: dict[str, dict[str, Any]], methods:
             ax.tick_params(axis="x", labelbottom=False)
         for ax in axes[-4:]:
             ax.tick_params(axis="x", labelbottom=True)
-        fig.supxlabel("Forecast time [s]", y=0.015, fontsize=9)
+        fig.supxlabel("Forecast time [s]", y=0.015, fontsize=14)
 
         legend_method_order = [
             "raw_ensemble_2sigma",
