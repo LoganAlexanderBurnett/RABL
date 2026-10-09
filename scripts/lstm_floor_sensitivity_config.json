@@ -1,0 +1,20 @@
+{
+  "output_dir": "outputs/ml_results/mace_floor_sensitivity_v1",
+  "ensemble_experiment_dir": "outputs/ml_results/lstm_ensembles/lstm_10member_ensemble_v1",
+  "external_scaled_h5_path": "outputs/datasets/scaled_split/lstm_merged_batches_0001-0002-0003_k12_minmax_train5000profiles_val1000profiles_cal1000profiles_test2000profiles.h5",
+  "training_scaled_h5_path": "outputs/ml_results/lstm_ensembles/lstm_10member_ensemble_v1/datasets/scaled_dataset.h5",
+  "raw_h5_path": "outputs/ml_results/lstm_ensembles/lstm_10member_ensemble_v1/datasets/unscaled_dataset.h5",
+  "reference_scaler_json_path": "outputs/ml_results/lstm_ensembles/lstm_10member_ensemble_v1/scaling_statistics.json",
+  "calibration_forecasts_h5_path": "outputs/ml_results/lstm_ensembles/lstm_10member_ensemble_v1/forecasts/calibration_ensemble_forecasts_audit.h5",
+  "test_forecasts_h5_path": "outputs/ml_results/lstm_ensembles/lstm_10member_ensemble_v1/forecasts/test_ensemble_forecasts_audit.h5",
+  "train_manifest_path": "outputs/ml_results/lstm_ensembles/lstm_10member_ensemble_v1/manifests/train_manifest.json",
+  "val_manifest_path": "outputs/ml_results/lstm_ensembles/lstm_10member_ensemble_v1/manifests/val_manifest.json",
+  "cal_manifest_path": "outputs/ml_results/lstm_ensembles/lstm_10member_ensemble_v1/manifests/cal_manifest.json",
+  "test_manifest_path": "outputs/ml_results/lstm_ensembles/lstm_10member_ensemble_v1/manifests/test_manifest.json",
+  "saved_uq_comparison_dir": "outputs/ml_results/lstm_conformal/sigma_floor_1e-3/uq_comparison",
+  "expected_profile_counts": {"train": 5000, "val": 1000, "cal": 1000, "test": 2000},
+  "expected_steps": 501,
+  "expected_member_count": 10,
+  "alpha": 0.05,
+  "plots": true
+}
