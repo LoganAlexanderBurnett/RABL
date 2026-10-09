@@ -152,3 +152,10 @@ Tests cover independent profile-max order statistics, exact parity with the
 existing numerical calibrators at all seven floors, the large-floor limit,
 precision-sensitive comparisons, scaled coverage events, corruption despite
 matching scaler metadata, and the complete HDF5 workflow with immutable inputs.
+
+## Follow-up validation
+
+After this study completes, use `run_mace_profile_validation.py` with
+`scripts/mace_profile_validation_config.json` for paired profile bootstrap
+uncertainty, low-coverage horizon diagnostics, and the optional joint-trajectory
+comparison. See `scripts/mace_profile_validation_workflow.md` for scope and outputs.
