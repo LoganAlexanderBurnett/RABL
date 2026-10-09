@@ -114,7 +114,9 @@ def verify_scaler(
         "train_only_scope": "All X windows and Y rows of raw training profiles only; "
                             "includes prepared steady-state history, matching scaler fitting.",
     }
-    with h5py.File(raw_path, "r") as raw, h5py.File(external_path, "r") as scaled:
+    with (h5py.File(raw_path, "r") as raw,
+          h5py.File(external_path, "r") as scaled,
+          h5py.File(training_path, "r") as training_scaled):
         raw_states = decode_names(raw.attrs.get("state_feature_names", []))
         raw_inputs = raw_states + decode_names(raw.attrs.get("control_feature_name", []))
         report["raw_feature_order_match"] = (
@@ -148,29 +150,32 @@ def verify_scaler(
             selected_targets = [target_names[0], target_names[-1]]
         for split, names in manifests.items():
             for name in dict.fromkeys([names[0], names[len(names)//2], names[-1]]):
-                rgroup, sgroup = profile_group(raw, split, name), scaled[f"{split}/files/{name}"]
+                rgroup = profile_group(raw, split, name)
                 for axis, dataset in (("x", "X"), ("y", "Y")):
-                    r, s = rgroup[dataset][()], sgroup[dataset][()]
-                    if r.shape != s.shape:
-                        raise ValueError(f"Raw/scaled shape mismatch: {name}/{dataset}")
+                    r = rgroup[dataset][()]
                     if axis == "y":
                         cols = [target_names.index(n) for n in selected_targets]
                         labels = selected_targets
                     else:
                         cols = [len(emeta["input_feature_names"]) - 1]
                         labels = [emeta["input_feature_names"][-1]]
-                    for row in dict.fromkeys([0, len(r)//2, len(r)-1]):
-                        for col, label in zip(cols, labels):
-                            index_tuple = (row, col) if axis == "y" else (row, r.shape[1]-1, col)
-                            physical = np.asarray(r[index_tuple])
-                            actual = np.asarray(s[index_tuple])
-                            expected = (physical - external[axis]["min"][col]) / external[axis]["span"][col]
-                            check = compare_arrays(actual, np.asarray(expected))
-                            report["sample_checks"].append({
-                                "split": split, "profile": name, "dataset": dataset,
-                                "index": list(index_tuple), "feature": label,
-                                "physical_value": float(physical), "stored_scaled_value": float(actual),
-                                "recomputed_scaled_value": float(expected), **check})
+                    for source, handle, stats in (("external", scaled, external),
+                                                  ("training", training_scaled, training)):
+                        s = handle[f"{split}/files/{name}/{dataset}"][()]
+                        if r.shape != s.shape:
+                            raise ValueError(f"Raw/{source} scaled shape mismatch: {name}/{dataset}")
+                        for row in dict.fromkeys([0, len(r)//2, len(r)-1]):
+                            for col, label in zip(cols, labels):
+                                index_tuple = (row, col) if axis == "y" else (row, r.shape[1]-1, col)
+                                physical = np.asarray(r[index_tuple])
+                                actual = np.asarray(s[index_tuple])
+                                expected = (physical - stats[axis]["min"][col]) / stats[axis]["span"][col]
+                                check = compare_arrays(actual, np.asarray(expected))
+                                report["sample_checks"].append({
+                                    "source": source, "split": split, "profile": name, "dataset": dataset,
+                                    "index": list(index_tuple), "feature": label,
+                                    "physical_value": float(physical), "stored_scaled_value": float(actual),
+                                    "recomputed_scaled_value": float(expected), **check})
     report["match"] = bool(order_ok and report["raw_feature_order_match"]
                            and all(x["match"] for x in comparisons.values())
                            and all(x["match"] for x in report["train_only_extrema_comparisons"].values())

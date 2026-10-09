@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -162,7 +163,8 @@ class IntegrationTests(unittest.TestCase):
                         sg.create_dataset(key,data=(physical-stats[axis]["min"])/stats[axis]["span"])
         write_json(root/"scaler.json",{"type":"minmax", **{axis:{key:a.astype(np.float32) for key,a in st.items()} for axis,st in stats.items()}})
         for i in range(10):
-            (exp/f"model_{i}").mkdir(); (exp/f"model_{i}/model.pt").write_bytes(b"fixed-checkpoint")
+            (exp/f"ensemble/model_{i}").mkdir(parents=True)
+            (exp/f"ensemble/model_{i}/model.pt").write_bytes(b"fixed-checkpoint")
         arrays={}
         for split in ("cal","test"):
             ys=[];means=[];spreads=[];physical=[]
@@ -238,6 +240,9 @@ class IntegrationTests(unittest.TestCase):
             self.assertTrue(all(c[key]["match"] for x in report.values() for c in x["saved_interval_arrays"]["profiles"] for key in ("lower","upper")))
             self.assertEqual(len(json.loads((out/"floor_fraction_distributions.json").read_text())),28)
             self.assertTrue(json.loads((out/"study_metadata.json").read_text())["completed"])
+            metadata=json.loads((out/"study_metadata.json").read_text())
+            self.assertTrue(all("/ensemble/model_" in metadata["input_hashes"][f"checkpoint_{i}"]["path"]
+                                for i in range(10)))
             with self.assertRaises(FileExistsError):run(config)
 
     def test_actual_scaled_samples_detect_corruption_with_matching_metadata(self):
@@ -251,6 +256,32 @@ class IntegrationTests(unittest.TestCase):
             self.assertFalse(report["match"])
             self.assertTrue(all(x["match"] for x in report["metadata_comparisons"].values()))
             self.assertTrue(any(not x["match"] for x in report["sample_checks"]))
+
+    def test_training_samples_detect_corruption_independently_of_external_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); config,manifests,names=self.fixture(root)
+            training_path=root/"training_scaled.h5"
+            shutil.copyfile(root/"scaled.h5",training_path)
+            with h5py.File(training_path,"r+") as f:
+                key=f"train/files/{manifests['train'][0]}/X"
+                f[key][0,-1,-1]+=1e-9
+            report,_=verify_scaler(external_path=root/"scaled.h5",training_path=training_path,
+                raw_path=root/"raw.h5",reference_json_path=root/"scaler.json",manifests=manifests,target_names=names)
+            self.assertFalse(report["match"])
+            self.assertTrue(all(x["match"] for x in report["metadata_comparisons"].values()))
+            self.assertTrue(all(x["match"] for x in report["sample_checks"] if x["source"]=="external"))
+            self.assertTrue(any(not x["match"] for x in report["sample_checks"] if x["source"]=="training"))
+
+    def test_failed_scaler_check_leaves_incomplete_record_and_runs_no_sweep(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); config,manifests,names=self.fixture(root)
+            with h5py.File(root/"scaled.h5","r+") as f:
+                f[f"test/files/{manifests['test'][0]}/Y"][0,1]+=1e-9
+            with self.assertRaisesRegex(ValueError,"Scaler/data checks failed"):
+                run(config)
+            out=Path(config["output_dir"])
+            self.assertFalse(json.loads((out/"study_metadata.json").read_text())["completed"])
+            self.assertFalse((out/"recalibration.h5").exists())
 
 
 if __name__ == "__main__":

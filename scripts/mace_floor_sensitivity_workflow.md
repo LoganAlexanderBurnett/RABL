@@ -12,6 +12,8 @@ Only NumPy and h5py are needed for the calculations; matplotlib is needed when
 new forecast generation, or new test-set selection. The ten checkpoint files
 are read only to calculate their SHA-256 hashes. Every input HDF5 is opened
 read-only. Existing outputs are never overwritten.
+Checkpoint paths are `ensemble_experiment_dir/ensemble/model_0/model.pt`
+through `ensemble_experiment_dir/ensemble/model_9/model.pt`, matching training.
 
 ## Inputs and fixed design
 
@@ -81,7 +83,7 @@ Scaler verification runs before the sweep. It checks:
 2. Independent min/max/span recomputation over **only raw training profiles**,
    flattening all X windows and Y rows, matching the original fitting scope.
    Constant-feature spans use the documented replacement of zero by one.
-3. Actual raw-to-stored-scaled values via `(physical-min)/span`, for steam
+3. Actual raw-to-stored-scaled values in **both scaled HDF5 datasets** via `(physical-min)/span`, for steam
    quality, TN2 (the first target), and the control input. First/middle/last rows
    of first/middle/last profiles from every split are checked. Forecast truth is
    also compared with the full stored scaled Y arrays for every calibration/test

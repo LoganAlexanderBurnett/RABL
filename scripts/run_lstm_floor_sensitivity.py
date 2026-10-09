@@ -107,7 +107,7 @@ def run(config: dict[str, Any], *, config_path: Path | None = None) -> Path:
         names = decode_names(f.attrs["target_names"])
     if not names or "x_steam_out" not in names:
         raise ValueError("Saved forecast targets must include x_steam_out.")
-    model_paths = [paths["ensemble_experiment_dir"] / f"model_{i}/model.pt" for i in range(members)]
+    model_paths = [paths["ensemble_experiment_dir"] / f"ensemble/model_{i}/model.pt" for i in range(members)]
     if any(not p.is_file() for p in model_paths):
         raise FileNotFoundError("All original ensemble checkpoints are required for provenance hashing.")
     for path in (paths["external_scaled_h5_path"], paths["training_scaled_h5_path"]):
@@ -130,7 +130,7 @@ def run(config: dict[str, Any], *, config_path: Path | None = None) -> Path:
         file_inputs[f"saved/{p.parent.name}/forecasts"] = p
     print("Hashing fixed inputs (large HDF5 files may take a few minutes)", flush=True)
     hashes = {k: fingerprint(p) for k,p in file_inputs.items()}
-    metadata = {"config": config, "config_path": config_path, "floors": list(FLOORS),
+    metadata = {"completed": False, "config": config, "config_path": config_path, "floors": list(FLOORS),
                 "floor_operation": "ensemble_std_scaled + common_floor",
                 "nominal_coverage": 1-alpha, "target_names": names, "input_hashes": hashes,
                 "profile_names": manifests, "member_count": members, "steps": steps,
