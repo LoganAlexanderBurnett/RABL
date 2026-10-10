@@ -1,0 +1,8 @@
+{
+  "floor_study_dir": "outputs/ml_results/mace_floor_sensitivity_v1",
+  "output_dir": "outputs/ml_results/mace_scaler_use_audit_v1",
+  "profiles_per_split": 3,
+  "device": "auto",
+  "torch_threads": 1,
+  "recompute_train_extrema": true
+}

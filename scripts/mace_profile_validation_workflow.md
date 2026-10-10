@@ -1,5 +1,9 @@
 # Fixed-run profile bootstrap, horizon diagnostics, and joint trajectory bands
 
+After reviewing these outputs, use `run_mace_scaler_use_audit.py` with
+`scripts/mace_scaler_use_audit_config.json` to audit the external scaler and
+its actual use in frozen-model rollouts. See `mace_scaler_use_audit_workflow.md`.
+
 Run from the repository root, using the environment containing NumPy and h5py
 (and matplotlib when plots are enabled):
 
