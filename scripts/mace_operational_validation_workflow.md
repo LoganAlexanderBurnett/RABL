@@ -142,3 +142,27 @@ python -m unittest discover -s tests -p "test_mace_*.py" -q
 ```
 
 Software fixtures verify the pipeline's numerical behavior. They do not substitute for the actual reactor simulations or frozen production-model evaluation. Share the evaluation CSVs, metadata/check reports and manifest first; the larger HDF5 files preserve independently checkable endpoints, members, calibration scores and bootstrap draws.
+
+## Plot three test forecasts per operational family
+
+After `evaluate` completes, pull the plotting update and run this standalone command:
+
+```powershell
+python scripts/plot_mace_operational_forecasts.py
+```
+
+The default selects the first three sorted **test** profile IDs from each of B, C, D and F, without inspecting prediction errors or coverage. It produces 48 grids (12 profiles × 2 calibration arms × 2 trajectory views), each as PNG and PDF, in `outputs/ml_results/mace_operational_validation_v1/forecast_plots_4x4`. Selection and input fingerprints are recorded in `plot_metadata.json`; each rendered grid prints progress.
+
+Each grid follows the existing 4×4 layout: drum angle, then Tf, Tm, Thp, TN2, Tsg, steam-outlet temperature, steam quality, six precursors, neutron level and reactivity. Truth is black and ensemble mean blue, with raw ensemble ±2σ in purple, saved MACE-Horizon bounds in green, and saved trajectory bounds in red. All targets use physical units. Target-trajectory and joint-trajectory bands have separate labeled views; original and operational calibration have separate folders. Bands are not clipped to physical limits, and raw ±2σ is explicitly uncalibrated.
+
+For only the operational-calibration horizon/target-trajectory grids (12 grids):
+
+```powershell
+python scripts/plot_mace_operational_forecasts.py --calibration operational --trajectory-mode target_trajectory
+```
+
+Other options are `--results-dir`, `--output-dir`, `--profiles-per-family`, `--dpi`, `--formats png pdf`, and `--scaler-file` for a relocated byte-identical external scaler HDF5. Relative paths are resolved from the repository root. Existing plot directories are never overwritten; for another view or an interrupted plotting attempt, choose a fresh `--output-dir`.
+
+The script reads `forecasts/operational_test.h5`, `evaluation/intervals_and_statistics.h5`, `evaluation/calibration_quantiles.h5`, completion metadata, the manifest and the original external scaler HDF5. Hashing the large forecast/scaler files can take a minute before rendering begins. It checks the recorded forecast/scaler hashes, profile and target order, native mean/spread, selected endpoints against saved quantiles, and coverage masks at exact stored precision. Precision conversions are explicitly reported. These files are checked for changes after plotting. The same selected profiles and mean forecasts appear in both calibration arms. No inference, simulation, fitting or recalibration is performed.
+
+This standalone plotting addition does not change any source file hashed into the completed scientific run. Do not rerun `generate`, `simulate`, `forecast`, `evaluate`, or `all` merely to obtain these figures. The compact upload used for the initial results review omitted the large forecast/interval HDF5s, so plotting must run where those files are retained. The example figures illustrate individual forecasts; they do not replace aggregate coverage and bootstrap results.
