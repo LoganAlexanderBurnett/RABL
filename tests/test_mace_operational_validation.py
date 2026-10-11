@@ -14,7 +14,7 @@ from unittest import mock
 
 import h5py
 import numpy as np
-from scipy.io import loadmat
+from scipy.io import loadmat, savemat
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +28,8 @@ from _mace_operational_metrics import (comparison_metrics, draw_weights, evaluat
 from _mace_operational_profiles import (FAMILIES, PHASES, TIME, control, draw_commands,
                                         generate, load_manifest, mat_table, phase_masks)
 from _mace_scaler_use import target_to_input
-from run_mace_operational_validation import configuration, generated_inputs, run, simulate_stage
+from run_mace_operational_validation import (PRE_FIX_SOURCE_HASHES, configuration, generated_inputs,
+                                             run, simulate_stage, source_hashes)
 from rabl.machine_learning.lstm_pipeline import LSTMRegressor, rolling_forecast
 
 
@@ -339,6 +340,93 @@ class OperationalTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "501"):
                 read_simulation(path, names=["TN2"], moves=moves)
 
+    def test_reported_discrepancy_reproduced_with_verified_float32_time_angle_storage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rng = np.random.default_rng(np.random.SeedSequence(20261010).spawn(2)[0])
+            family = str(rng.choice(FAMILIES))
+            moves = draw_commands(family, rng)
+            expected = control(moves)[0]
+            extracted = np.interp(TIME, TIME.astype(np.float32).astype(float), expected.astype(np.float32).astype(float))
+            self.assertEqual(float(abs(extracted-expected).max()), 2.107193843414734e-6)
+            path, raw = Path(tmp)/"results_drum_profile_10001.csv", Path(tmp)/"run_10001.mat"
+            def save(angle):
+                with path.open("w", newline="") as f:
+                    w = csv.writer(f)
+                    w.writerow(["t", "drumAngleDeg", "TN2"])
+                    w.writerows(zip(TIME, angle, np.full(501, 300.)))
+            save(extracted)
+            with self.assertRaisesRegex(ValueError, "disagrees"):
+                read_simulation(path, names=["TN2"], moves=moves)
+            data = np.stack([TIME, expected]).astype(np.float32)
+            savemat(raw, {"data_2": data}, format="4")
+            _y, angle, report = read_simulation(path, names=["TN2"], moves=moves)
+            np.testing.assert_array_equal(angle, extracted)  # No CSV signal rewriting.
+            self.assertEqual(report["raw_dymola_result"]["trajectory_dtype"], "float32")
+            self.assertEqual(report["observed_vs_float32_reference_max_difference_degrees"], 0.)
+            self.assertLessEqual(report["angle_max_fraction_of_pointwise_bound"], 1)
+            save(extracted+.0001)
+            with self.assertRaisesRegex(ValueError, "disagrees"):
+                read_simulation(path, names=["TN2"], moves=moves)
+            save(extracted)
+            savemat(raw, {"data_2": data.astype(np.float64)}, format="4")
+            with self.assertRaisesRegex(ValueError, "disagrees"):
+                read_simulation(path, names=["TN2"], moves=moves)
+
+    def test_validation_fix_migration_is_narrow_and_keeps_physics_and_profile_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            actual = source_hashes()
+            def fixture(label, separator="/"):
+                out = Path(tmp)/label
+                c = configuration(dict(output_dir=str(out), floor_study_dir=str(Path(tmp)/"study"),
+                                       operational_calibration_count=20, operational_test_count=8, plots=False))
+                m = generate(out, calibration_count=20, test_count=8, seed=c["profile_seed"], settling_seconds=20)
+                current = {k.replace("/", separator): v for k, v in actual.items()}
+                before = current.copy()
+                for k, hashes in PRE_FIX_SOURCE_HASHES.items():
+                    before[k.replace("/", separator)] = sorted(hashes)[0]
+                # Exercise both of the whitelisted Windows CRLF digests explicitly.
+                if separator == "\\":
+                    before["scripts\\run_mace_operational_validation.py"] = "96faa98189335fa6ee095c6f3153559c5e778e92ae431c405108ff35850c11a8"
+                    before["scripts\\_mace_operational_forecasts.py"] = "8cf234cfabfeda54a99ca0f20a391d60df07ef01174967e2a343f8760ac80aff"
+                write_json(out/"run_configuration.json", dict(configuration=c, source_hashes=before, git=dict(commit="be406101")))
+                identity = dict(manifest_identity=m["identity"], modelica_source_hashes={"package.mo": "physics"},
+                                runner_source_sha256="runner", output_interval=.4, model_name="MicroreactorPK.Experiments.RunOneProfile")
+                write_json(out/"simulation_metadata.json", dict(**identity, completed=False, config=c, result_hashes={}))
+                return out, c, m, current, identity
+            for i, separator in enumerate(("/", "\\")):
+                out, c, m, current, identity = fixture(f"good{i}", separator)
+                hashes = {p["mat_path"]: fingerprint(Path(p["mat_path"])) for p in m["profiles"]}
+                with mock.patch("run_mace_operational_validation.source_hashes", return_value=current), mock.patch("run_mace_operational_validation.simulation_identity", return_value=identity):
+                    with self.assertRaisesRegex(ValueError, "source changed"):
+                        generated_inputs(c)
+                    migrated = generated_inputs(c, resume_after_validation_fix=True)
+                    self.assertEqual(migrated, m)
+                    self.assertTrue((out/"run_configuration_before_validation_fix.json").exists())
+                    self.assertTrue((out/"simulation_metadata_before_validation_fix.json").exists())
+                    after = json.loads((out/"run_configuration.json").read_text())
+                    self.assertEqual(after["source_hashes"], current)
+                    self.assertEqual(after["configuration"], c)
+                    self.assertFalse(after["validation_fix_migration"]["regenerated_profiles"])
+                    generated_inputs(c, resume_after_validation_fix=True)  # Idempotent after migration.
+                self.assertEqual({p: fingerprint(Path(p)) for p in hashes}, hashes)
+            for kind in ("unrelated_source", "physics", "forecast_started", "configuration"):
+                out, c, m, current, identity = fixture(kind)
+                if kind == "unrelated_source":
+                    payload = json.loads((out/"run_configuration.json").read_text())
+                    payload["source_hashes"]["scripts/_mace_operational_metrics.py"] = "edited"
+                    write_json(out/"run_configuration.json", payload)
+                elif kind == "physics":
+                    identity = {**identity, "modelica_source_hashes": {"package.mo": "changed"}}
+                elif kind == "forecast_started":
+                    (out/"forecasts").mkdir()
+                else:
+                    c = {**c, "profile_seed": c["profile_seed"]+1}
+                with mock.patch("run_mace_operational_validation.source_hashes", return_value=current), mock.patch("run_mace_operational_validation.simulation_identity", return_value=identity), self.assertRaises(ValueError):
+                    generated_inputs(c, resume_after_validation_fix=True)
+                self.assertFalse((out/"run_configuration_before_validation_fix.json").exists())
+            with self.assertRaisesRegex(ValueError, "only"):
+                run({}, "all", resume_after_validation_fix=True)
+
     def test_simulation_stage_resume_keeps_manifest_and_checks_every_result(self):
         """Exercise runner contract/resumption with synthetic CSVs, not Dymola."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -386,6 +474,12 @@ class OperationalTests(unittest.TestCase):
                 result = simulate_stage(c, manifest)
                 self.assertTrue(result["completed"])
                 self.assertEqual(len(result["result_hashes"]), 28)
+                self.assertEqual(len(closed), 3)
+                # If only completion bookkeeping was interrupted, validate all
+                # cached splits without opening another Dymola instance.
+                write_json(out/"simulation_metadata.json", {**result, "completed": False})
+                cached = simulate_stage(c, manifest)
+                self.assertTrue(cached["completed"])
                 self.assertEqual(len(closed), 3)
                 with self.assertRaises(FileExistsError):
                     simulate_stage(c, manifest)

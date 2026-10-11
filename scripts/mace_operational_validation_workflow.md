@@ -98,6 +98,25 @@ Generation saves the immutable manifest, phase point counts, v4 MAT tables and a
 
 An interrupted simulation can resume using the same `simulate` command only when manifest, configuration, runner and Modelica source still match. Every expected result is checked; failed profiles cannot be silently omitted. Forecast/evaluation stages refuse to overwrite or reuse partial outputs; if either is interrupted, preserve that attempt and use a new output directory for a clean run. The `all` stage is for a fresh run, not resumption. Completed simulation/forecast stages are not rerun when progressing to later stages. Source/config changes after generation are rejected rather than mixing versions within one result set.
 
+### Recover the be406101 applied-angle validation failure
+
+The original applied-angle check required agreement within 1e-8 degrees. For the first default profile, rounding trajectory time and angle to float32 and then applying the runner's linear interpolation reproduces a **2.107193843414734e-6 degree** discrepancy. Parsing that extracted CSV as float64 does not restore the lost precision.
+
+The corrected check inspects the **native `data_2` dtype in `simulation/{cal,test}/run_*.mat`**. With verified float32 storage, it derives a pointwise bound from half an angle ULP plus the maximum prescribed angular speed times half a timestamp ULP, with a small float64 arithmetic allowance. It records the native dtype, raw MAT hash, maximum observed difference, derived bound, and agreement with a separately computed quantized regular-grid reference. Without verified float32 storage, the original stricter angle check remains. Timestamp checks remain at 1e-8 seconds. These are analytic-input versus extracted-signal diagnostics; saved forecast/scaler array checks still use exact equality and explicit precision conversions. Existing CSV control and truth values are not rewritten.
+
+**Keep the current configuration, output directory, and raw `run_*.mat` files alongside their CSVs.** After pulling the fix, recover with these commands, each on one continuous line:
+
+```powershell
+git pull --ff-only origin mace-floor-sensitivity
+python scripts/run_mace_operational_validation.py --config scripts/mace_operational_validation_config.json --stage simulate --resume-after-validation-fix
+python scripts/run_mace_operational_validation.py --config scripts/mace_operational_validation_config.json --stage forecast
+python scripts/run_mace_operational_validation.py --config scripts/mace_operational_validation_config.json --stage evaluate
+```
+
+Do not run `generate` or `all` for this recovery. The explicit recovery flag allows only the two reviewed validation/orchestration files to replace their known be406101 versions, accepting both LF and Windows CRLF file hashes. All other recorded sources, configuration, profile MAT bytes, Modelica source, and Dymola runner must remain unchanged. Forecast/evaluation must not have begun. It archives the original run configuration and simulation metadata, records the migration, and validates cached CSVs before starting more simulations. A fully cached valid split is reused without opening Dymola. For the reported failure, this retains all 1,000 calibration simulations and proceeds to the 2,000 test simulations. Subsequent interrupted simulation attempts can use the ordinary `--stage simulate` command once migration is recorded.
+
+This is a specific recovery path, not a general source-hash override. A changed checkpoint/scaler is still rejected by the frozen-input checks before forecasting; a changed previously validated CSV or native MAT is also rejected. If an angle fails the derived precision bound, inspect that profile's raw output rather than expanding the bound.
+
 Saved member predictions, endpoints and profile statistics require several GB of disk for the default run. The paired bootstrap count matrix requires approximately 160 MB of RAM at 10,000 × 2,000; full test arrays and interval calculations add memory. Forecasts stream profile by profile; evaluation retains arrays and works one mode at a time. Small-count generation/evaluation fixtures are for software checks; production original-calibration forecasting deliberately requires the same original 1,000 profiles and 501 steps.
 
 ## Outputs to inspect/share
@@ -114,7 +133,7 @@ Within the configured output directory:
 - `evaluation/phase_support.csv`: profiles/points contributing to each phase/family;
 - `evaluation/calibration_quantiles.h5`, `intervals_and_statistics.h5`, `paired_bootstrap_draws.h5`, `stored_array_checks.json`, `evaluation_metadata.json`.
 
-Each saved-array comparison uses exact equality at matched precision. When precision differs, it records the explicit lower-precision conversion and native/post-conversion maximum differences. Solver grid/angle checks are separately labeled with their numerical bounds; they are not stored-array tolerance checks. Coverage is regenerated exactly from the saved endpoints and checked against the saved masks. Input datasets/checkpoints and forecast files are SHA-256 guarded before and after processing; git/runtime/source identities are recorded. Inspect `completed` status before interpreting results.
+Each saved-array comparison uses exact equality at matched precision. When precision differs, it records the explicit lower-precision conversion and native/post-conversion maximum differences. Solver grid/angle checks are separately labeled with their numerical bounds and native trajectory precision; they are not stored-array tolerance checks. Per-profile diagnostics are recorded in `simulation_metadata.json` under `result_validation`. Coverage is regenerated exactly from the saved endpoints and checked against the saved masks. Input datasets/checkpoints and forecast files are SHA-256 guarded before and after processing; git/runtime/source identities are recorded. Inspect `completed` status before interpreting results.
 
 Run focused software checks with:
 

@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from pathlib import Path
 
 import h5py
 import numpy as np
+from scipy.io import loadmat
 
 from _mace_floor_study import fingerprint, write_json
 from _mace_operational_profiles import TIME, control
@@ -76,19 +78,76 @@ def read_simulation(path, *, names, moves):
     if a.shape != (501, len(required)) or not np.all(np.isfinite(a)):
         raise ValueError(f"Requires 501 finite rows on the 0–200 s grid: {path}")
     time_delta = float(np.max(np.abs(a[:, 0]-TIME)))
-    angle_delta = float(np.max(np.abs(a[:, 1]-control(moves)[0])))
-    # These are solver/interpolation diagnostics, not tolerance comparisons of saved arrays.
-    if time_delta > 1e-8 or angle_delta > 1e-8:
+    expected = control(moves)[0]
+    differences = np.abs(a[:, 1]-expected)
+    angle_delta = float(differences.max())
+    raw_result, storage = None, None
+    match = re.fullmatch(r"results_drum_profile_(\d{5})", Path(path).stem)
+    if match:
+        raw = Path(path).with_name("run_"+match.group(1)+".mat")
+        if raw.is_file():
+            # readTrajectory's Python floats and the CSV's float64 parser do not
+            # restore precision lost in the native Dymola trajectory matrix.
+            data = loadmat(raw, variable_names=["data_2"])
+            if "data_2" not in data or data["data_2"].dtype.kind != "f":
+                raise ValueError(f"Missing numeric Dymola data_2 matrix: {raw}")
+            storage = data["data_2"].dtype.name
+            raw_result = {**fingerprint(raw), "trajectory_dtype": storage}
+    bounds = np.full(len(TIME), 1e-8, dtype=np.float64)
+    policy = "solver_input_float64_bound"
+    quantized_reference_delta = None
+    observed_vs_quantized_reference = None
+    if storage == "float32":
+        def half_ulp32(values):
+            v = np.asarray(values, np.float32)
+            above = np.nextafter(v, np.float32(np.inf)).astype(float)-v.astype(float)
+            below = v.astype(float)-np.nextafter(v, np.float32(-np.inf)).astype(float)
+            return np.maximum(above, below)/2
+        # A resampled signal can have both angle rounding and timestamp rounding
+        # errors. Bound these in degrees, rather than declaring the parsed CSV
+        # float64 and requiring an impossible 1e-8-degree match. Bracketing sample
+        # times are at most one output interval away; maneuver corners are on
+        # this same grid and are stored as events by the existing runner/model.
+        max_rate = max(abs(m["speed_deg_s"]) for m in moves)
+        angle_rounding = float(half_ulp32(np.max(np.abs(expected))))
+        time_rounding = half_ulp32(np.minimum(TIME+.4, 200.))
+        arithmetic = 16*np.finfo(float).eps*np.maximum(1., np.abs(expected))
+        bounds = angle_rounding+max_rate*time_rounding+arithmetic
+        policy = "verified_float32_angle_and_time_rounding_plus_linear_resampling"
+        reference = np.interp(a[:, 0], TIME.astype(np.float32).astype(float),
+                              expected.astype(np.float32).astype(float))
+        quantized_reference_delta = float(np.max(np.abs(reference-expected)))
+        observed_vs_quantized_reference = float(np.max(np.abs(a[:, 1]-reference)))
+    # This is an analytic command-versus-extracted-solver-signal diagnostic.
+    # Native saved forecast/scaler array comparisons elsewhere remain exact.
+    if time_delta > 1e-8 or np.any(differences > bounds):
         raise ValueError(f"Simulation grid/applied angle disagrees with input: {path}: {time_delta}, {angle_delta}")
     return a[:, 2:], a[:, 1], dict(time_max_difference_seconds=time_delta,
                                   angle_max_difference_degrees=angle_delta,
-                                  solver_input_check_bound=1e-8)
+                                  time_check_bound_seconds=1e-8,
+                                  angle_check_policy=policy,
+                                  angle_check_bound_min_degrees=float(bounds.min()),
+                                  angle_check_bound_max_degrees=float(bounds.max()),
+                                  angle_max_fraction_of_pointwise_bound=float(np.max(differences/bounds)),
+                                  raw_dymola_result=raw_result,
+                                  regular_grid_float32_reference_max_difference_degrees=quantized_reference_delta,
+                                  observed_vs_float32_reference_max_difference_degrees=observed_vs_quantized_reference)
 
 
 def same_hashes(paths, hashes):
     for key, path in paths.items():
         if fingerprint(path)["sha256"] != hashes[key]["sha256"]:
             raise ValueError(f"Frozen scientific input changed: {key}")
+
+
+def simulation_hashes(out, profiles, metadata):
+    for p in profiles:
+        path = out/"simulation"/p["split"]/(p["id"]+".csv")
+        if fingerprint(path)["sha256"] != metadata["result_hashes"][p["id"]]["sha256"]:
+            raise ValueError(f"Simulation CSV changed: {p['id']}")
+        raw = metadata.get("result_validation", {}).get(p["id"], {}).get("raw_dymola_result")
+        if raw is not None and fingerprint(Path(raw["path"]))["sha256"] != raw["sha256"]:
+            raise ValueError(f"Native Dymola MAT changed: {p['id']}")
 
 
 def frozen_inputs(config, root):
@@ -134,10 +193,7 @@ def forecast_stage(config, manifest, *, root):
     native, scaling_metadata = read_scaler(paths["external_scaled_h5_path"])
     if scaling_metadata["target_names"] != names or len(native["x"]["min"]) != len(names)+1:
         raise ValueError("Scaler feature order mismatch")
-    for p in manifest["profiles"]:
-        path = out/"simulation"/p["split"]/(p["id"]+".csv")
-        if fingerprint(path)["sha256"] != simmeta["result_hashes"][p["id"]]["sha256"]:
-            raise ValueError(f"Simulation CSV changed: {p['id']}")
+    simulation_hashes(out, manifest["profiles"], simmeta)
     pipeline, bag, _cp, _ds, _uq = production_modules()
     device, runtime = runtime_settings(config["device"], config["torch_threads"])
     architecture = []
@@ -215,10 +271,7 @@ def forecast_stage(config, manifest, *, root):
                     print(f"Operational {split} forecasts: {i+1}/{len(chosen)}", flush=True)
             f.attrs["completed"] = True
     same_hashes(paths, hashes)
-    for p in manifest["profiles"]:
-        path = out/"simulation"/p["split"]/(p["id"]+".csv")
-        if fingerprint(path)["sha256"] != simmeta["result_hashes"][p["id"]]["sha256"]:
-            raise ValueError("Simulation changed during inference")
+    simulation_hashes(out, manifest["profiles"], simmeta)
     for filename in ("original_cal.h5", "operational_cal.h5", "operational_test.h5"):
         results[filename] = fingerprint(folder/filename)
     write_json(folder/"precision_and_input_checks.json", checks)

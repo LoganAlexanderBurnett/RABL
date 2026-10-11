@@ -17,7 +17,7 @@ import numpy as np
 
 from _mace_floor_study import fingerprint, write_json
 from _mace_operational_forecasts import (forecast_stage, frozen_inputs, load_forecast,
-                                         read_simulation, same_hashes)
+                                         read_simulation, same_hashes, simulation_hashes)
 from _mace_operational_metrics import evaluate_study
 from _mace_operational_profiles import generate, load_manifest, plot_profiles
 from _mace_scaler_audit import read_scaler
@@ -29,6 +29,17 @@ DEFAULTS = dict(operational_calibration_count=1000, operational_test_count=2000,
                 device="auto", torch_threads=1, bootstrap_replicates=10000,
                 bootstrap_seed=20261011, bootstrap_batch_size=64, plots=True,
                 package_mo="src/modelica/MicroreactorPK/package.mo", input_overrides={})
+
+# Only these two reviewed pre-fix files may change during recovery of an
+# interrupted be406101 simulation. Include LF and Git-for-Windows CRLF bytes.
+PRE_FIX_SOURCE_HASHES = {
+    "scripts/run_mace_operational_validation.py": {
+        "955c22f62988cc46add08234787dd05a29fbe02284ca257aff6f70397a0deab5",
+        "96faa98189335fa6ee095c6f3153559c5e778e92ae431c405108ff35850c11a8"},
+    "scripts/_mace_operational_forecasts.py": {
+        "2b21182c0320af376258b3884c0f0ba532aa7f52b1f316936c57fed322fa765c",
+        "8cf234cfabfeda54a99ca0f20a391d60df07ef01174967e2a343f8760ac80aff"},
+}
 
 
 def configuration(payload):
@@ -73,27 +84,70 @@ def git_state():
         return dict(commit=None, dirty=None)
 
 
-def generated_inputs(c):
+def generated_inputs(c, *, resume_after_validation_fix=False):
     out = Path(c["output_dir"])
     run = json.loads((out/"run_configuration.json").read_text())
-    if run["configuration"] != c or run["source_hashes"] != source_hashes():
+    current = source_hashes()
+    if run["configuration"] != c:
         raise ValueError("Configuration/executing source changed after generation; use a new output_dir")
     manifest = load_manifest(out)
     if manifest["profile_count"] != dict(cal=c["operational_calibration_count"], test=c["operational_test_count"]):
         raise ValueError("Operational split size mismatch")
+    if run["source_hashes"] != current:
+        if not resume_after_validation_fix:
+            raise ValueError("Executing source changed after generation; the known interrupted angle-validation run can use --stage simulate --resume-after-validation-fix")
+        migrate_validation_fix(c, run, manifest, current)
     return manifest
+
+
+def simulation_identity(c, manifest):
+    package = Path(c["package_mo"])
+    if package.name != "package.mo" or not package.is_file():
+        raise FileNotFoundError(f"MicroreactorPK package.mo required: {package}")
+    return dict(manifest_identity=manifest["identity"],
+                modelica_source_hashes={str(p.relative_to(package.parent)): fingerprint(p)["sha256"]
+                                        for p in sorted(package.parent.rglob("*.mo"))},
+                runner_source_sha256=fingerprint(ROOT/"src/rabl/interface/pymola.py")["sha256"],
+                output_interval=.4, model_name="MicroreactorPK.Experiments.RunOneProfile")
+
+
+def migrate_validation_fix(c, previous, manifest, current):
+    """Explicit, narrow migration; never bypass changed scientific inputs/code."""
+    out = Path(c["output_dir"])
+    before = previous["source_hashes"]
+    if set(before) != set(current):
+        raise ValueError("Source inventory changed; cannot migrate this interrupted run")
+    changed = [k for k in current if before[k] != current[k]]
+    if not changed or any(before[k] not in PRE_FIX_SOURCE_HASHES.get(k.replace("\\", "/"), set()) for k in changed):
+        raise ValueError("Only the reviewed be406101 angle-validation source changes can be migrated")
+    if (out/"forecasts").exists() or (out/"evaluation").exists():
+        raise ValueError("Recovery is limited to interrupted simulations before forecasting/evaluation")
+    simpath = out/"simulation_metadata.json"
+    sim = json.loads(simpath.read_text())
+    if sim.get("completed") or sim.get("config") != c:
+        raise ValueError("Requires an incomplete simulation with unchanged configuration")
+    if any(sim.get(k) != v for k, v in simulation_identity(c, manifest).items()):
+        raise ValueError("Modelica/runner/manifest changed; cannot migrate existing simulations")
+    simulation_hashes(out, [p for p in manifest["profiles"] if p["id"] in sim.get("result_hashes", {})], sim)
+    for filename, payload in (("run_configuration_before_validation_fix.json", previous),
+                              ("simulation_metadata_before_validation_fix.json", sim)):
+        if (out/filename).exists():
+            raise FileExistsError(f"Recovery snapshot already exists: {out/filename}")
+        write_json(out/filename, payload)
+    revised = {**previous, "source_hashes": current,
+               "validation_fix_migration": dict(origin_commit="be40610122cfd1bdd7186541edc5692d3b207873",
+                    changed_sources=changed, previous_source_hashes=before, execution_git=git_state(),
+                    manifest_identity=manifest["identity"], regenerated_profiles=False,
+                    purpose="Validate native trajectory precision and reuse existing simulations")}
+    write_json(out/"run_configuration.json", revised)
+    print("Migrated the reviewed angle-validation fix; profile tables/configuration/physics are unchanged", flush=True)
 
 
 def simulate_stage(c, manifest):
     out, package = Path(c["output_dir"]), Path(c["package_mo"])
-    if package.name != "package.mo" or not package.is_file():
-        raise FileNotFoundError(f"MicroreactorPK package.mo required: {package}")
-    modelica_hashes = {str(p.relative_to(package.parent)): fingerprint(p)["sha256"]
-                       for p in sorted(package.parent.rglob("*.mo"))}
+    identity = simulation_identity(c, manifest)
+    modelica_hashes = identity["modelica_source_hashes"]
     runner_source = ROOT/"src/rabl/interface/pymola.py"
-    identity = dict(manifest_identity=manifest["identity"], modelica_source_hashes=modelica_hashes,
-                    runner_source_sha256=fingerprint(runner_source)["sha256"], output_interval=.4,
-                    model_name="MicroreactorPK.Experiments.RunOneProfile")
     metapath = out/"simulation_metadata.json"
     if metapath.exists():
         previous = json.loads(metapath.read_text())
@@ -101,21 +155,32 @@ def simulate_stage(c, manifest):
             raise FileExistsError("Simulation already completed; proceed to forecast")
         if any(previous.get(k) != v for k, v in identity.items()):
             raise ValueError("Cannot resume simulation with different inputs/source")
-        for name, old in previous.get("result_hashes", {}).items():
-            profile = next(p for p in manifest["profiles"] if p["id"] == name)
-            path = out/"simulation"/profile["split"]/(name+".csv")
-            if fingerprint(path)["sha256"] != old["sha256"]:
-                raise ValueError(f"Completed simulation CSV changed before resumption: {name}")
+        simulation_hashes(out, [p for p in manifest["profiles"] if p["id"] in previous.get("result_hashes", {})], previous)
     elif any((out/"simulation").rglob("results_*.csv")):
         raise FileExistsError("Existing simulation CSVs have no matching run provenance")
-    metadata = dict(**identity, completed=False, result_hashes={}, config=c)
+    metadata = dict(**identity, completed=False,
+                    result_hashes=previous.get("result_hashes", {}) if metapath.exists() else {},
+                    result_validation=previous.get("result_validation", {}) if metapath.exists() else {}, config=c)
     write_json(metapath, metadata)
-    sys.path.insert(0, str(ROOT/"src"))
-    from rabl.interface.pymola import BatchConfig, DymolaBatchRunner
     names = validate_prior_study(Path(c["floor_study_dir"]))["target_names"]
     for split in ("cal", "test"):
         results = out/"simulation"/split
         results.mkdir(parents=True, exist_ok=True)
+        chosen = [p for p in manifest["profiles"] if p["split"] == split]
+        cached = [p for p in chosen if (results/(p["id"]+".csv")).exists()]
+        # Check existing CSVs before starting more simulations. Reuse a fully
+        # completed split without opening Dymola or rerunning any profile.
+        for p in cached:
+            path = results/(p["id"]+".csv")
+            _y, _angle, report = read_simulation(path, names=names, moves=p["moves"])
+            metadata["result_hashes"][p["id"]] = fingerprint(path)
+            metadata["result_validation"][p["id"]] = report
+        write_json(metapath, metadata)
+        print(f"Validated/reused {len(cached)}/{len(chosen)} existing {split} simulation CSVs", flush=True)
+        if len(cached) == len(chosen):
+            continue
+        sys.path.insert(0, str(ROOT/"src"))
+        from rabl.interface.pymola import BatchConfig, DymolaBatchRunner
         cfg = BatchConfig(package_mo=str(package), model_name=identity["model_name"],
                           profiles_dir=str(out/"profiles"/split), out_dir=str(results), profile_mode="flat_mat",
                           table_name="profile", output_interval=.4, canonical_output_interval=.4,
@@ -130,8 +195,9 @@ def simulate_stage(c, manifest):
             if p["split"] != split:
                 continue
             path = results/(p["id"]+".csv")
-            read_simulation(path, names=names, moves=p["moves"])
+            _y, _angle, report = read_simulation(path, names=names, moves=p["moves"])
             metadata["result_hashes"][p["id"]] = fingerprint(path)
+            metadata["result_validation"][p["id"]] = report
         write_json(metapath, metadata)
     if modelica_hashes != {str(p.relative_to(package.parent)): fingerprint(p)["sha256"]
                            for p in sorted(package.parent.rglob("*.mo"))}:
@@ -205,7 +271,9 @@ def evaluate_stage(c, manifest):
     return metadata
 
 
-def run(payload, stage):
+def run(payload, stage, *, resume_after_validation_fix=False):
+    if resume_after_validation_fix and stage != "simulate":
+        raise ValueError("--resume-after-validation-fix applies only to --stage simulate")
     c = configuration(payload)
     out = Path(c["output_dir"])
     stages = ("generate", "simulate", "forecast", "evaluate") if stage == "all" else (stage,)
@@ -222,7 +290,7 @@ def run(payload, stage):
                 if c["plots"]:
                     plot_profiles(out, manifest)
             else:
-                manifest = generated_inputs(c)
+                manifest = generated_inputs(c, resume_after_validation_fix=resume_after_validation_fix)
                 meta_path = {"simulate": out/"simulation_metadata.json",
                              "forecast": out/"forecasts/forecast_metadata.json",
                              "evaluate": out/"evaluation/evaluation_metadata.json"}[current]
@@ -253,8 +321,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", required=True, type=Path)
     p.add_argument("--stage", required=True, choices=("generate", "simulate", "forecast", "evaluate", "all"))
+    p.add_argument("--resume-after-validation-fix", action="store_true",
+                   help="Guarded recovery of the interrupted be406101 angle-validation run; simulate stage only")
     args = p.parse_args()
-    run(json.loads(args.config.read_text()), args.stage)
+    run(json.loads(args.config.read_text()), args.stage, resume_after_validation_fix=args.resume_after_validation_fix)
 
 
 if __name__ == "__main__":
