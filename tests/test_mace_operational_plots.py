@@ -129,9 +129,12 @@ class OperationalPlotTests(unittest.TestCase):
             root=Path(t);fixture(root)
             before={str(p):fingerprint(p)['sha256'] for p in root.rglob('*') if p.is_file()}
             report=run(root,profiles_per_family=1,calibration='operational',trajectory_mode='target_trajectory',dpi=40,formats=('png',))
-            out=root/'forecast_plots_4x4'
+            out=root/'forecast_report_4x4'
             self.assertTrue(report['completed']);self.assertEqual(report['grid_count'],4)
             self.assertEqual(len(list(out.rglob('*.png'))),4)
+            self.assertEqual(len(list(out.rglob('*.pdf'))),1)
+            self.assertEqual(report['pdf_pages'],9)
+            self.assertEqual(len([p for p in report['pdf_index'] if p['kind']=='grid']),4)
             self.assertEqual({str(p):fingerprint(p)['sha256'] for p in map(Path,before)},before)
             self.assertEqual([p['family'] for p in report['selected_profiles']],list('BCDF'))
             with self.assertRaises(FileExistsError):run(root)

@@ -1,0 +1,20 @@
+{
+  "floor_study_dir": "outputs/ml_results/mace_floor_sensitivity_v1",
+  "output_dir": "outputs/ml_results/mace_operational_wide30_v1",
+  "profile_recipe": "wide30",
+  "reuse_original_calibration_dir": "outputs/ml_results/mace_operational_validation_v1",
+  "operational_calibration_count": 1000,
+  "operational_test_count": 2000,
+  "profile_seed": 20261012,
+  "early_settling_seconds": 20.0,
+  "alpha": 0.05,
+  "common_floor": 0.001,
+  "device": "auto",
+  "torch_threads": 1,
+  "bootstrap_replicates": 10000,
+  "bootstrap_seed": 20261013,
+  "bootstrap_batch_size": 64,
+  "plots": true,
+  "package_mo": "src/modelica/MicroreactorPK/package.mo",
+  "input_overrides": {}
+}

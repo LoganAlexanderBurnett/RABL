@@ -19,7 +19,7 @@ from _mace_floor_study import fingerprint, write_json
 from _mace_operational_forecasts import (forecast_stage, frozen_inputs, load_forecast,
                                          read_simulation, same_hashes, simulation_hashes)
 from _mace_operational_metrics import evaluate_study
-from _mace_operational_profiles import generate, load_manifest, plot_profiles
+from _mace_operational_profiles import RECIPE, WIDE_RECIPE, generate, load_manifest, plot_profiles
 from _mace_scaler_audit import read_scaler
 from run_mace_profile_validation import validate_prior_study
 
@@ -28,7 +28,8 @@ DEFAULTS = dict(operational_calibration_count=1000, operational_test_count=2000,
                 profile_seed=20261010, early_settling_seconds=20., alpha=.05, common_floor=.001,
                 device="auto", torch_threads=1, bootstrap_replicates=10000,
                 bootstrap_seed=20261011, bootstrap_batch_size=64, plots=True,
-                package_mo="src/modelica/MicroreactorPK/package.mo", input_overrides={})
+                package_mo="src/modelica/MicroreactorPK/package.mo", input_overrides={},
+                profile_recipe="local", reuse_original_calibration_dir=None)
 
 # Only these two reviewed pre-fix files may change during recovery of an
 # interrupted be406101 simulation. Include LF and Git-for-Windows CRLF bytes.
@@ -59,11 +60,19 @@ def configuration(payload):
         raise ValueError("Invalid plot/settling settings")
     if c["device"] not in {"auto", "cpu", "cuda"}:
         raise ValueError("device must be auto, cpu or cuda")
+    if c['profile_recipe'] not in ('local', 'wide30'):
+        raise ValueError('profile_recipe must be local or wide30')
     for key in ("floor_study_dir", "output_dir", "package_mo"):
         p = Path(c[key])
         c[key] = str((ROOT/p).resolve() if not p.is_absolute() else p.resolve())
     if Path(c["floor_study_dir"]) == Path(c["output_dir"]) or Path(c["floor_study_dir"]) in Path(c["output_dir"]).parents:
         raise ValueError("Operational output must be separate from the historical floor study")
+    if c['reuse_original_calibration_dir'] is not None:
+        p = Path(c['reuse_original_calibration_dir'])
+        c['reuse_original_calibration_dir'] = str((ROOT/p).resolve() if not p.is_absolute() else p.resolve())
+        origin, out = Path(c['reuse_original_calibration_dir']), Path(c['output_dir'])
+        if origin == out or origin in out.parents or out in origin.parents:
+            raise ValueError('New output must be separate from the retained reuse study')
     return c
 
 
@@ -71,7 +80,8 @@ def source_hashes():
     paths = [Path(__file__), *(Path(__file__).with_name(name) for name in
              ("_mace_operational_profiles.py", "_mace_operational_forecasts.py", "_mace_operational_metrics.py",
               "_mace_floor_study.py", "_mace_profile_bootstrap.py", "_mace_scaler_audit.py", "_mace_scaler_use.py",
-              "run_mace_profile_validation.py", "run_mace_scaler_use_audit.py", "run_lstm_floor_sensitivity.py"))]
+              "run_mace_profile_validation.py", "run_mace_scaler_use_audit.py", "run_lstm_floor_sensitivity.py",
+              "_mace_original_calibration_cache.py"))]
     paths += [ROOT/"src/rabl/machine_learning"/name for name in ("lstm_pipeline.py", "bagging_ensemble.py")]
     return {str(p.relative_to(ROOT)): fingerprint(p)["sha256"] for p in paths}
 
@@ -91,6 +101,9 @@ def generated_inputs(c, *, resume_after_validation_fix=False):
     if run["configuration"] != c:
         raise ValueError("Configuration/executing source changed after generation; use a new output_dir")
     manifest = load_manifest(out)
+    expected_recipe = WIDE_RECIPE if c['profile_recipe'] == 'wide30' else RECIPE
+    if manifest['recipe'] != expected_recipe:
+        raise ValueError('Profile recipe differs from the generated study')
     if manifest["profile_count"] != dict(cal=c["operational_calibration_count"], test=c["operational_test_count"]):
         raise ValueError("Operational split size mismatch")
     if run["source_hashes"] != current:
@@ -230,8 +243,9 @@ def evaluate_stage(c, manifest):
         ids = (prior["profile_names"]["cal"] if source == "original" else
                [p["id"] for p in manifest["profiles"] if p["split"] == "cal"])
         calibration_profiles[source] = ids
+        origin_identity = meta.get('original_calibration_manifest_identity', manifest['identity']) if source == 'original' else manifest['identity']
         cals[source], reports = load_forecast(folder/f"{source}_cal.h5", names=names, profile_names=ids,
-                                             manifest_identity=manifest["identity"], stats=stats)
+                                             manifest_identity=origin_identity, stats=stats)
         checks.extend(dict(split=source+"_cal", **r) for r in reports)
     test_profiles = [p for p in manifest["profiles"] if p["split"] == "test"]
     test, reports = load_forecast(folder/"operational_test.h5", names=names, profile_names=[p["id"] for p in test_profiles],
@@ -249,7 +263,9 @@ def evaluate_stage(c, manifest):
         if fingerprint(folder/filename)["sha256"] != old["sha256"]:
             raise ValueError(f"Frozen forecast changed during evaluation: {filename}")
     metadata.update(input_hashes=hashes, forecast_hashes=meta["output_hashes"],
-                    manifest_identity=manifest["identity"], source_hashes=source_hashes(), git=git_state())
+                    manifest_identity=manifest["identity"], source_hashes=source_hashes(), git=git_state(),
+                    original_calibration_reuse=meta.get('original_calibration_reuse'),
+                    profile_recipe=manifest['recipe'])
     write_json(reportdir/"evaluation_metadata.json", metadata)
     (reportdir/"README.md").write_text(
         "# Operational-profile evaluation\n\n"
@@ -276,7 +292,18 @@ def run(payload, stage, *, resume_after_validation_fix=False):
         raise ValueError("--resume-after-validation-fix applies only to --stage simulate")
     c = configuration(payload)
     out = Path(c["output_dir"])
-    stages = ("generate", "simulate", "forecast", "evaluate") if stage == "all" else (stage,)
+    if stage == 'new-only':
+        if c['profile_recipe'] != 'wide30' or not c['reuse_original_calibration_dir']:
+            raise ValueError('new-only requires wide30 and a completed original-calibration reuse source')
+        if out.exists():
+            raise FileExistsError('new-only starts a fresh broad study; resume existing studies with individual --stage commands')
+        from _mace_original_calibration_cache import validate_cache
+        from run_mace_scaler_use_audit import runtime_settings
+        print('Preflight: verifying retained original-calibration cache before any new simulations', flush=True)
+        prior, _paths, hashes = frozen_inputs(c, ROOT)
+        _device, runtime = runtime_settings(c['device'], c['torch_threads'])
+        validate_cache(c, prior, hashes, root=ROOT, runtime=runtime)
+    stages = ("generate", "simulate", "forecast", "evaluate") if stage in ('all', 'new-only') else (stage,)
     for current in stages:
         print(f"Operational validation stage: {current}", flush=True)
         sources = source_hashes()
@@ -285,7 +312,8 @@ def run(payload, stage, *, resume_after_validation_fix=False):
             if current == "generate":
                 manifest = generate(out, calibration_count=c["operational_calibration_count"],
                                     test_count=c["operational_test_count"], seed=c["profile_seed"],
-                                    settling_seconds=c["early_settling_seconds"])
+                                    settling_seconds=c["early_settling_seconds"],
+                                    recipe=WIDE_RECIPE if c['profile_recipe'] == 'wide30' else RECIPE)
                 write_json(out/"run_configuration.json", dict(configuration=c, source_hashes=sources, git=git_state()))
                 if c["plots"]:
                     plot_profiles(out, manifest)
@@ -320,7 +348,7 @@ def run(payload, stage, *, resume_after_validation_fix=False):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", required=True, type=Path)
-    p.add_argument("--stage", required=True, choices=("generate", "simulate", "forecast", "evaluate", "all"))
+    p.add_argument("--stage", required=True, choices=("generate", "simulate", "forecast", "evaluate", "all", "new-only"))
     p.add_argument("--resume-after-validation-fix", action="store_true",
                    help="Guarded recovery of the interrupted be406101 angle-validation run; simulate stage only")
     args = p.parse_args()

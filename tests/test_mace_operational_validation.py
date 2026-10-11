@@ -28,7 +28,7 @@ from _mace_operational_metrics import (comparison_metrics, draw_weights, evaluat
 from _mace_operational_profiles import (FAMILIES, PHASES, TIME, control, draw_commands,
                                         generate, load_manifest, mat_table, phase_masks)
 from _mace_scaler_use import target_to_input
-from run_mace_operational_validation import (PRE_FIX_SOURCE_HASHES, configuration, generated_inputs,
+from run_mace_operational_validation import (PRE_FIX_SOURCE_HASHES, configuration, evaluate_stage, generated_inputs,
                                              run, simulate_stage, source_hashes)
 from rabl.machine_learning.lstm_pipeline import LSTMRegressor, rolling_forecast
 
@@ -290,6 +290,42 @@ class OperationalTests(unittest.TestCase):
                 self.assertTrue(all(r["match"] for r in checks))
             with self.assertRaises(FileExistsError):
                 forecast_stage(config, manifest, root=ROOT)
+            # A separate wide study copies original calibration byte-for-byte,
+            # performs inference only for new cal/test profiles, and preserves
+            # the retained study's file identities and native HDF5 provenance.
+            from _mace_operational_profiles import WIDE_RECIPE
+            (out/'evaluation').mkdir()
+            write_json(out/'evaluation/evaluation_metadata.json', dict(completed=True,
+                manifest_identity=manifest['identity'], target_names=names, input_hashes=hashes,
+                source_hashes=source_hashes(), forecast_hashes=meta['output_hashes']))
+            retained = {str(p):fingerprint(p)['sha256'] for p in out.rglob('*') if p.is_file()}
+            wide = root/'wide'
+            wm = generate(wide, calibration_count=20, test_count=8, seed=82, settling_seconds=20, recipe=WIDE_RECIPE)
+            wide_results = {}
+            for p in wm['profiles']:
+                path = wide/'simulation'/p['split']/(p['id']+'.csv')
+                path.parent.mkdir(parents=True,exist_ok=True)
+                with path.open('w',newline='') as f:
+                    w=csv.writer(f);w.writerow(['t','drumAngleDeg']+names)
+                    w.writerows(np.column_stack([TIME,control(p['moves'])[0],y]))
+                wide_results[p['id']]=fingerprint(path)
+            write_json(wide/'simulation_metadata.json',dict(completed=True,manifest_identity=wm['identity'],result_hashes=wide_results))
+            calls.clear()
+            wc = dict(output_dir=str(wide),device='cpu',torch_threads=1,reuse_original_calibration_dir=str(out))
+            with mock.patch('_mace_operational_forecasts.frozen_inputs',return_value=(prior,paths,hashes)),mock.patch('_mace_operational_forecasts.ensemble',side_effect=fast):
+                wide_meta=forecast_stage(wc,wm,root=ROOT)
+            self.assertEqual(len(calls),28)
+            self.assertEqual(wide_meta['original_calibration_reuse']['original_inference_runs'],0)
+            self.assertEqual(fingerprint(wide/'forecasts/original_cal.h5')['sha256'],fingerprint(out/'forecasts/original_cal.h5')['sha256'])
+            self.assertEqual(wide_meta['original_calibration_manifest_identity'],manifest['identity'])
+            wc.update(alpha=.05,common_floor=.001,early_settling_seconds=20,
+                      bootstrap_replicates=7,bootstrap_seed=9,bootstrap_batch_size=3)
+            with mock.patch('run_mace_operational_validation.frozen_inputs',return_value=(prior,paths,hashes)):
+                evaluated=evaluate_stage(wc,wm)
+            self.assertTrue(evaluated['completed'])
+            self.assertEqual(evaluated['profile_recipe'],WIDE_RECIPE)
+            self.assertEqual(evaluated['original_calibration_reuse']['original_inference_runs'],0)
+            self.assertEqual({p:fingerprint(Path(p))['sha256'] for p in retained},retained)
 
     def test_full_time_phase_metrics_and_units_end_to_end_without_physics(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):

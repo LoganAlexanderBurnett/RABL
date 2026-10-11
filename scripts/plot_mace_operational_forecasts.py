@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import textwrap
 from pathlib import Path
 
 import h5py
@@ -134,8 +135,82 @@ def render_grid(data, *, profile, source, mode, alpha):
     return fig
 
 
+def text_page(title, paragraphs, page_number):
+    import matplotlib.pyplot as plt
+    fig = plt.figure(figsize=(18, 11))
+    fig.text(.07, .91, title, fontsize=23, weight='bold', va='top')
+    y = .81
+    for paragraph in paragraphs:
+        lines = textwrap.wrap(paragraph, width=135, break_long_words=True, break_on_hyphens=False) or ['']
+        if y-len(lines)*.028 < .07:
+            raise ValueError('Report section text exceeds one page')
+        fig.text(.07, y, '\n'.join(lines), fontsize=12, va='top', linespacing=1.55)
+        y -= len(lines)*.028+.022
+    fig.text(.93, .025, str(page_number), ha='right', fontsize=10, color='.4')
+    return fig
+
+
+def report_sections(pdf, report, loaded, *, manifest, folder, fm, em, sources, modes, formats, dpi, out):
+    import matplotlib.pyplot as plt
+    study = manifest.get('study_label', 'Local operational drum study around 45 degrees')
+    report['pdf_index'] = []
+    def add_text(title, paragraphs, **context):
+        page = pdf.get_pagecount()+1
+        fig = text_page(title, paragraphs, page)
+        try: pdf.savefig(fig)
+        finally: plt.close(fig)
+        report['pdf_index'].append(dict(page=page, kind='section', title=title, **context))
+    add_text(study, [
+        'Autoregressive forecasts with calibrated MACE intervals. Drum input plus 15 physical targets; 0-200 seconds.',
+        f"Results source: {folder}. Recipe: {manifest.get('recipe', 'recorded in manifest')}. Profile seed: {manifest.get('seed', 'recorded in manifest')}. Manifest identity: {manifest['identity']}.",
+        'Selection: first sorted test IDs per family, independent of errors and coverage. Each selected profile appears under each requested calibration arm and trajectory view.',
+        f"Nominal objective: {100*(1-em['alpha']):g}%; common additive floor: {em['common_floor']}. Original calibration uses the original stochastic profiles and is a transfer diagnostic. Operational calibration uses independent calibration/test draws from this study's mixture; family/phase coverage is not guaranteed.",
+        'Plot key: black simulator truth; blue ensemble mean; purple raw ensemble +/-2 standard deviations (uncalibrated); green MACE horizon; red MACE target trajectory or MACE joint trajectory, as labeled. Target trajectory covers each target over time; joint trajectory covers every target over time.',
+        'Saved native endpoints are descaled for display and are not clipped. Numerical coverage uses the evaluated inclusive float32 scaled convention. Section pages record profile provenance; the same saved predictions appear in every calibration view.',
+        f"Frozen model/scaler identities are recorded in forecast_metadata.json. Forecast feedback: {fm['feedback']}. This command does not simulate, forecast, fit, or recalibrate.",
+    ])
+    by_family = {family:[(p,d) for p,d in loaded if p['family']==family] for family in 'BCDF'}
+    for source in sources:
+        origin = ((fm.get('original_calibration_reuse') or {}).get('source_directory', str(folder))
+                  if source == 'original' else str(folder))
+        for mode in modes:
+            for family, items in by_family.items():
+                # Paginate provenance sections if a larger example count is requested.
+                for start in range(0, len(items), 3):
+                    group = items[start:start+3]
+                    title = f"{source.capitalize()} calibration | {mode.replace('_', ' ')} | Family {family}"
+                    paragraphs = [f"Study: {study}. Test simulations and forecasts originate from {folder}.",
+                                  f"Calibration arm: {source}; calibration source: {origin}. "
+                                  + ('Original stochastic calibration identities are retained; corrected original-calibration forecasts may be reused byte-for-byte.' if source == 'original' else 'Only new calibration profiles from this study are used for the operational arm.')]
+                    for p, data in group:
+                        paragraphs.append(f"Test profile: {p['id']}; family {family}; angle range {float(data['angle'].min()):.6g}-{float(data['angle'].max()):.6g} degrees. Native simulator source: simulation/test/{p['id']}.csv; saved forecast group: forecasts/operational_test.h5/{p['id']}.")
+                        moves = p.get('moves', [])
+                        if moves:
+                            paragraphs.append('Prescribed moves: '+'; '.join(f"{m['start_s']:g}-{m['end_s']:g} s, {m['from_deg']:g} to {m['to_deg']:g} deg, {m['speed_deg_s']:.4g} deg/s" for m in moves)+'.')
+                    add_text(title, paragraphs, calibration=source, mode=mode, family=family,
+                             profile_ids=[p['id'] for p,d in group])
+                    for profile, data in group:
+                        dest = out/source/mode/family
+                        dest.mkdir(parents=True, exist_ok=True)
+                        fig = render_grid(data, profile=profile, source=source, mode=mode, alpha=em['alpha'])
+                        page = pdf.get_pagecount()+1
+                        fig.text(.01, .003, f"Test profile | Family {family} | Seed {manifest.get('seed', 'manifest')} | simulation/test/{profile['id']}.csv", fontsize=8, color='.4')
+                        fig.text(.99, .003, str(page), fontsize=8, ha='right', color='.4')
+                        try:
+                            if 'png' in formats:
+                                path = dest/(profile['id']+'.png')
+                                fig.savefig(path, dpi=dpi, bbox_inches='tight')
+                                report['figures'].append(str(path.relative_to(out)))
+                            pdf.savefig(fig)
+                        finally: plt.close(fig)
+                        report['pdf_index'].append(dict(page=page, kind='grid', profile=profile['id'],
+                                                        family=family, calibration=source, mode=mode))
+                        print(f"Rendered PDF page {page}: {source}/{mode}/{family}/{profile['id']}", flush=True)
+    report['pdf_pages'] = pdf.get_pagecount()
+
+
 def run(results_dir, *, output_dir=None, scaler_file=None, profiles_per_family=3,
-        calibration='both', trajectory_mode='both', dpi=200, formats=('png', 'pdf')):
+        calibration='both', trajectory_mode='both', dpi=200, formats=('png',)):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -144,7 +219,7 @@ def run(results_dir, *, output_dir=None, scaler_file=None, profiles_per_family=3
     if calibration not in ('both', 'original', 'operational') or trajectory_mode not in ('both', 'target_trajectory', 'joint_trajectory'):
         raise ValueError('Unknown calibration or trajectory mode')
     folder = resolve(results_dir)
-    out = resolve(output_dir) if output_dir else folder/'forecast_plots_4x4'
+    out = resolve(output_dir) if output_dir else folder/'forecast_report_4x4'
     if out.exists():
         raise FileExistsError(f'Plot directory exists; use --output-dir for a new attempt: {out}')
     files = dict(manifest=folder/'operational_manifest.json', forecast_metadata=folder/'forecasts/forecast_metadata.json',
@@ -203,20 +278,13 @@ def run(results_dir, *, output_dir=None, scaler_file=None, profiles_per_family=3
                   alpha=em['alpha'], common_floor=em['common_floor'], target_order=ORDER,
                   array_checks=[dict(profile=p['id'], **c) for p, d in loaded for c in d['checks']], figures=[])
     write_json(out/'plot_metadata.json', report)
-    for profile, data in loaded:
-        for source in sources:
-            for mode in modes:
-                dest = out/source/mode/profile['family']
-                dest.mkdir(parents=True, exist_ok=True)
-                fig = render_grid(data, profile=profile, source=source, mode=mode, alpha=em['alpha'])
-                try:
-                    for fmt in formats:
-                        path = dest/(profile['id']+'.'+fmt)
-                        fig.savefig(path, dpi=dpi, bbox_inches='tight')
-                        report['figures'].append(str(path.relative_to(out)))
-                finally:
-                    plt.close(fig)
-                print(f"Rendered {source}/{mode}/{profile['family']}/{profile['id']}", flush=True)
+    from matplotlib.backends.backend_pdf import PdfPages
+    report['pdf'] = 'operational_wide30_forecasts.pdf' if manifest.get('allowed_angle_degrees') == [15,75] else 'operational_forecasts.pdf'
+    with PdfPages(out/report['pdf']) as pdf:
+        pdf.infodict().update(Title=manifest.get('study_label', 'Operational forecast report'),
+                              Subject='B/C/D/F saved MACE intervals and autoregressive forecasts')
+        report_sections(pdf, report, loaded, manifest=manifest, folder=folder, fm=fm, em=em,
+                        sources=sources, modes=modes, formats=formats, dpi=dpi, out=out)
     for k, path in files.items():
         if fingerprint(path)['sha256'] != hashes[k]['sha256']:
             raise ValueError(f'Input changed during plotting: {path}')
@@ -224,7 +292,9 @@ def run(results_dir, *, output_dir=None, scaler_file=None, profiles_per_family=3
                   grid_count=len(selected)*len(sources)*len(modes))
     write_json(out/'plot_metadata.json', report)
     (out/'README.md').write_text(
-        '# Operational forecast grids\n\n'
+        '# Operational forecast report\n\n'
+        'The main source is one consolidated PDF, with a study overview, section/provenance pages and numbered grids. '
+        'Individual grids are saved as PNG only; no individual plot PDFs are produced. '
         'Each 4x4 grid has drum angle and 15 targets in physical units. Black: native simulator truth; '
         'blue: descaled ensemble mean; purple: raw ensemble +/-2 standard deviations (not calibrated); '
         'green: saved MACE horizon bounds; red: saved MACE target-trajectory or joint-trajectory bounds, '
@@ -249,7 +319,8 @@ def main():
     p.add_argument('--calibration', choices=('both', 'original', 'operational'), default='both')
     p.add_argument('--trajectory-mode', choices=('both', 'target_trajectory', 'joint_trajectory'), default='both')
     p.add_argument('--dpi', type=int, default=200)
-    p.add_argument('--formats', nargs='+', choices=('png', 'pdf'), default=['png', 'pdf'])
+    p.add_argument('--formats', nargs='+', choices=('png', 'pdf'), default=['png'],
+                   help='png saves individual PNGs; PDF is always one consolidated report, never individual files')
     args = p.parse_args()
     report = run(**vars(args))
     print(f"Completed {report['grid_count']} forecast grids", flush=True)

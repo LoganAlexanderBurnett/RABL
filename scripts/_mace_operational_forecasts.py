@@ -196,6 +196,10 @@ def forecast_stage(config, manifest, *, root):
     simulation_hashes(out, manifest["profiles"], simmeta)
     pipeline, bag, _cp, _ds, _uq = production_modules()
     device, runtime = runtime_settings(config["device"], config["torch_threads"])
+    cache = None
+    if config.get('reuse_original_calibration_dir'):
+        from _mace_original_calibration_cache import validate_cache
+        cache = validate_cache(config, prior, hashes, root=root, runtime=runtime)
     architecture = []
     for i in range(10):
         m = json.loads(paths[f"member_metadata_{i}"].read_text())
@@ -222,6 +226,7 @@ def forecast_stage(config, manifest, *, root):
                     feedback_y_to_x_factor=native["y"]["span"]/native["x"]["span"][:len(names)],
                     feedback_y_to_x_offset=(native["y"]["min"]-native["x"]["min"][:len(names)])/native["x"]["span"][:len(names)],
                     initial_history_source=prior["profile_names"]["cal"][0], initial_history_physical=seed_x)
+    metadata['original_calibration_manifest_identity'] = cache['original_manifest_identity'] if cache else manifest['identity']
     write_json(folder/"forecast_metadata.json", metadata)
     checks, results = [], {}
     def save(f, name, x, truth_physical, truth_scaled, angle):
@@ -237,25 +242,36 @@ def forecast_stage(config, manifest, *, root):
         f.attrs.update(completed=False, feedback=FEEDBACK, member_count=10, ensemble_std_ddof=0,
                        manifest_identity=manifest["identity"], target_names=np.asarray(names, dtype="S"))
         return f
-    with h5py.File(paths["external_scaled_h5_path"], "r") as scaled, h5py.File(paths["raw_h5_path"], "r") as raw:
-        with open_forecast(folder/"original_cal.h5") as f:
-            for i, name in enumerate(prior["profile_names"]["cal"]):
-                r, s = profile_group(raw, "cal", name), profile_group(scaled, "cal", name)
-                x, truth = s["X"][()], s["Y"][()]
-                physical_y = r["Y"][()]
-                for field, axis, values in (("X", "x", x), ("Y", "y", truth)):
-                    report = compare_arrays(values, raw_to_scaled(r[field][()], native, axis))
-                    checks.append(dict(profile=name, field=field, **report))
-                    if not report["match"]:
-                        raise ValueError(f"Original raw/scaled arrays disagree: {name}/{field}")
-                if x.shape != (501, len(seed_x), len(names)+1) or truth.shape != (501, len(names)):
-                    raise ValueError(f"Original profile shape mismatch: {name}")
-                for field, value in (("X", x), ("Y", truth)):
-                    checks.append(dict(profile=name, field=field+"_float32_boundary", **compare_arrays(value.astype(np.float32), value)))
-                save(f, name, x.astype(np.float32), physical_y, truth.astype(np.float32), r["X"][()][:, -1, -1])
-                if i % 20 == 0:
-                    print(f"Corrected original-calibration forecasts: {i+1}/1000", flush=True)
-            f.attrs["completed"] = True
+    if cache:
+        from _mace_original_calibration_cache import copy_cache
+        _arrays, reports = load_forecast(Path(cache['input_records']['forecasts']['path']), names=names,
+                                        profile_names=prior['profile_names']['cal'],
+                                        manifest_identity=cache['original_manifest_identity'], stats=native)
+        del _arrays
+        checks.extend(dict(profile=r['profile'], **{k:v for k,v in r.items() if k != 'profile'}) for r in reports)
+        metadata['original_calibration_reuse'] = copy_cache(cache, folder/'original_cal.h5')
+        write_json(folder/'forecast_metadata.json', metadata)
+        print('Reused byte-identical corrected original calibration: 1000 profiles; zero original inference runs', flush=True)
+    else:
+        with h5py.File(paths["external_scaled_h5_path"], "r") as scaled, h5py.File(paths["raw_h5_path"], "r") as raw:
+            with open_forecast(folder/"original_cal.h5") as f:
+                for i, name in enumerate(prior["profile_names"]["cal"]):
+                    r, s = profile_group(raw, "cal", name), profile_group(scaled, "cal", name)
+                    x, truth = s["X"][()], s["Y"][()]
+                    physical_y = r["Y"][()]
+                    for field, axis, values in (("X", "x", x), ("Y", "y", truth)):
+                        report = compare_arrays(values, raw_to_scaled(r[field][()], native, axis))
+                        checks.append(dict(profile=name, field=field, **report))
+                        if not report["match"]:
+                            raise ValueError(f"Original raw/scaled arrays disagree: {name}/{field}")
+                    if x.shape != (501, len(seed_x), len(names)+1) or truth.shape != (501, len(names)):
+                        raise ValueError(f"Original profile shape mismatch: {name}")
+                    for field, value in (("X", x), ("Y", truth)):
+                        checks.append(dict(profile=name, field=field+"_float32_boundary", **compare_arrays(value.astype(np.float32), value)))
+                    save(f, name, x.astype(np.float32), physical_y, truth.astype(np.float32), r["X"][()][:, -1, -1])
+                    if i % 20 == 0:
+                        print(f"Corrected original-calibration forecasts: {i+1}/1000", flush=True)
+                f.attrs["completed"] = True
     for split in ("cal", "test"):
         chosen = [p for p in manifest["profiles"] if p["split"] == split]
         with open_forecast(folder/f"operational_{split}.h5") as f:

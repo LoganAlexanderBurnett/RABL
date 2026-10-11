@@ -14,6 +14,40 @@ FAMILIES = ("B", "C", "D", "F")
 PHASES = ("all", "motion", "early_settling", "late_hold", "initial_hold")
 TIME = np.round(np.linspace(0., 200., 501), 8)
 RECIPE = "BCDF-independent-parameter-draws-v1"
+WIDE_RECIPE = "BCDF-bidirectional-plus-minus30-duration-draws-v1"
+
+
+def draw_wide_commands(family, rng):
+    """Independent broad stress inputs, 15-75 deg; durations keep moves feasible."""
+    u = rng.uniform
+    direction = int(rng.choice([-1, 1]))
+    if family == "B":
+        requested = [(u(24, 40), 45+direction*u(3, 30), u(30, 60))]
+    elif family == "C":
+        amplitude = u(3, 30)
+        weights = u(.6, 1.4, 3)
+        levels = 45+direction*amplitude*np.cumsum(weights/weights.sum())
+        requested = list(zip([u(20, 28), u(76, 84), u(132, 140)], levels, u(24, 32, 3)))
+    elif family == "D":
+        level = 45+direction*u(3, 30)
+        requested = [(u(20, 28), level, u(45, 60)), (u(120, 128), 45., u(45, 60))]
+    elif family == "F":
+        requested = [(u(20, 28), 45+direction*u(3, 30), u(28, 40)),
+                     (u(76, 84), 45-direction*u(3, 30), u(40, 48)),
+                     (u(140, 148), 45., u(28, 40))]
+    else:
+        raise ValueError(f"Unknown family: {family}")
+    moves, previous, last_end = [], 45., 0.
+    for start, target, duration in requested:
+        start, target, duration = grid(start), round(float(target), 6), grid(duration)
+        end = grid(start+duration)
+        speed = (target-previous)/duration
+        if start < last_end or end > 200 or not 15 <= target <= 75 or not .01 <= abs(speed) <= 1.5:
+            raise ValueError("Broad recipe produced an invalid angle/rate/schedule")
+        moves.append(dict(start_s=start, end_s=end, from_deg=previous,
+                          to_deg=target, speed_deg_s=speed))
+        previous, last_end = target, end
+    return moves
 
 
 def grid(value):
@@ -97,23 +131,26 @@ def manifest_identity(profiles):
     return hashlib.sha256(json.dumps(profiles, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def generate(out: Path, *, calibration_count, test_count, seed, settling_seconds):
+def generate(out: Path, *, calibration_count, test_count, seed, settling_seconds, recipe=RECIPE):
     if out.exists():
         raise FileExistsError(f"Choose a new output_dir: {out}")
     if any(isinstance(n, bool) or not isinstance(n, int) or n < 1
            for n in (calibration_count, test_count)):
         raise ValueError("Operational counts must be positive integers")
-    if calibration_count+test_count > 89999:
+    if recipe not in (RECIPE, WIDE_RECIPE):
+        raise ValueError("Unknown operational recipe")
+    start_index = 30001 if recipe == WIDE_RECIPE else 10001
+    if calibration_count+test_count > 100000-start_index:
         raise ValueError("Operational profile IDs must stay within five digits")
     rngs = [np.random.default_rng(s) for s in np.random.SeedSequence(seed).spawn(2)]
-    profiles, seen, index = [], set(), 10001
+    profiles, seen, index = [], set(), start_index
     out.mkdir(parents=True)
     for split, count, rng in zip(("cal", "test"), (calibration_count, test_count), rngs):
         folder = out/"profiles"/split
         folder.mkdir(parents=True)
         for i in range(count):
             family = str(rng.choice(FAMILIES))
-            moves = draw_commands(family, rng)
+            moves = draw_wide_commands(family, rng) if recipe == WIDE_RECIPE else draw_commands(family, rng)
             key = json.dumps(moves, sort_keys=True)
             if key in seen:
                 raise ValueError("Duplicate operational profile; change the prespecified seed")
@@ -124,13 +161,18 @@ def generate(out: Path, *, calibration_count, test_count, seed, settling_seconds
             savemat(path, {"profile": mat_table(moves)}, format="4")
             profiles.append(dict(id="results_"+stem, split=split, family=family, moves=moves,
                                  mat_path=str(path), mat_sha256=fingerprint(path)["sha256"]))
-    manifest = dict(recipe=RECIPE, seed=seed, time_domain_seconds=[0, 200],
+    manifest = dict(recipe=recipe, seed=seed, time_domain_seconds=[0, 200],
                     baseline_angle_degrees=45, settling_seconds=settling_seconds,
                     family_sampling="Independent uniform draws from B/C/D/F in both splits; no fixed quotas or outcome selection",
                     profile_count=dict(cal=calibration_count, test=test_count), profiles=profiles,
                     identity=manifest_identity(profiles),
                     phase_definition="Motion [start,end); settling [end,end+window) excluding motion; initial hold before first move; late hold is the remaining post-move time.",
                     actuation="Piecewise constant velocity; ideal instantaneous velocity changes, no finite acceleration limit. MAT acceleration column is zero between corners; corner impulses are not represented.")
+    if recipe == WIDE_RECIPE:
+        manifest.update(study_label="Broad operational drum study: +/-30 degrees around 45 degrees",
+                        allowed_angle_degrees=[15, 75], direction_sampling="Independent equal-probability initial positive/negative direction",
+                        excursion_amplitude_degrees=[3, 30], applied_speed_bounds_degrees_s=[.01, 1.5],
+                        duration_sampling="Prespecified durations, not the local-study 0.3 degrees/s limit. This is a broader stress study, not validated operating commands.")
     write_json(out/"operational_manifest.json", manifest)
     summaries = []
     for p in profiles:
@@ -143,7 +185,7 @@ def generate(out: Path, *, calibration_count, test_count, seed, settling_seconds
 
 def load_manifest(out):
     m = json.loads((out/"operational_manifest.json").read_text())
-    if m["recipe"] != RECIPE or m["identity"] != manifest_identity(m["profiles"]):
+    if m["recipe"] not in (RECIPE, WIDE_RECIPE) or m["identity"] != manifest_identity(m["profiles"]):
         raise ValueError("Operational manifest identity/recipe mismatch")
     for p in m["profiles"]:
         if fingerprint(Path(p["mat_path"]))["sha256"] != p["mat_sha256"]:
