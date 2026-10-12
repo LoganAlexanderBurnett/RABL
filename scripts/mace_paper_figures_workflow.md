@@ -48,7 +48,7 @@ python scripts/generate_mace_paper_figures.py --figures all --output-dir outputs
 
 | Stable ID | Output | Source behavior |
 |---|---|---|
-| `sampling` | Four-panel Figure 1, PNG/PDF; curve data NPZ | First eight sorted original batch-3 control CSVs. If absent in `auto` mode, explicitly labeled illustrative GP draws; `stored` requires actual tables. |
+| `sampling` | Three-panel Figure 1, PNG/PDF; sampling data NPZ | First eight sorted original batch-3 control CSVs. If absent in `auto` mode, explicitly labeled illustrative GP draws; `stored` requires actual tables. |
 | `dataset` | Required 4×4 Figure 5, PNG/PDF | All batch-3 simulator CSVs if present; defaults require exactly 5,000, so partial batches fail. If absent in `auto` mode, preserve the supplied PNG. |
 | `operational_controls` | Figure 6b–e, PNG/PDF; data NPZ | Lowest three evaluation IDs in each retained B/C/D/F family, reconstructed from saved move definitions. |
 | `existing_assets` | Original plant, LSTM architecture, autoregression, and Rolling Forecast graphics | Exact copied source PNGs plus raster PDF wrappers. These are explicitly marked as needing manual revisions. |
