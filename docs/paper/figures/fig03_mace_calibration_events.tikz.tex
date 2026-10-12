@@ -1,0 +1,48 @@
+% Editable conceptual figure, requiring tikz/arrows.meta/calc/positioning.
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[>=Latex,font=\sffamily\small, box/.style={draw=black!75,rounded corners=2pt,fill=blue!3,align=center,minimum height=.67cm,inner sep=4pt},
+arr/.style={-{Latex[length=2.4mm]},line width=.8pt,draw=black!70}]
+ \node[anchor=west,font=\bfseries] at (-.1,6.90) {(a) Frozen forecast and calibration score};
+ \node[box,minimum width=2.9cm] (ens) at (1.45,6.2) {Frozen ten-member\\forecast trajectories};
+ \node[box,minimum width=2.55cm] (stats) at (5.15,6.2) {Mean $\mu$ and\\population spread $\sigma$};
+ \node[box,minimum width=2.4cm] (d) at (8.65,6.2) {Positive scale\\$d=\sigma+\tau$};
+ \node[box,minimum width=2.35cm] (s) at (12.1,6.2) {Normalized error\\$s=|\widetilde y-\mu|/d$};
+ \node[box,minimum width=2.3cm] (truth) at (12.1,5.20) {Held-out calibration\\response $\widetilde y$};
+ \draw[arr] (ens)--(stats); \draw[arr] (stats)--(d); \draw[arr] (d)--(s);
+ \draw[arr] (truth.north)--(s.south);
+ \node[font=\bfseries,anchor=west] at (-.1,4.65) {(b) Per-trajectory score reduction and coverage event};
+ \node[font=\scriptsize,anchor=west] at (0,4.18) {Construction};
+ \node[font=\scriptsize,anchor=west] at (3.4,4.18) {Within each calibration trajectory};
+ \node[font=\scriptsize,anchor=west] at (7.4,4.18) {Across $N_{\mathrm{cal}}=1000$ trajectories};
+ \node[font=\scriptsize,anchor=west] at (11.9,4.18) {Event on 5$\times$3 schematic grid};
+ \foreach \YY/\NAME/\REDUCE/\QQ/\HIGHLIGHT in {
+  3.30/{MACE-Horizon}/{retain $(h,j)$}/{$q_{h,j}$}/1,
+  2.18/{MACE-Trajectory}/{$\max_h s_{i,h,j}$}/{$q_j$}/2,
+  1.06/{Joint trajectory}/{$\max_{h,j}s_{i,h,j}$}/{$q_{\mathrm{all}}$}/3
+ } {
+   \node[box,minimum width=2.8cm] at (1.55,\YY) {\NAME};
+   \node[box,minimum width=2.7cm] at (5.1,\YY) {\REDUCE};
+   \node[box,minimum width=2.1cm] at (9.05,\YY) {$k=951$th\\\QQ};
+   \draw[arr] (2.95,\YY)--(3.73,\YY);
+   \draw[arr] (6.53,\YY)--(7.92,\YY);
+   \draw[arr] (10.15,\YY)--(11.0,\YY);
+   \foreach \j in {0,1,2}{
+    \foreach \h in {0,1,2,3,4}{
+      \pgfmathtruncatemacro{\FILL}{(\HIGHLIGHT==3)||(\HIGHLIGHT==2 && \j==1)||(\HIGHLIGHT==1 && \h==2 && \j==1)}
+      \ifnum\FILL=1
+        \fill[blue!24] (11.45+.36*\h,\YY-.29+.19*\j) rectangle ++(.36,.19);
+      \fi
+      \draw[black!65,line width=.3pt] (11.45+.36*\h,\YY-.29+.19*\j) rectangle ++(.36,.19);
+    }
+   }
+ }
+ \node[align=left,font=\scriptsize,anchor=west] at (13.52,3.30) {One horizon--output\\pair};
+ \node[align=left,font=\scriptsize,anchor=west] at (13.52,2.18) {One output over\\all horizons};
+ \node[align=left,font=\scriptsize,anchor=west] at (13.52,1.06) {Every output at\\every horizon};
+ \draw[black!60,densely dashed] (0,.37)--(16,.37);
+ \draw[blue!60!black,line width=.85pt] (1.35,-.12) rectangle ++(.38,.49);
+ \node[font=\scriptsize,anchor=west,align=left] at (1.95,.10) {Horizon complete multivariate event: one entire column (all outputs at fixed $h$).};
+ \node[font=\scriptsize,anchor=west,align=left] at (1.95,-.19) {Diagnostic under ordinary MACE-Horizon; not a fourth calibrated construction.};
+ \node[box,minimum width=7.0cm] at (8.0,-1.02) {Shared interval: $\quad I_{h,j}=[\mu_{h,j}-q\,(\sigma_{h,j}+\tau),\;\mu_{h,j}+q\,(\sigma_{h,j}+\tau)]$};
+\end{tikzpicture}%
+}
