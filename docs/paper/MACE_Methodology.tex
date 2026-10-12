@@ -218,153 +218,196 @@ Split conformal inference provides marginal coverage when the calibration and ev
 
 We compare MACE against absolute-error conformal prediction to examine the benefit of adaptive scaling. The baseline uses $s_{i,h,j}=|\widetilde y_{i,h,j}-\mu_{i,h,j}|$ and constructs intervals using the resulting quantiles without a spread multiplier. Both methods use the same calibration trajectories and order statistics. They also use the same horizon-based and trajectory-based coverage objectives. An uncalibrated envelope based only on ensemble spread is treated as a diagnostic rather than as a conformal prediction interval.
 
-\subsection{Reduced microreactor simulator and transient responses}
+\subsection{Microreactor model and simulated transients}
 \label{sec:methods:plant}
 
-The demonstration system is a reduced Modelica model executed with Dymola, coupling a six-delayed-group point-kinetics representation to lumped reactor and balance-of-plant heat transfer. The plant model resolves twelve synchronized control drums through a common angle but does not resolve three-dimensional neutronics, spatial heat-pipe fields, or a deployed controller. Reactor power is $P=P_r n$ with $P_r=6$~MW; $n$ is normalized power. The physical state contains $n$, six precursor quantities $c_r$, and five thermal nodes $T_f,T_m,T_{hp},T_{N2},T_{sg}$, for twelve differential states. Reactivity, calculated steam outlet temperature, and calculated steam quality are additional algebraic output variables. In the present model,
+A reduced heat-pipe microreactor model was developed in Modelica and simulated using Dymola. The model couples point kinetics with lumped heat transfer through the reactor and balance of plant. It represents the response of a 6~MW thermal microreactor to the synchronized motion of twelve control drums. The model does not resolve spatial neutronics or individual heat-pipe flow fields. Its purpose is to provide a consistent transient simulation dataset for developing and evaluating the proposed forecasting method.
+
+The neutronic response is represented using point kinetics with six delayed neutron groups. Reactor power is defined as $P=P_r n$ with $P_r=6$~MW and normalized neutron population $n$. The governing equations are
 \begin{equation}
- \dot n=\frac{\rho-\beta}{\Lambda}n+\sum_{r=1}^{6}\lambda_r c_r,\qquad
- \dot c_r=\frac{\beta_r}{\Lambda}n-\lambda_r c_r,
- \qquad
- \rho=\rho_{\mathrm{drums}}(\theta)+\alpha_f(T_f-T_{f0})+\alpha_m(T_m-T_{m0}).
+ \begin{aligned}
+ \frac{dn}{dt}&=\frac{\rho-\beta}{\Lambda}n+
+                 \sum_{r=1}^{6}\lambda_r c_r\\
+ \frac{dc_r}{dt}&=\frac{\beta_r}{\Lambda}n-\lambda_r c_r.
+ \end{aligned}
  \label{eq:mace:kinetics}
 \end{equation}
-The drum contribution follows the model's cosine worth relationship referenced to $\theta_0=45^\circ$. Thermal energy balances couple the fuel, moderator/structure, effective heat-pipe, nitrogen-loop, and active steam-generator metal nodes. Figure~\ref{fig:mace:plant} illustrates the modeled pathways and prescribed secondary boundaries.
+Here $\beta_r$ is the delayed neutron fraction for group $r$ and $\lambda_r$ is its decay constant. The total delayed neutron fraction is $\beta$ and $\Lambda$ is the prompt neutron generation time. The reactivity combines drum worth with thermal feedback:
+\begin{equation}
+ \rho=\rho_d(\theta)+
+       \alpha_f(T_f-T_{f,0})+
+       \alpha_m(T_m-T_{m,0}).
+ \label{eq:mace:reactivity}
+\end{equation}
+The drum worth follows the cosine relationship implemented in the simulator and is referenced to $\theta_0=45^\circ$. The coefficients $\alpha_f$ and $\alpha_m$ describe the fuel and moderator temperature feedback.
+
+The thermal network contains five dynamic temperature nodes. These represent fuel $T_f$ and moderator or structure $T_m$ along with an effective heat-pipe node $T_{hp}$. The remaining nodes represent the nitrogen loop $T_{N2}$ and the steam-generator metal $T_{sg}$. Heat transfer between adjacent nodes is expressed using effective thermal conductances. The resulting equations account for the thermal response of the modeled components while avoiding spatial discretization of the individual flow paths. Figure~\ref{fig:mace:plant} illustrates the principal heat-transfer connections.
 
 \begin{figure*}[t]
 \centering
 \input{docs/paper/figures/fig04_microreactor_plant.tikz.tex}
-\caption{Reduced point-kinetics and heat-transfer network for the offline microreactor demonstration. Twelve synchronized drums supply the prescribed angle $\theta(t)$. Reactor power and thermal feedback couple five thermal nodes. The steam-generator metal node receives heat from the nitrogen node and transfers heat to a feedwater/steam stream with prescribed mass flow and outlet pressure; steam outlet temperature and quality are calculated. Connections represent lumped energy exchange rather than spatially resolved components.}
+\caption{Reduced heat-pipe microreactor model. The point-kinetics equations predict reactor power under common control-drum motion and thermal reactivity feedback. Heat is transferred through five lumped thermal nodes to the secondary system. Feedwater mass flow and steam outlet pressure are prescribed while steam outlet temperature and quality are calculated from the heat addition.}
 \label{fig:mace:plant}
 \end{figure*}
 
-In particular, the active steam-generator metal is a dynamic thermal capacitance, not a constant-temperature sink or the thermal mass of the full secondary fluid inventory:
+The steam-generator metal is treated as a dynamic thermal capacitance. Its energy balance is
 \begin{equation}
- \begin{split}
- C_{sg}\dot T_{sg}&=Q_{N2\rightarrow sg}-Q_{sg\rightarrow fw},\\
- Q_{N2\rightarrow sg}&=G_{N2,sg}(T_{N2}-T_{sg}),\\
- Q_{sg\rightarrow fw}&=\max\{G_{sg,fw}(T_{sg}-T_{\mathrm{sat}}),0\}.
- \end{split}
+ C_{sg}\frac{dT_{sg}}{dt}=Q_{N2,sg}-Q_{sg,fw}.
  \label{eq:mace:steammetal}
 \end{equation}
-The added specific heat $q_{sg}=Q_{sg\rightarrow fw}/\dot m_{\mathrm{fw}}$ determines the simplified saturated-mixture and superheat closures,
+The corresponding heat-transfer rates are
 \begin{equation}
- x_{\mathrm{steam,out}}=
- \begin{cases}
- 0,&q_{sg}\leq0,\\
- q_{sg}/h_{fg},&0<q_{sg}<h_{fg},\\
- 1,&q_{sg}\geq h_{fg},
- \end{cases}
- \quad
- T_{\mathrm{steam,out}}=
- \begin{cases}
- T_{\mathrm{sat}},&q_{sg}<h_{fg},\\
- T_{\mathrm{sat}}+(q_{sg}-h_{fg})/c_{p,\mathrm{sh}},&q_{sg}\geq h_{fg}.
- \end{cases}
+ \begin{aligned}
+ Q_{N2,sg}&=G_{N2,sg}(T_{N2}-T_{sg})\\
+ Q_{sg,fw}&=\max\!\left[G_{sg,fw}(T_{sg}-T_{\mathrm{sat}}),0\right].
+ \end{aligned}
+ \label{eq:mace:steamflows}
+\end{equation}
+The secondary heat addition is converted to specific enthalpy using $q=Q_{sg,fw}/\dot m_{fw}$. The simplified secondary closure gives
+\begin{equation}
+ x_{\mathrm{out}}=
+ \min\left(1,\max\left(0,\frac{q}{h_{fg}}\right)\right)
+ \label{eq:mace:quality}
+\end{equation}
+and
+\begin{equation}
+ T_{\mathrm{out}}=
+ T_{\mathrm{sat}}+\frac{\max(q-h_{fg},0)}{c_{p,\mathrm{sh}}}.
  \label{eq:mace:steamclosure}
 \end{equation}
-Here $h_{fg}$ is the specified latent heat and $c_{p,\mathrm{sh}}$ is an effective superheated-steam heat capacity. Thus outlet temperature and quality are \emph{calculated}, not prescribed, despite possible saturation plateaus or quality saturation. The secondary outlet pressure and feedwater flow are fixed at 1.5~MPa and 2.95~kg/s. The active-metal capacitance passed by the executed \texttt{RunOneProfile} wrapper is $2.55\times10^5$~J/K, which supersedes the plant class default when no run-time override is supplied. The simulator reference uses the wrapper's 200-s horizon and $10^{-8}$ tolerance; a specific solver/version is not inferred from these settings.
+Here $h_{fg}$ is the specified latent heat and $c_{p,\mathrm{sh}}$ is the effective heat capacity of superheated steam. The outlet quality and temperature are calculated outputs rather than boundary conditions. The feedwater mass flow rate is 2.95~kg/s and the outlet pressure is 1.5~MPa. The executed simulation wrapper specifies a steam-generator metal capacitance of $2.55\times10^5$~J/K. The simulation duration is 200~s with a numerical tolerance of $10^{-8}$.
 
-The 15 stored output variables, in native output order, are $T_{N2}$, $T_m$, $T_{hp}$, $T_f$, $T_{sg}$, $c_1,\ldots,c_6$, $n$, $\rho_{\$}$, $T_{\mathrm{steam,out}}$, and $x_{\mathrm{steam,out}}$. Here $\rho_{\$}=\rho/\beta$ is reactivity in dollars; the normalized precursor quantities retain the simulator's implemented normalization, rather than assumed physical concentration units. Table~\ref{tab:mace:outputs} distinguishes differential outputs from algebraic closures and notes that the displayed dataset uses physical power $P=6n$~MW in place of normalized $n$. The simulator traces in Figure~\ref{fig:mace:dataset} illustrate the training-distribution response variety, not forecast performance.
+The neural surrogate predicts 15 output variables. These comprise five thermal-node temperatures and six delayed precursor quantities together with neutron population and reactivity. The final two outputs are steam outlet temperature and quality. Table~\ref{tab:mace:outputs} lists the variables in their stored order. The model contains twelve differential states with the remaining three outputs determined algebraically. The precursor variables retain the normalization used in the Modelica model. The displayed transient dataset uses physical power $P=6n$~MW in place of normalized neutron population $n$ for visualization.
 
 \begin{table}[t]
 \centering\small
-\caption{Native forecasting output variables. Power $P$ in the displayed 4$\times$4 dataset figure replaces the stored normalized $n$ only for visualization; drum angle is a prescribed input.}
+\caption{Output variables predicted by the surrogate in native storage order. The drum angle is a prescribed input and is not one of the predicted variables.}
 \label{tab:mace:outputs}
 \begin{tabular}{@{}l p{0.44\linewidth} l l@{}}
 \toprule
-Indices & Quantity / symbol & Units & Type\\
+Index & Output variable & Unit & Type\\
 \midrule
-1 & Nitrogen-node $T_{N2}$ & K & ODE\\
-2 & Moderator/structure $T_m$ & K & ODE\\
-3 & Effective heat-pipe $T_{hp}$ & K & ODE\\
-4 & Fuel $T_f$ & K & ODE\\
-5 & Steam-generator metal $T_{sg}$ & K & ODE\\
-6--11 & Delayed precursor $c_1,\ldots,c_6$ & normalized & ODE\\
+1 & Nitrogen temperature $T_{N2}$ & K & ODE\\
+2 & Moderator temperature $T_m$ & K & ODE\\
+3 & Heat-pipe temperature $T_{hp}$ & K & ODE\\
+4 & Fuel temperature $T_f$ & K & ODE\\
+5 & Steam-generator temperature $T_{sg}$ & K & ODE\\
+6--11 & Delayed precursors $c_1,\ldots,c_6$ & normalized & ODE\\
 12 & Neutron population $n$ & -- & ODE\\
-13 & Reactivity $\rho_{\$}$ & dollars & algebraic\\
-14 & Steam outlet $T_{\mathrm{steam,out}}$ & K & algebraic\\
-15 & Steam outlet $x_{\mathrm{steam,out}}$ & -- & algebraic\\
+13 & Reactivity $\rho_\$$ & dollars & algebraic\\
+14 & Steam outlet temperature $T_{\rm out}$ & K & algebraic\\
+15 & Steam outlet quality $x_{\rm out}$ & -- & algebraic\\
 \bottomrule
 \end{tabular}
 \end{table}
 
+The original stochastic trajectories generate a broad set of transient responses across the coupled system. Figure~\ref{fig:mace:dataset} shows the prescribed drum angle and the associated thermal and neutronic outputs from the reference simulator. This figure describes the response dataset rather than surrogate predictions.
+
 \begin{figure*}[t]
 \centering
 \includegraphics[width=\textwidth]{docs/paper/assets/timeseries_batch_0003_ALL_PROFILES.png}
-\caption{Illustration of generated stochastic transients in batch 0003 on the 0--200-s grid. The 4$\times$4 layout shows (row 1) prescribed drum angle, $T_{N2}$, $T_m$, $T_{hp}$; (row 2) $T_f$, $T_{sg}$, $T_{\mathrm{steam,out}}$, steam quality; (row 3) $c_1$--$c_4$; and (row 4) $c_5$, $c_6$, physical power $P$ (MW), and $\rho_{\$}$. The first panel is an input, not one of the 15 predicted outputs. These are simulator responses; the image alone does not independently establish batch count or train-split membership.}
+\caption{Simulated multivariate responses to the original stochastic control trajectories over 200~s. The panels show prescribed drum angle and the five thermal-node temperatures together with steam outlet temperature and quality. Delayed precursor quantities and neutron population are also shown. Physical power in MW is displayed instead of normalized neutron population. The final panel shows reactivity in dollars. All traces are reference simulator responses.}
 \label{fig:mace:dataset}
 \end{figure*}
 
-\subsection{Calibration distributions and operation-informed comparison}
+\subsection{Calibration distributions and operation-informed transients}
 \label{sec:methods:transfer}
 
-We assess the frozen ensemble in two related settings. The original stochastic evaluation distribution provides the reference check of recursive prediction and uncertainty calibration under the original control generator, subject to reconciling its archived recurrence. The second setting deliberately changes the control-trajectory distribution to a prespecified operation-informed mixture. It separates failure of a transferred interval calibration from deterioration in mean forecasting: the same model forecasts are evaluated with alternative quantiles, rather than retraining after observing operational trajectories.
+We evaluate MACE under the original stochastic control distribution and a second distribution based on prescribed operating maneuvers. The first provides a reference for assessing the surrogate under the conditions used to develop the training dataset. The second tests the application of the same forecasting models to control trajectories with different temporal characteristics. The objective is to distinguish changes in prediction accuracy from changes in uncertainty calibration.
 
-The retained operation-informed population contains four equally probable control families, labeled B, C, D, and F as study-specific identifiers. Family B executes an upward constant-speed maneuver followed by a hold; C makes three upward increments with intermediate holds; D advances and returns to $45^\circ$; and F makes successive positive and negative excursions before returning to the baseline. Parameters for start time, target angle, rate or duration are sampled independently within each family, then maneuver times are rounded to the 0.4-s response grid. Realized velocities are obtained from the rounded endpoints, not simply identified with the requested rate draws. The allowed local-study angles lie within $44.25^\circ$--$48.75^\circ$; the implemented recipe rejects overlaps, out-of-domain moves, and rates outside its local admissibility checks. The piecewise-linear control has finite velocity during motion and idealized velocity jumps at maneuver corners; no finite-acceleration actuator dynamics are assessed. The specific family probabilities and maneuver ranges are experimental design choices rather than empirically measured operational frequencies. The calibration and evaluation sets contain 1,000 and 2,000 independent trajectories, respectively, generated using separate random-number streams with seed 20261010.
+The operation-informed distribution contains four equally weighted maneuver types. The first consists of a single upward motion followed by a hold. The second contains three successive upward motions separated by holding periods. The third consists of an upward motion followed by a return to the initial angle. The fourth includes motion above and below the initial angle before returning to the starting condition. Each trajectory begins at $45^\circ$ and is defined through piecewise-linear angular motion. The control parameters are selected from the ranges in Table~\ref{tab:mace:families}.
 
 \begin{table*}[t]
 \centering\small
-\caption{Prespecified operation-informed control families. Times are seconds, angles are degrees, and speeds are degrees per second. Values are nominal parameter-draw intervals before rounding schedule times to the 0.4-s grid; realized speeds are calculated from the rounded controls. These ranges are study choices, not measured maneuver frequencies.}
+\caption{Control-trajectory definitions for the operation-informed evaluation. All times are in seconds. Angles are given in degrees and speeds in degrees per second. Parameter intervals are sampled before maneuver times are rounded to the 0.4-s simulation grid.}
 \label{tab:mace:families}
-\begin{tabular}{@{}lp{0.21\textwidth}p{0.23\textwidth}p{0.36\textwidth}@{}}
+\begin{tabular}{@{}p{0.25\textwidth}p{0.28\textwidth}p{0.39\textwidth}@{}}
 \toprule
-Family & Maneuver pattern & Start-time ranges (s) & Amplitude, duration, and rate design\\
+Control trajectory & Start-time interval (s) & Angular displacement and motion\\
 \midrule
-B & One upward move and hold & 24--56 & Rise 1--3$^\circ$; requested speed 0.05--0.15$^\circ$/s.\\
-C & Three upward moves with holds & 24--36; 74--86; 130--142 & Each increment 0.5--1.25$^\circ$; requested speed 0.08--0.16$^\circ$/s.\\
-D & Upward move, hold, return & 20--32; 116--124 & Upward rise 2--3$^\circ$; each duration 40--60 s before grid rounding.\\
-F & Above baseline, below baseline, return & 32--48; 84--100; 140--152 & Intermediate levels 45.25--45.75$^\circ$ and 44.25--44.75$^\circ$; requested speed 0.04--0.12$^\circ$/s.\\
+Single maneuver with hold & 24--56 & Upward displacement of 1--3$^\circ$. Target speed of 0.05--0.15$^\circ$/s.\\
+Successive maneuvers with holds & 24--36 then 74--86 then 130--142 & Three upward increments of 0.5--1.25$^\circ$ each. Target speed of 0.08--0.16$^\circ$/s.\\
+Maneuver with return & 20--32 then 116--124 & Upward displacement of 2--3$^\circ$ followed by a return to $45^\circ$. Nominal move durations of 40--60~s.\\
+Bidirectional maneuvers & 32--48 then 84--100 then 140--152 & Intermediate angles of 45.25--45.75$^\circ$ and 44.25--44.75$^\circ$ before returning to $45^\circ$. Target speed of 0.04--0.12$^\circ$/s.\\
 \bottomrule
 \end{tabular}
 \end{table*}
 
-On the \emph{same} operation-informed evaluation forecasts, we compare (i) quantiles from the original stochastic calibration trajectories, regenerated with the corrected feedback convention, and (ii) quantiles from an independent operation-informed calibration set sampled from the same B/C/D/F mixture. The former is a \emph{distribution-transfer diagnostic}: the calibration and evaluation trajectory samples are not assumed exchangeable and nominal split-conformal coverage is not asserted. In the latter comparison, the common mixture supports the pooled marginal event under trajectory-level exchangeability; it does not guarantee nominal coverage within every maneuver family. The ten model checkpoints, training scaler, initial history convention, common floor, prescribed operational controls, ensemble means, and ensemble spreads remain fixed between arms. Recalibration changes only the empirical quantiles and interval endpoints, not the mean forecast. Absolute-error conformal baselines are recalibrated separately in each matching arm.
+The maneuver parameters are sampled independently within each prescribed type. Times are rounded to the 0.4-s grid and the realized angular velocity is calculated from the resulting motion. Sampled schedules are rejected if they contain overlapping moves or violate the permitted angular limits. All trajectories remain within the study envelope of $44.25^\circ$--$48.75^\circ$. The resulting control signal is continuous and piecewise linear. Instantaneous changes of velocity occur at maneuver boundaries because actuator acceleration is not modeled explicitly. These maneuver types represent selected operating conditions rather than measured frequencies of reactor control actions.
 
-The maneuver phase is identified from the control schedule before examining forecast errors. Motion is the half-open interval $[t_{\mathrm{start}},t_{\mathrm{end}})$ for each move. Early settling covers the following 20~s, excluding any overlap with a new motion interval; initial hold precedes the first move, and late hold includes other stationary periods. Phase statistics do not use separately phase-calibrated thresholds. This permits interpretation of forecast behavior during movement and thermal relaxation without reassigning the population-level coverage guarantee to each phase. Figure~\ref{fig:mace:design} summarizes the frozen-model calibration comparison and the prescribed families.
+The operation-informed calibration set contains 1{,}000 trajectories and the evaluation set contains 2{,}000 trajectories. They are generated independently from the same equally weighted mixture using the configured random seed 20261010. Model predictions for the evaluation trajectories are calculated once. We then construct prediction intervals using two calibration sources. The first uses the original stochastic calibration population. The second uses the independent operation-informed calibration population. The same ensemble predictions and scaler are used in both cases. Recalibration changes the conformal quantiles and interval bounds without changing the forecast mean or ensemble spread.
+
+Calibration using the original stochastic trajectories provides a test of transfer to the new evaluation distribution. It does not have the standard split-conformal guarantee because the two populations are not exchangeable. Calibration and evaluation on independently generated operation-informed trajectories provide the usual pooled marginal coverage interpretation under the common mixture. This guarantee does not imply equal coverage for each individual maneuver type. Absolute-error conformal intervals are constructed using both calibration sources for comparison.
+
+Performance is also examined during different portions of each control trajectory. Motion includes each interval of prescribed drum movement. Early settling consists of the following 20~s provided that another movement has not started. Initial hold precedes the first maneuver and late hold covers the remaining stationary periods. The same calibration thresholds are used in every phase. Figure~\ref{fig:mace:design} summarizes the comparison and illustrates the four forms of control motion.
 
 \begin{figure*}[t]
 \centering
 \input{docs/paper/figures/fig06_calibration_design.tikz.tex}
 \par\vspace{2mm}
 \includegraphics[width=0.96\textwidth]{outputs/paper/mace_figures/operational_controls/fig06_bcde_operational_controls.pdf}
-\caption{Calibration-transfer evaluation with a common frozen predictor. (a) Original stochastic calibration and independent operation-informed calibration produce different interval quantiles for identical operation-informed forecast means and spreads; original-to-operational transfer is a diagnostic, while pooled exchangeability is assumed only within the independently sampled operation-informed mixture. (b--e) Prescribed B/C/D/F control families, showing three lowest-ID evaluation profiles per family when the retained manifest is available. Identical angle/time axes, baseline, and line-style conventions are used; the illustrated controls are selected without forecast-performance information.}
+\caption{Comparison of calibration distributions and representative operation-informed control trajectories. (a) The same evaluation forecasts are combined with conformal thresholds from the original stochastic calibration set or the operation-informed calibration set. (b) Single maneuver with hold. (c) Successive maneuvers with holds. (d) Maneuver with return. (e) Bidirectional maneuvers. Three example trajectories are shown for each maneuver type using a selection independent of forecasting error.}
 \label{fig:mace:design}
 \end{figure*}
 
 \begin{table}[t]
 \centering\small
-\caption{Evaluated distribution comparisons and what remains fixed. The shared operation-informed evaluation samples prevent a change in the point predictor from being mistaken for recalibration.}
+\caption{Calibration and evaluation populations used in the uncertainty analysis.}
 \label{tab:mace:arms}
-\begin{tabular}{@{}p{0.27\linewidth}p{0.26\linewidth}p{0.28\linewidth}@{}}
+\begin{tabular}{@{}p{0.29\linewidth}p{0.28\linewidth}p{0.30\linewidth}@{}}
 \toprule
-Calibration source & Evaluation population & Interpretation\\
+Calibration source & Evaluation distribution & Purpose\\
 \midrule
-Stochastic (1,000) & Stochastic (2,000) & Original-distribution conformal comparison, pending corrected-forecast provenance\\
-Stochastic (1,000) & Operation-informed (2,000) & Calibration-transfer diagnostic; no ordinary exchangeability claim\\
-Operation-informed (1,000) & Operation-informed (same 2,000) & Pooled mixture marginal calibration under independent matched draws\\
+Original stochastic & Original stochastic & Original-distribution evaluation\\
+Original stochastic & Operation-informed & Calibration transfer\\
+Operation-informed & Operation-informed & Calibration after distribution change\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Evaluation metrics and uncertainty in comparisons}
+\subsection{Evaluation metrics}
 \label{sec:methods:metrics}
 
-Forecast accuracy is evaluated against the simulator's native physical output values using per-output mean absolute error (MAE) and root-mean-square error (RMSE). For equal-output aggregate comparisons, per-output absolute errors are divided by the saved training output spans $b_j^Y$ before averaging. Aggregate normalized MAE is the equal-output mean of normalized MAEs, while aggregate normalized RMSE is the square root of the equal-output mean normalized mean-squared errors; it is not the arithmetic mean of per-output RMSEs. Recursive accuracy is reported separately from calibration and is further partitioned by family and maneuver phase.
+Forecast accuracy is quantified using the mean absolute error (MAE) and root mean square error (RMSE). Both metrics are calculated for each predicted output against the corresponding simulator response. To compare outputs with different physical units we also normalize their errors by the training range of each output. Aggregate MAE is obtained by averaging these normalized errors over the output variables. Aggregate RMSE is calculated from the mean normalized squared error before taking the square root. This prevents differences in physical magnitude from determining the relative contribution of each output.
 
-Let $A_{i,h,j}=\mathbf{1}\{L_{i,h,j}\leq\widetilde y^{\,Y}_{i,h,j}\leq U_{i,h,j}\}$ denote inclusive coverage by scaled-space endpoints. Four distinct empirical quantities are recorded: pointwise $(h,j)$ coverage, $N_{\rm eval}^{-1}\sum_i A_{i,h,j}$; per-output trajectory coverage, $N_{\rm eval}^{-1}\sum_i\prod_h A_{i,h,j}$; Horizon complete multivariate coverage, $N_{\rm eval}^{-1}\sum_i\prod_j A_{i,h,j}$ at fixed $h$; and Trajectory complete multivariate coverage, $N_{\rm eval}^{-1}\sum_i\prod_{h,j}A_{i,h,j}$. A mean across output-specific trajectory coverages is not the complete multivariate event. Phase-restricted trajectory coverage applies the same products only to supported phase times and excludes trajectories without phase support; it is reported as a diagnostic rather than an additional guaranteed event.
-
-Interval efficiency is measured by full width $W=U-L$, in scaled units for cross-output aggregates and after multiplication by $b_j^Y$ for output-specific physical widths. The paired MACE-to-absolute-CP width ratio is computed from pooled mean widths, $\overline W_{\rm MACE}/\overline W_{\rm abs}$, with proportional reduction $1-\overline W_{\rm MACE}/\overline W_{\rm abs}$. As a complementary measure of sharpness and miss magnitude, we use the interval score~\cite{gneiting2007scoring},
+The coverage of a prediction interval is calculated using an inclusive indicator:
 \begin{equation}
- {\rm IS}_{\alpha}(L,U;y)
- =(U-L)+\frac{2}{\alpha}(L-y)\mathbf{1}\{y<L\}
-        +\frac{2}{\alpha}(y-U)\mathbf{1}\{y>U\}.
+ A_{i,h,j}=
+ \mathbb{1}\!\left\{L_{i,h,j}\leq
+ \widetilde y_{i,h,j}\leq U_{i,h,j}\right\}.
+ \label{eq:mace:indicator}
+\end{equation}
+Coverage is reported for individual horizons and outputs as well as complete trajectories. The empirical per-output trajectory coverage is
+\begin{equation}
+ \widehat C_j^{\mathrm{traj}}=
+ \frac{1}{N}\sum_{i=1}^{N}\prod_{h=0}^{H-1} A_{i,h,j}.
+ \label{eq:mace:targetcoverage}
+\end{equation}
+The complete multivariate trajectory coverage is
+\begin{equation}
+ \widehat C^{\mathrm{joint}}=
+ \frac{1}{N}\sum_{i=1}^{N}
+ \prod_{h=0}^{H-1}\prod_{j=1}^{J}A_{i,h,j}.
+ \label{eq:mace:jointcoverage}
+\end{equation}
+Horizon complete multivariate coverage is obtained by taking the product over all outputs at a specified horizon. These quantities describe different events and are reported separately. Coverage during motion and settling is evaluated over the corresponding subsets of each trajectory. Phase-specific results are diagnostic and are not assigned separate conformal guarantees.
+
+We assess interval efficiency using the full interval width $W=U-L$. Output-specific widths are reported in physical units using the stored scaling factors. Aggregate widths are calculated in normalized coordinates with equal weight given to each output. Relative width reduction is measured against the corresponding absolute-error conformal baseline:
+\begin{equation}
+ R_W=1-\frac{\overline W_{\mathrm{MACE}}}{\overline W_{\mathrm{CP}}}.
+ \label{eq:mace:widthratio}
+\end{equation}
+A positive value indicates a reduction in mean width relative to the baseline. Since narrow intervals may fail to contain the reference response we also evaluate the interval score~\cite{gneiting2007scoring}:
+\begin{equation}
+ \mathrm{IS}_{\alpha}(L,U,y)=
+ (U-L)+\frac{2}{\alpha}(L-y)_+
+       +\frac{2}{\alpha}(y-U)_+.
  \label{eq:mace:intervalscore}
 \end{equation}
-Lower scores are preferable. For the trajectory procedures this is a \emph{point-averaged endpoint diagnostic}, not a proper joint-trajectory scoring rule and not an alternative to measuring the appropriate simultaneous coverage event.
+The positive-part operator is defined as $(z)_+=\max(z,0)$. Lower interval scores are preferable because the metric penalizes width and observations outside the interval. For trajectory-based methods this remains a pointwise interval diagnostic. The simultaneous coverage event is assessed separately.
 
-Pointwise accuracy, width, and interval scores pool sums and counts across supported time points, preserving the actual differences in dwell time. Across variables, scaled aggregate summaries use equal output weights. For trajectory coverage, each supported trajectory contributes one success or failure, regardless of phase duration. We report support counts and distinguish all-time, motion, early-settling, late-hold, and initial-hold results so that long stationary periods cannot conceal missed transients.
+Accuracy and interval width are averaged over the time points included in each comparison. Whole-trajectory coverage counts each supported trajectory once. This distinction is retained when assessing periods of differing duration. In addition to the aggregate results we report performance separately for the four maneuver types and for the motion and holding phases.
 
-Uncertainty in comparisons is estimated using 10,000 paired whole-trajectory nonparametric bootstrap replicates with seed 20261011. Evaluation trajectory IDs are sampled with replacement, retaining each sample's entire time series, all output variables, family labels, phase masks, and all method/calibration-arm results. The same bootstrap draw is used for every paired difference and width ratio, which is recomputed from replicate mean widths. Two-sided 95\% percentile intervals summarize evaluation-sample variation conditional on the fitted models and calibration sets; they do not account for retraining or repeated recalibration. Family-specific comparisons filter the common draws to that family rather than imposing fixed family counts on every replicate. These intervals do not constitute simultaneous inference over all output--horizon or family--phase comparisons.
+Confidence intervals for evaluation metrics are estimated using 10{,}000 paired bootstrap replicates. Each replicate resamples complete evaluation trajectories with replacement. A common set of resampled trajectory indices is used for both calibration approaches and for the MACE and absolute-error conformal methods. This preserves temporal dependence within each trajectory and permits paired comparisons on the same evaluation cases. The resulting 95\% percentile intervals quantify variation due to the finite evaluation sample. They are conditional on the trained models and calibration datasets and do not account for retraining uncertainty or repeated recalibration.
 
-For numerical consistency, conformal scores, quantiles, and endpoints are constructed in output-scaled float32 arrays. Coverage is decided inclusively in those same coordinates; endpoints and truth are subsequently promoted to float64 for width and interval-score arithmetic. Physical accuracy retains native simulator truth. Inverse transformations used for presentation do not trigger a second, differently rounded coverage test. The reproducibility record must identify the checkpoint/scaler hashes, partition manifests, recurrence convention, calibration quantiles, and source commits, and must reconcile the original stochastic forecast archive before final results are quoted.
+Nonconformity scores and interval endpoints are calculated in normalized output coordinates using float32 arrays. Coverage is evaluated using inclusive endpoint comparisons in the same coordinates. Float64 arithmetic is then used for interval widths and interval scores. Forecast accuracy is evaluated against the simulator responses in their native physical units. The retained model checkpoints and scaler are used throughout the distribution comparison.
