@@ -19,19 +19,23 @@ filenames so the original datasets remain reproducible.
 | 3. MACE normalized scores / event sets | `docs/paper/figures/fig03_mace_calibration_events.tikz.tex` | New editable vector diagram; schematic event cells, not results |
 | 4. Updated reduced microreactor plant | `docs/paper/figures/fig04_microreactor_plant.tikz.tex` | New editable vector diagram based on current Modelica equations and wrapper; earlier raster retained as source at `docs/paper/assets/hpmr_bop_viz.png` |
 | 5. Original 4×4 simulator dataset | `docs/paper/assets/timeseries_batch_0003_ALL_PROFILES.png` | Supplied image preserved, not misrepresented as forecasting results. Re-render from raw batch data to verify trace count |
-| 6a. Calibration distribution comparison | `docs/paper/figures/fig06_calibration_design.tikz.tex` | New editable vector study schematic |
-| 6b–e. Operation-informed maneuver types | `outputs/paper/mace_figures/operational_controls/fig06_bcde_operational_controls.pdf` | Existing renderer reads retained `operational_manifest.json`; selects lowest three evaluation IDs per maneuver type |
 | A1. Recursive forecast algorithm | `docs/paper/figures/figA1_recursive_forecast_algorithm.tikz.tex` | Source ready for a later appendix; not inserted into Methodology |
 
-**No archived production control CSVs or operational manifest are committed to
-this branch.** Figure 1 and Figure 6(b–e) must therefore be built on a workstation
-with the archived data, and their sidecar metadata reviewed. The existing plot
-runner can generate an *illustrative* Figure 1 when the CSVs are unavailable; it
-labels this explicitly and it must not be presented as sampled training data.
+**Figure 6 is excluded from the Methodology and the standard manuscript figure build.**
+The previously developed study schematic and operational-control plots remain
+available as optional repository resources but are not required or cited.
+The control recipe and calibration comparison are retained in manuscript tables.
 
-The manuscript embeds data-dependent figures by their production paths, rather
-than committing substitute traces or invented sample identifiers. To compile
-the full manuscript, generate these assets first.
+**No archived production control CSVs are committed to this branch.** Figure 1
+must therefore be built on a workstation with the archived data, and its
+sidecar metadata reviewed. The existing plot runner can generate an
+*illustrative* Figure 1 when the CSVs are unavailable; it labels this
+explicitly and it must not be presented as sampled training data.
+
+The manuscript embeds the data-dependent Figure 1 by its production path,
+rather than committing substitute traces or invented sample identifiers.
+Generate this asset before full manuscript compilation. Figure 5 uses the
+existing source image.
 
 ## Commands
 
