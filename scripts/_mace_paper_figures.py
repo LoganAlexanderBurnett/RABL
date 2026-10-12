@@ -331,8 +331,8 @@ def operational_controls(config, out, path, options):
         if len(group) < count:
             raise ValueError(f'Family {family} has fewer than {count} evaluation profiles')
         selected.extend(group[:count])
-    labels = ('B: single maneuver and hold', 'C: successive maneuvers and holds',
-              'D: maneuver and return', 'F: bidirectional maneuvers')
+    labels = ('Single maneuver with hold', 'Successive maneuvers with holds',
+              'Maneuver with return', 'Bidirectional maneuvers')
     traces = []
     with plt.rc_context(STYLE):
         fig, axes = plt.subplots(2, 2, figsize=(178*MM, 110*MM), sharex=True, sharey=True, layout='constrained')
@@ -355,8 +355,8 @@ def operational_controls(config, out, path, options):
     files.append('operational_controls_data.npz')
     return dict(files=files, inputs=[fingerprint(file), fingerprint(inspect.getfile(control))], selected_ids=[p['id'] for p in selected],
                 selected_profiles=selected, manifest_identity=identity, recipe=manifest['recipe'],
-                caption='Control panels (b–e) for the calibration-distribution study figure. '
-                'The three lowest evaluation IDs in each B/C/D/F family are selected independently of errors '
+                caption='Representative operation-informed control trajectories for the calibration study. '
+                'The three lowest evaluation IDs for each maneuver type are selected independently of errors '
                 'and coverage. Curves reconstruct the saved prescribed moves, not noisy applied-angle samples. '
                 'Time and angle axes are shared. Add the protocol diagram (a) separately; no flowchart is generated here.')
 
