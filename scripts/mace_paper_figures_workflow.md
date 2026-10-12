@@ -30,6 +30,7 @@ python scripts/generate_mace_paper_figures.py --figures sampling dataset operati
 python scripts/generate_mace_paper_figures.py --figures sampling --sampling-mode stored
 python scripts/generate_mace_paper_figures.py --figures dataset --dataset-mode stored_image
 python scripts/generate_mace_paper_figures.py --figures operational_forecasts
+python scripts/generate_mace_paper_figures.py --figures representative_forecast --calibration-source operational --trajectory-mode target_trajectory
 ```
 
 After editing figure settings or code, replace only selected figure folders:
@@ -49,16 +50,18 @@ python scripts/generate_mace_paper_figures.py --figures all --output-dir outputs
 | Stable ID | Output | Source behavior |
 |---|---|---|
 | `sampling` | Three-panel Figure 1, PNG/PDF; sampling data NPZ | First eight sorted original batch-3 control CSVs. If absent in `auto` mode, explicitly labeled illustrative GP draws; `stored` requires actual tables. |
-| `dataset` | Required 4×4 Figure 5, PNG/PDF | All batch-3 simulator CSVs if present; defaults require exactly 5,000, so partial batches fail. If absent in `auto` mode, preserve the supplied PNG. |
-| `operational_controls` | Figure 6b–e, PNG/PDF; data NPZ | Lowest three evaluation IDs in each retained B/C/D/F family, reconstructed from saved move definitions. |
+| `dataset` | Required 4×4 Figure 5, PNG/PDF | All batch-3 simulator CSVs if present; defaults require exactly 5,000. Raw regeneration removes per-panel variable titles and displays variable identifiers below each subplot. `stored_image` copies the pre-existing image unchanged. |
+| `operational_controls` | Optional operation-informed controls PNG/PDF; data NPZ | Lowest three evaluation IDs in each retained maneuver type, reconstructed from saved moves. Plot legends now show angular excursions and not the numeric suffixes of profile IDs. Figure 6 is omitted from the manuscript. |
 | `existing_assets` | Original plant, LSTM architecture, autoregression, and Rolling Forecast graphics | Exact copied source PNGs plus raster PDF wrappers. These are explicitly marked as needing manual revisions. |
 | `operational_forecasts` | Existing 4×4 forecast PNGs and one sectioned PDF | Calls the existing saved-result renderer; original/operational calibration and per-output/joint trajectory views stay separate. |
+| `representative_forecast` | `mace_representative_test_forecast.png/.pdf` | One saved operational test trajectory with simulator truth, ensemble mean, uncalibrated ±2σ, MACE-Horizon, and MACE-Trajectory (or joint-trajectory) bands. Selection by fixed test ID, independent of prediction error. |
 
 `--figures all` expands the entire registry, including subsequently registered
 figures. Pure flowcharts, the MACE event diagram, and manual artwork corrections
-are excluded from automatic scientific rendering. Figure 6's protocol panel (a)
-is assembled separately with generated panels (b–e). This is deliberate: the
-runner does not present uncorrected source graphics as final manuscript figures.
+are excluded from automatic scientific rendering. Figure 6 is no longer included
+in the Methodology. Its archived optional control plot remains accessible via
+`operational_controls`. The runner does not present uncorrected source graphics
+as final manuscript figures.
 
 The operational forecast report retains the earlier output rule: individual PNGs
 and **one consolidated PDF**, not a separate PDF per 4×4 grid. Main manuscript
@@ -106,6 +109,43 @@ The broader-angle recipe is rejected explicitly for both operational generators.
 Control panels use identical 44–49° axes and 0–200 s axes. Dataset panels use the
 supplied display order and physical power P, while the forecast report continues
 to display the model's normalized power output n. No bounds are clipped.
+All regenerated 4×4 plots use one per-panel variable identifier below the panel
+rather than repeating its name as both a title and a label. A shared figure-level
+label identifies the time axis. The six precursor variables appear as $c_1$ through
+$c_6$ without a misleading "(normalized)" suffix.
+
+### Regenerate and select a representative forecast
+
+The separate Results-ready representative figure uses only archived data from
+`operational_test.h5` and its saved conformal quantiles and intervals. It does
+not recalculate scores or select a favorable example. By default, it selects
+the lexically first saved operational test profile ID. To select a different
+predefined test case, specify the exact ID from `operational_manifest.json`.
+
+```powershell
+python scripts/generate_mace_paper_figures.py --figures representative_forecast --calibration-source operational --trajectory-mode target_trajectory --overwrite
+python scripts/generate_mace_paper_figures.py --figures representative_forecast --profile-id results_drum_profile_11001 --calibration-source original --trajectory-mode joint_trajectory --overwrite
+```
+
+The second command demonstrates the argument syntax: replace the sample ID with
+an **actual** test-profile ID in your manifest. Original calibration represents
+the nonexchangeable transfer diagnostic. Operational calibration uses matching
+independent samples from the prespecified maneuver mixture. The plot metadata
+records selected test IDs, control moves, hashes, and exact array-consistency
+checks. Each 4×4 plot includes prescribed drum angle and all 15 model outputs.
+
+### Rebuild the manuscript dataset image
+
+```powershell
+python scripts/generate_mace_paper_figures.py --figures dataset --dataset-mode raw --overwrite
+Copy-Item outputs\paper\mace_figures\dataset\fig05_generated_transient_dataset.png docs\paper\assets\timeseries_batch_0003_ALL_PROFILES.png -Force
+```
+
+The copy operation is optional until you have visually inspected the regenerated
+image. It updates the raster asset already referenced by `MACE_Methodology.tex`.
+It should only be used after the batch-3 simulation CSVs have passed the
+complete-profile count check. `--dataset-mode stored_image` does **not** update
+labels because it preserves the original image exactly.
 
 ## Outputs, reruns, and provenance
 
