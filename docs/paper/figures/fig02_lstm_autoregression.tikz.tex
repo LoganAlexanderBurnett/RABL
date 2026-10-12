@@ -1,0 +1,30 @@
+% Requires tikz libraries arrows.meta,positioning,calc,fit.
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[>=Latex, font=\sffamily\small,
+  unit/.style={draw=black!70,rounded corners=2pt,fill=blue!4,inner sep=5pt,align=center},
+  prog/.style={-{Latex[length=2.5mm]},line width=.85pt,draw=blue!70!black},
+  ctrl/.style={-{Latex[length=2.3mm]},dashed,draw=black!80,line width=.65pt}]
+ \node[anchor=west,font=\bfseries] at (0,4.1) {(a) Network for one ensemble member};
+ \node[unit,minimum width=2.8cm,minimum height=1.15cm] (x) at (1.65,2.9) {History and control\\$B_{\rm batch}\times13\times16$};
+ \node[unit,minimum width=2.05cm,minimum height=1.15cm] (l) at (4.55,2.9) {LSTM\\one layer, 64 units};
+ \node[unit,minimum width=1.55cm] (last) at (6.86,2.9) {Last row\\$B_{\rm batch}\times64$};
+ \node[unit,minimum width=2.05cm] (fc) at (9.35,2.9) {Linear $64\to64$\\ReLU};
+ \node[unit,minimum width=1.6cm] (pred) at (11.83,2.9) {Linear $64\to15$};
+ \draw[prog] (x)--(l); \draw[prog] (l)--(last); \draw[prog] (last)--(fc); \draw[prog] (fc)--(pred);
+ \node[align=center,font=\scriptsize] at (1.65,1.86) {15 output-history features\\$+\,1$ prescribed control};
+ \node[anchor=west,font=\bfseries] at (0,1.15) {(b) Autoregression; member-specific feedback};
+ \node[unit,minimum width=2.4cm] (hist) at (1.5,.18) {History in $X$\\13 rows $\times$ 15};
+ \node[unit,minimum width=2.35cm] (fm) at (4.7,.18) {$f_m$ with shifted\\prescribed control};
+ \node[unit,minimum width=2.2cm] (yh) at (8.02,.18) {$\widehat{\widetilde{\mathbf y}}^{Y}_{m,h}$\\15 output values};
+ \node[unit,minimum width=2.15cm] (map) at (11.36,.18) {$Y\to X$ affine map\\then shift history};
+ \draw[prog] (hist)--(fm); \draw[prog] (fm)--(yh); \draw[prog] (yh)--(map);
+ \draw[prog,rounded corners=6pt] (map.south)--++(0,-.75)-|(hist.south);
+ \node[font=\scriptsize,fill=white,inner sep=1pt] at (6.4,-.77) {Next horizon: member $m$ feeds back its own mapped prediction};
+ \node[unit,minimum width=2.35cm] (u) at (4.72,-1.75) {Known control\\$u_{k-K+1:k+1}$};
+ \draw[ctrl] (u.north)--(fm.south);
+ \node[unit,minimum width=2.55cm] (agg) at (11.15,-1.75) {After all $M=10$ members\\mean $\mu_h$, spread $\sigma_h$};
+ \draw[prog] (yh.south east) to[out=-37,in=100] (agg.north);
+ \draw[densely dotted,black!45] (-.1,1.62)--(13.2,1.62);
+ \node[font=\scriptsize,anchor=west,text=black!70] at (.05,-2.65) {Blue solid: forecast or recurrence \hspace{9mm} Black dashed: prescribed controls \hspace{9mm} No future simulator-response feedback};
+\end{tikzpicture}%
+}
