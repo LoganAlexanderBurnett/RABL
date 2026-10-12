@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT/'src'))
 REGISTRY = {
     'sampling': ('sampling_figure', 'Figure 1: velocity correlation and integrated control trajectories'),
     'dataset': ('dataset_figure', 'Figure 5: existing or regenerated 4×4 simulation dataset'),
-    'operational_controls': ('operational_controls', 'Figure 6(b–e): retained B/C/D/F control panels'),
+    'operational_controls': ('operational_controls', 'Optional saved operation-informed control maneuvers (omitted Figure 6)'),
     'existing_assets': ('existing_assets', 'Preserve supplied graphics; manual corrections stay manual'),
     'operational_forecasts': ('operational_forecasts', 'Saved 4×4 forecasts: PNGs + one consolidated PDF'),
     'representative_forecast': ('representative_forecast', 'Single saved operational test forecast: 4×4 MACE UQ comparison'),
@@ -27,7 +27,8 @@ REGISTRY = {
 def selected_figures(value):
     requested = [part for item in value for part in item.split(',') if part]
     if requested == ['all']:
-        return list(REGISTRY)
+        # Figure 6 was removed from the manuscript. Keep its data plot opt-in.
+        return [name for name in REGISTRY if name != 'operational_controls']
     if not requested or 'all' in requested or set(requested)-set(REGISTRY):
         raise ValueError(f'Choose all or specific IDs: {", ".join(REGISTRY)}')
     return list(dict.fromkeys(requested))
