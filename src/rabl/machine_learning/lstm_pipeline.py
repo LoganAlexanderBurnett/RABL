@@ -1600,9 +1600,7 @@ def plot_forecast_vs_truth_grid(
     # Control plot (top-left)
     ax0 = axes[0]
     ax0.plot(control_series, label=control_name)
-    ax0.set_title(control_name)
-    ax0.set_xlabel("Forecast step")
-    ax0.set_ylabel(control_name)
+    ax0.set_xlabel(control_name)
     ax0.grid(True)
     ax0.legend(loc="best")
 
@@ -1612,9 +1610,7 @@ def plot_forecast_vs_truth_grid(
         name = target_names[i]
         ax.plot(y_true[:, i], label="truth", color='black')
         ax.plot(y_pred[:, i], label="pred", color='blue')
-        ax.set_title(name)
-        ax.set_xlabel("Forecast step")
-        ax.set_ylabel(name)
+        ax.set_xlabel(name)
         _disable_y_offset_if_requested(ax, name)
         ax.grid(True)
         ax.legend(fontsize=7, loc="best")
@@ -1633,6 +1629,7 @@ def plot_forecast_vs_truth_grid(
         fontsize=14,
     )
 
+    fig.supxlabel("Forecast step")
     fig.tight_layout(rect=[0, 0, 1, 0.95])
 
     if save_path is not None:
@@ -1771,7 +1768,7 @@ def _plot_ensemble_forecast_vs_truth_grid(
     axes_flat = np.atleast_1d(axes).flatten()
 
     axes_flat[0].plot(t_series, control_series, linewidth=1.5, color="black")
-    axes_flat[0].set_title(control_name)
+    axes_flat[0].set_xlabel(control_name)
     axes_flat[0].grid(True, alpha=0.3)
 
     derivative_axes: list[plt.Axes] = []
@@ -1809,15 +1806,11 @@ def _plot_ensemble_forecast_vs_truth_grid(
                 label="d(x_sigma_scaled)/dt",
             )
             ax2.axhline(0.0, color="0.5", linewidth=0.9, linestyle="--", alpha=0.8)
-        ax.set_title(target_name)
+        ax.set_xlabel(target_name)
         _disable_y_offset_if_requested(ax, target_name)
         ax.grid(True, alpha=0.3)
 
-    for idx in range(nplots - cols, nplots):
-        axes_flat[idx].set_xlabel("Time (s)")
-    axes_flat[0].set_ylabel(control_name)
-    for idx, target_name in enumerate(target_names, start=1):
-        axes_flat[idx].set_ylabel(target_name)
+    fig.supxlabel("Time (s)")
 
     handles, labels = axes_flat[1].get_legend_handles_labels()
     if y_dsigma_dt is not None and derivative_axes:
