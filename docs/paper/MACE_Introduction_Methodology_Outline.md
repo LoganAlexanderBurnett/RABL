@@ -37,7 +37,7 @@ The scientific writing references are Burnett et al., *Variational digital twins
 
 ## 2. Introduction: proposed manuscript structure
 
-Suggested main-text length: approximately 1,400–1,800 words, adjusted to the journal. Use one opening passage, a literature-review subsection with five connected themes, and a contributions subsection. No introduction figure is needed; introduce the mechanism figures with their equations in the methodology.
+Suggested main-text length: approximately 2,000–3,000 words, adjusted to the journal. Use one opening passage, a literature-review subsection with five connected themes, and a contributions subsection. No introduction figure is needed; introduce the mechanism figures with their equations in the methodology.
 
 ### 1. Introduction — physical motivation and problem statement
 
