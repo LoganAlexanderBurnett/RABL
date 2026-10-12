@@ -15,11 +15,12 @@ sys.path.insert(0, str(ROOT/'src'))
 # Stable descriptive IDs: manuscript numbering can change without changing CLI IDs.
 # Add a renderer to _mace_paper_figures.py and one entry here for future sections.
 REGISTRY = {
-    'sampling': ('sampling_figure', 'Figure 1: correlated velocity, integrated control, dispersion'),
+    'sampling': ('sampling_figure', 'Figure 1: velocity correlation and integrated control trajectories'),
     'dataset': ('dataset_figure', 'Figure 5: existing or regenerated 4×4 simulation dataset'),
     'operational_controls': ('operational_controls', 'Figure 6(b–e): retained B/C/D/F control panels'),
     'existing_assets': ('existing_assets', 'Preserve supplied graphics; manual corrections stay manual'),
     'operational_forecasts': ('operational_forecasts', 'Saved 4×4 forecasts: PNGs + one consolidated PDF'),
+    'representative_forecast': ('representative_forecast', 'Single saved operational test forecast: 4×4 MACE UQ comparison'),
 }
 
 
@@ -33,7 +34,8 @@ def selected_figures(value):
 
 
 def run(config_file, *, figures=('all',), output_dir=None, overwrite=False,
-        formats=None, dpi=None, sampling_mode=None, dataset_mode=None, repo_root=None):
+        formats=None, dpi=None, sampling_mode=None, dataset_mode=None,
+        profile_id=None, calibration_source=None, trajectory_mode=None, repo_root=None):
     root = Path(repo_root or ROOT).resolve()
     cfg_path = Path(config_file)
     if not cfg_path.is_absolute(): cfg_path = root/cfg_path
@@ -41,6 +43,9 @@ def run(config_file, *, figures=('all',), output_dir=None, overwrite=False,
     selected = selected_figures(figures)
     if sampling_mode: config['sampling']['mode'] = sampling_mode
     if dataset_mode: config['dataset']['mode'] = dataset_mode
+    if profile_id: config['operational']['representative_profile_id'] = profile_id
+    if calibration_source: config['operational']['representative_calibration'] = calibration_source
+    if trajectory_mode: config['operational']['representative_trajectory_mode'] = trajectory_mode
     options = dict(formats=formats or config['formats'], dpi=dpi or config['dpi'])
     if not options['formats'] or set(options['formats'])-{'png', 'pdf', 'svg'} or options['dpi'] < 72:
         raise ValueError('Formats must be PNG/PDF/SVG; dpi must be >=72')
@@ -113,13 +118,20 @@ def main():
     p.add_argument('--dpi', type=int)
     p.add_argument('--sampling-mode', choices=('auto', 'stored', 'illustrative'))
     p.add_argument('--dataset-mode', choices=('auto', 'raw', 'stored_image'))
+    p.add_argument('--profile-id', help='Saved operation-informed test ID for representative_forecast')
+    p.add_argument('--calibration-source', choices=('original', 'operational'),
+                   help='Calibration population for the representative test forecast')
+    p.add_argument('--trajectory-mode', choices=('target_trajectory', 'joint_trajectory'),
+                   help='Trajectory conformal comparison for representative_forecast')
     args = p.parse_args()
     if args.list:
         for key, (_, description) in REGISTRY.items(): print(f'{key}: {description}')
         return
     result = run(args.config, figures=args.figures, output_dir=args.output_dir,
                  overwrite=args.overwrite, formats=args.formats, dpi=args.dpi,
-                 sampling_mode=args.sampling_mode, dataset_mode=args.dataset_mode)
+                 sampling_mode=args.sampling_mode, dataset_mode=args.dataset_mode,
+                 profile_id=args.profile_id, calibration_source=args.calibration_source,
+                 trajectory_mode=args.trajectory_mode)
     if not result['completed']: raise SystemExit(1)
 
 
