@@ -339,16 +339,7 @@ The operation-informed calibration set contains 1{,}000 trajectories and the eva
 
 Calibration using the original stochastic trajectories provides a test of transfer to the new evaluation distribution. It does not have the standard split-conformal guarantee because the two populations are not exchangeable. Calibration and evaluation on independently generated operation-informed trajectories provide the usual pooled marginal coverage interpretation under the common mixture. This guarantee does not imply equal coverage for each individual maneuver type. Absolute-error conformal intervals are constructed using both calibration sources for comparison.
 
-Performance is also examined during different portions of each control trajectory. Motion includes each interval of prescribed drum movement. Early settling consists of the following 20~s provided that another movement has not started. Initial hold precedes the first maneuver and late hold covers the remaining stationary periods. The same calibration thresholds are used in every phase. Figure~\ref{fig:mace:design} summarizes the comparison and illustrates the four forms of control motion.
-
-\begin{figure*}[t]
-\centering
-\input{docs/paper/figures/fig06_calibration_design.tikz.tex}
-\par\vspace{2mm}
-\includegraphics[width=0.96\textwidth]{outputs/paper/mace_figures/operational_controls/fig06_bcde_operational_controls.pdf}
-\caption{Comparison of calibration distributions and representative operation-informed control trajectories. (a) The same evaluation forecasts are combined with conformal thresholds from the original stochastic calibration set or the operation-informed calibration set. (b) Single maneuver with hold. (c) Successive maneuvers with holds. (d) Maneuver with return. (e) Bidirectional maneuvers. Three example trajectories are shown for each maneuver type using a selection independent of forecasting error.}
-\label{fig:mace:design}
-\end{figure*}
+Performance is also examined during different portions of each control trajectory. Motion includes each interval of prescribed drum movement. Early settling consists of the following 20~s provided that another movement has not started. Initial hold precedes the first maneuver and late hold covers the remaining stationary periods. The same calibration thresholds are used in every phase. Table~\ref{tab:mace:arms} summarizes the calibration and evaluation populations.
 
 \begin{table}[t]
 \centering\small
