@@ -10,9 +10,9 @@
    \quad Load frozen model $f_m$; initialize member history.\\
    \quad \textbf{for} $h=0,\ldots,H-1$:\\
    \qquad Concatenate history and prescribed control ($13\times16$).\\
-   \qquad Predict one $J$-vector in native output coordinates $Y$.\\
+   \qquad Predict one normalized output vector $\widehat{\widetilde{\mathbf y}}_m$.\\
    \qquad Save $\widehat{\widetilde{\mathbf y}}^{Y}_{m,h}$.\\
-   \qquad Map output $Y\to X$ using the saved scaler.\\
+   \qquad Map predicted outputs with $\mathcal S_{\mathrm{in}}\circ\mathcal S_{\mathrm{out}}^{-1}$.\\
    \qquad Drop oldest row; append \emph{member-specific} mapped output.\\
    \quad \textbf{end for}\\
    \textbf{end for}\\[2pt]
