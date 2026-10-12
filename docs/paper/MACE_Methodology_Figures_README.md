@@ -1,9 +1,9 @@
 # MACE Methodology manuscript and figures
 
-The section is in [MACE_Methodology.tex](../MACE_Methodology.tex). This is a
-LaTeX section for insertion after the existing [Introduction](../MACE_Introduction.tex),
+The section is in [MACE_Methodology.tex](MACE_Methodology.tex). This is a
+LaTeX section for insertion after the existing [Introduction](MACE_Introduction.tex),
 not a replacement for the full article. The methods add one citation in
-[MACE_Methodology_References.bib](../MACE_Methodology_References.bib). Compile
+[MACE_Methodology_References.bib](MACE_Methodology_References.bib). Compile
 with both this file and \`MACE_Introduction_References.bib\`.
 
 ## Figure status
@@ -11,13 +11,13 @@ with both this file and \`MACE_Introduction_References.bib\`.
 | Figure | Manuscript asset | Source / required action |
 |---|---|---|
 | 1. Correlated velocity sampling | \`outputs/paper/mace_figures/sampling/fig01_control_trajectory_sampling.pdf\` | Existing validated scientific renderer; **run using stored original batch-3 controls** before publication |
-| 2. LSTM / autoregressive feedback | \`figures/fig02_lstm_autoregression.tikz.tex\` | New editable vector diagram, included with \`\input\` |
-| 3. MACE normalized scores / event sets | \`figures/fig03_mace_calibration_events.tikz.tex\` | New editable vector diagram; schematic event cells, not results |
-| 4. Updated reduced microreactor plant | \`figures/fig04_microreactor_plant.tikz.tex\` | New editable vector diagram based on current Modelica equations and wrapper; earlier raster retained as source at \`assets/hpmr_bop_viz.png\` |
-| 5. Original 4×4 simulator dataset | \`assets/timeseries_batch_0003_ALL_PROFILES.png\` | Supplied image preserved, not misrepresented as forecasting results. Re-render from raw batch data to verify trace count |
-| 6a. Frozen calibration comparison | \`figures/fig06_calibration_design.tikz.tex\` | New editable vector study schematic |
+| 2. LSTM / autoregressive feedback | \`docs/paper/figures/fig02_lstm_autoregression.tikz.tex\` | New editable vector diagram, included with \`\input\` |
+| 3. MACE normalized scores / event sets | \`docs/paper/figures/fig03_mace_calibration_events.tikz.tex\` | New editable vector diagram; schematic event cells, not results |
+| 4. Updated reduced microreactor plant | \`docs/paper/figures/fig04_microreactor_plant.tikz.tex\` | New editable vector diagram based on current Modelica equations and wrapper; earlier raster retained as source at \`docs/paper/assets/hpmr_bop_viz.png\` |
+| 5. Original 4×4 simulator dataset | \`docs/paper/assets/timeseries_batch_0003_ALL_PROFILES.png\` | Supplied image preserved, not misrepresented as forecasting results. Re-render from raw batch data to verify trace count |
+| 6a. Frozen calibration comparison | \`docs/paper/figures/fig06_calibration_design.tikz.tex\` | New editable vector study schematic |
 | 6b–e. Operational control families | \`outputs/paper/mace_figures/operational_controls/fig06_bcde_operational_controls.pdf\` | Existing renderer reads retained \`operational_manifest.json\`; selects lowest three evaluation IDs per family |
-| A1. Recursive forecast algorithm | \`figures/figA1_recursive_forecast_algorithm.tikz.tex\` | Source ready for a later appendix; not inserted into Methodology |
+| A1. Recursive forecast algorithm | \`docs/paper/figures/figA1_recursive_forecast_algorithm.tikz.tex\` | Source ready for a later appendix; not inserted into Methodology |
 
 **No archived production control CSVs or operational manifest are committed to
 this branch.** Figure 1 and Figure 6(b–e) must therefore be built on a workstation
@@ -36,7 +36,7 @@ From repository root (one continuous command per line):
 \`\`\`bash
 python -m pip install numpy scipy matplotlib pillow h5py pymupdf
 python scripts/build_mace_methodology_figures.py --diagrams-only
-python scripts/build_mace_methodology_figures.py --require-real-control-data
+python scripts/build_mace_methodology_figures.py
 \`\`\`
 
 Use \`pdflatex\` (and TikZ) to typeset the editable conceptual figures, or run the
