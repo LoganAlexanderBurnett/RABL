@@ -181,33 +181,31 @@ def sampling_figure(config, out, path, options):
         print('sampling: using explicitly labeled illustrative GP draws; not training samples', flush=True)
         samples = illustrative_samples(gen, time, cov, settings)
     with plt.rc_context(STYLE):
-        fig, axes = plt.subplots(2, 2, figsize=(178*MM, 125*MM), layout='constrained')
+        fig = plt.figure(figsize=(178*MM, 125*MM), layout='constrained')
+        grid = fig.add_gridspec(2, 2)
+        ax_corr = fig.add_subplot(grid[0, 0])
+        ax_velocity = fig.add_subplot(grid[0, 1])
+        ax_angle = fig.add_subplot(grid[1, :])
         lag = np.linspace(0, 60, 601)
         for ell, color, style in [(5, '.55', '--'), (10, 'black', '-'), (20, '.35', ':')]:
             r = np.sqrt(5)*lag/ell
-            axes[0, 0].plot(lag, (1+r+r*r/3)*np.exp(-r), color=color,
-                            ls=style, label=rf'$\ell={ell}$ s')
-        axes[0, 0].set(xlim=(0, 60), ylim=(0, 1.03), xlabel='Lag (s)', ylabel='Velocity correlation')
-        axes[0, 0].legend(frameon=False)
+            ax_corr.plot(lag, (1+r+r*r/3)*np.exp(-r), color=color,
+                         ls=style, label=rf'$\ell={ell}$ s')
+        ax_corr.set(xlim=(0, 60), ylim=(0, 1.03), xlabel='Lag (s)', ylabel='Velocity correlation')
+        ax_corr.legend(frameon=False)
         colors = plt.get_cmap('tab10').colors
         for i, (name, t, angle, velocity) in enumerate(samples):
-            axes[0, 1].plot(t[:-1], velocity, lw=.65, color=colors[i % 10])
-            axes[1, 0].plot(t, angle, lw=.65, color=colors[i % 10])
+            ax_velocity.plot(t[:-1], velocity, lw=.65, color=colors[i % 10])
+            ax_angle.plot(t, angle, lw=.65, color=colors[i % 10])
         vmax = max(float(np.max(np.abs(v))) for _, _, _, v in samples)
-        axes[0, 1].set(xlim=(0, 200), ylim=(-max(vmax*1.1, .001), max(vmax*1.1, .001)),
-                       xlabel='Time (s)', ylabel='Velocity (degree/s)')
-        axes[0, 1].axhline(0, color='.6', lw=.5)
-        axes[1, 0].set(xlim=(0, 200), xlabel='Time (s)', ylabel='Control angle (degree)')
-        axes[1, 0].axhline(settings['baseline_degrees'], color='.6', ls='--', lw=.6)
-        axes[1, 1].plot(time, uncond, color='black', ls='--', label='Unconditioned design')
-        axes[1, 1].plot(time, cond, color='#0072B2', label='Initial velocity conditioned')
-        axes[1, 1].scatter([time[-1]], [settings['design_terminal_sd_degrees']], s=12, color='black')
-        axes[1, 1].text(.03, .76, f'Conditioned endpoint: {cond[-1]:.4f}°', transform=axes[1, 1].transAxes, fontsize=7)
-        axes[1, 1].set(xlim=(0, 200), ylim=(0, None), xlabel='Time (s)', ylabel='Angle standard deviation (degree)')
-        axes[1, 1].legend(frameon=False, loc='upper left')
-        titles = ('Velocity correlation', 'Stored interval velocities' if stored else 'Illustrative interval velocities',
-                  'Stored control trajectories' if stored else 'Illustrative control trajectories', 'Design and initialization')
-        for ax, letter, title in zip(axes.flat, 'abcd', titles):
+        ax_velocity.set(xlim=(0, 200), ylim=(-max(vmax*1.1, .001), max(vmax*1.1, .001)),
+                        xlabel='Time (s)', ylabel='Velocity (degree/s)')
+        ax_velocity.axhline(0, color='.6', lw=.5)
+        ax_angle.set(xlim=(0, 200), xlabel='Time (s)', ylabel='Control angle (degree)')
+        ax_angle.axhline(settings['baseline_degrees'], color='.6', ls='--', lw=.6)
+        titles = ('Velocity correlation', 'Sampled velocity trajectories',
+                  'Integrated Control Trajectories')
+        for ax, letter, title in zip((ax_corr, ax_velocity, ax_angle), 'abc', titles):
             panel(ax, letter, title)
         files = save_figure(fig, out, 'fig01_control_trajectory_sampling', options)
     np.savez_compressed(out/'sampling_data.npz', time=time, unconditioned_sd=uncond,
@@ -215,10 +213,9 @@ def sampling_figure(config, out, path, options):
                         velocity=np.stack([s[3] for s in samples]))
     files.append('sampling_data.npz')
     caption = ('Construction of control trajectories from Matérn-5/2 interval velocity. '
-               f"Panels (b,c) show {'stored batch controls' if stored else 'illustrative draws, not training samples'}; "
-               'the first velocity is conditioned to zero. Dispersion curves precede bounded-path rejection; '
-               'the terminal design target is not a hard angle bound or the conditioned endpoint. '
-               'Matching colors pair velocities and angles. The sidecar records selected IDs and settings.')
+               f"Panels (b,c) show {'stored batch controls' if stored else 'illustrative draws, not training samples'}. "
+               'The first velocity is conditioned to zero. Matching colors pair velocities and '
+               'integrated control angles. The sidecar records selected IDs and sampling settings.')
     return dict(files=files, inputs=inputs, caption=caption, sample_origin='stored' if stored else 'illustrative',
                 selected_ids=[s[0] for s in samples], settings=settings,
                 conditioned_terminal_sd_degrees=float(cond[-1]),
