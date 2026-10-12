@@ -160,16 +160,13 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
                 alpha=0.10,
             )
 
-        ax.set_title(pretty_label)
-        ax.set_ylabel(pretty_label)
+        ax.set_xlabel(pretty_label)
         ax.grid(True, which="both", alpha=0.2)
 
     for ax in axes[len(PLOT_VARS):]:
         ax.set_axis_off()
 
-    for ax in axes[-cols:]:
-        ax.set_xlabel("t (s)")
-
+    fig.supxlabel("Time (s)")
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
