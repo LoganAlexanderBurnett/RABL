@@ -211,7 +211,23 @@ In particular, the active steam-generator metal is a dynamic thermal capacitance
  \end{split}
  \label{eq:mace:steammetal}
 \end{equation}
-The model divides $Q_{sg\rightarrow fw}$ by fixed feedwater mass flow to compute added specific heat. Its simplified saturated-mixture/superheat closure calculates steam quality between zero and unity and steam outlet temperature at saturation or above, depending on whether this heat exceeds the latent-heat requirement. Thus outlet temperature and quality are \emph{calculated}, not prescribed, despite possible plateaus or quality saturation. The secondary outlet pressure and feedwater flow are fixed at 1.5~MPa and 2.95~kg/s. The active-metal capacitance passed by the executed \texttt{RunOneProfile} wrapper is $2.55\times10^5$~J/K, which supersedes the plant class default when no run-time override is supplied. The simulator reference uses the wrapper's 200-s horizon and $10^{-8}$ tolerance; a specific solver/version is not inferred from these settings.
+The added specific heat $q_{sg}=Q_{sg\rightarrow fw}/\dot m_{\mathrm{fw}}$ determines the simplified saturated-mixture and superheat closures,
+\begin{equation}
+ x_{\mathrm{steam,out}}=
+ \begin{cases}
+ 0,&q_{sg}\leq0,\\
+ q_{sg}/h_{fg},&0<q_{sg}<h_{fg},\\
+ 1,&q_{sg}\geq h_{fg},
+ \end{cases}
+ \quad
+ T_{\mathrm{steam,out}}=
+ \begin{cases}
+ T_{\mathrm{sat}},&q_{sg}<h_{fg},\\
+ T_{\mathrm{sat}}+(q_{sg}-h_{fg})/c_{p,\mathrm{sh}},&q_{sg}\geq h_{fg}.
+ \end{cases}
+ \label{eq:mace:steamclosure}
+\end{equation}
+Here $h_{fg}$ is the specified latent heat and $c_{p,\mathrm{sh}}$ is an effective superheated-steam heat capacity. Thus outlet temperature and quality are \emph{calculated}, not prescribed, despite possible saturation plateaus or quality saturation. The secondary outlet pressure and feedwater flow are fixed at 1.5~MPa and 2.95~kg/s. The active-metal capacitance passed by the executed \texttt{RunOneProfile} wrapper is $2.55\times10^5$~J/K, which supersedes the plant class default when no run-time override is supplied. The simulator reference uses the wrapper's 200-s horizon and $10^{-8}$ tolerance; a specific solver/version is not inferred from these settings.
 
 The 15 stored output variables, in native output order, are $T_{N2}$, $T_m$, $T_{hp}$, $T_f$, $T_{sg}$, $c_1,\ldots,c_6$, $n$, $\rho_{\$}$, $T_{\mathrm{steam,out}}$, and $x_{\mathrm{steam,out}}$. Here $\rho_{\$}=\rho/\beta$ is reactivity in dollars; the normalized precursor quantities retain the simulator's implemented normalization, rather than assumed physical concentration units. Table~\ref{tab:mace:outputs} distinguishes differential outputs from algebraic closures and notes that the displayed dataset uses physical power $P=6n$~MW in place of normalized $n$. The simulator traces in Figure~\ref{fig:mace:dataset} illustrate the training-distribution response variety, not forecast performance.
 
@@ -250,6 +266,22 @@ Indices & Quantity / symbol & Units & Type\\
 We assess the frozen ensemble in two related settings. The original stochastic evaluation distribution provides the reference check of recursive prediction and uncertainty calibration under the original control generator, subject to reconciling its archived recurrence. The second setting deliberately changes the control-trajectory distribution to a prespecified operation-informed mixture. It separates failure of a transferred interval calibration from deterioration in mean forecasting: the same model forecasts are evaluated with alternative quantiles, rather than retraining after observing operational trajectories.
 
 The retained operation-informed population contains four equally probable control families, labeled B, C, D, and F as study-specific identifiers. Family B executes an upward constant-speed maneuver followed by a hold; C makes three upward increments with intermediate holds; D advances and returns to $45^\circ$; and F makes successive positive and negative excursions before returning to the baseline. Parameters for start time, target angle, rate or duration are sampled independently within each family, then maneuver times are rounded to the 0.4-s response grid. Realized velocities are obtained from the rounded endpoints, not simply identified with the requested rate draws. The allowed local-study angles lie within $44.25^\circ$--$48.75^\circ$; the implemented recipe rejects overlaps, out-of-domain moves, and rates outside its local admissibility checks. The piecewise-linear control has finite velocity during motion and idealized velocity jumps at maneuver corners; no finite-acceleration actuator dynamics are assessed. The specific family probabilities and maneuver ranges are experimental design choices rather than empirically measured operational frequencies. The calibration and evaluation sets contain 1,000 and 2,000 independent trajectories, respectively, generated using separate random-number streams with seed 20261010.
+
+\begin{table*}[t]
+\centering\small
+\caption{Prespecified operation-informed control families. Times are seconds, angles are degrees, and speeds are degrees per second. Values are nominal parameter-draw intervals before rounding schedule times to the 0.4-s grid; realized speeds are calculated from the rounded controls. These ranges are study choices, not measured maneuver frequencies.}
+\label{tab:mace:families}
+\begin{tabular}{@{}lp{0.21\textwidth}p{0.23\textwidth}p{0.36\textwidth}@{}}
+\toprule
+Family & Maneuver pattern & Start-time ranges (s) & Amplitude, duration, and rate design\\
+\midrule
+B & One upward move and hold & 24--56 & Rise 1--3$^\circ$; requested speed 0.05--0.15$^\circ$/s.\\
+C & Three upward moves with holds & 24--36; 74--86; 130--142 & Each increment 0.5--1.25$^\circ$; requested speed 0.08--0.16$^\circ$/s.\\
+D & Upward move, hold, return & 20--32; 116--124 & Upward rise 2--3$^\circ$; each duration 40--60 s before grid rounding.\\
+F & Above baseline, below baseline, return & 32--48; 84--100; 140--152 & Intermediate levels 45.25--45.75$^\circ$ and 44.25--44.75$^\circ$; requested speed 0.04--0.12$^\circ$/s.\\
+\bottomrule
+\end{tabular}
+\end{table*}
 
 On the \emph{same} operation-informed evaluation forecasts, we compare (i) quantiles from the original stochastic calibration trajectories, regenerated with the corrected feedback convention, and (ii) quantiles from an independent operation-informed calibration set sampled from the same B/C/D/F mixture. The former is a \emph{distribution-transfer diagnostic}: the calibration and evaluation trajectory samples are not assumed exchangeable and nominal split-conformal coverage is not asserted. In the latter comparison, the common mixture supports the pooled marginal event under trajectory-level exchangeability; it does not guarantee nominal coverage within every maneuver family. The ten model checkpoints, training scaler, initial history convention, common floor, prescribed operational controls, ensemble means, and ensemble spreads remain fixed between arms. Recalibration changes only the empirical quantiles and interval endpoints, not the mean forecast. Absolute-error conformal baselines are recalibrated separately in each matching arm.
 
