@@ -21,7 +21,6 @@ DIAGRAMS = {
     "fig02_lstm_autoregression": "fig02_lstm_autoregression.tikz.tex",
     "fig03_mace_calibration_events": "fig03_mace_calibration_events.tikz.tex",
     "fig04_microreactor_plant": "fig04_microreactor_plant.tikz.tex",
-    "fig06_calibration_design": "fig06_calibration_design.tikz.tex",
     "figA1_recursive_forecast_algorithm": "figA1_recursive_forecast_algorithm.tikz.tex",
 }
 
@@ -90,18 +89,18 @@ def main() -> int:
     )
     if not args.diagrams_only:
         # Stored mode for the sampling figure avoids mislabeling illustrative
-        # Gaussian draws as actual training controls. Operational-control
-        # generator always requires the original retained manifest.
+        # Gaussian draws as actual training controls. Figure 6 is excluded
+        # from the manuscript and its default build.
         command = [sys.executable, str(ROOT / "scripts/generate_mace_paper_figures.py"),
                    "--config", "scripts/mace_paper_figures_config.json",
-                   "--figures", "sampling", "dataset", "operational_controls",
+                   "--figures", "sampling", "dataset",
                    "--sampling-mode", "illustrative" if args.illustrative_sampling else "stored"]
         if args.illustrative_sampling:
             print("NOTE: sampling illustration is illustrative only; not eligible as an empirical manuscript panel.")
         run = subprocess.run(command, cwd=ROOT)
         if run.returncode:
             print("The archive-dependent figures need the stored control CSVs and/or"
-                  " operational manifest at the configured paths. Diagram PDFs are complete.",
+                  " inputs at the configured paths. Diagram PDFs are complete.",
                   file=sys.stderr)
             return run.returncode
     return 0
