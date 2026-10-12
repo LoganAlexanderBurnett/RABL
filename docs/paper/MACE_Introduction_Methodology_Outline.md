@@ -85,11 +85,11 @@ Suggested length: approximately 2,500–3,500 words in the main manuscript, with
 Write the reference dynamics and observation map as
 
 $$
-\dot{\mathbf z}(t)=f(\mathbf z(t),\mathbf u(t);\boldsymbol\eta),\qquad
-\mathbf y(t)=g(\mathbf z(t),\mathbf u(t);\boldsymbol\eta),
+\dot{\mathbf x}(t)=f(\mathbf x(t),\mathbf u(t);\boldsymbol\eta),\qquad
+\mathbf y(t)=g(\mathbf x(t),\mathbf u(t);\boldsymbol\eta),
 $$
 
-where $\mathbf z$ is the physical state, $\mathbf u$ the control, $\mathbf y\in\mathbb R^J$ the output variables, and $\boldsymbol\eta$ the fixed simulator parameters. The forecasting method uses a finite history of output variables and prescribed control; it does not require every output to be an independent differential state.
+where $\mathbf x$ is the physical state, $\mathbf u$ the control, $\mathbf y\in\mathbb R^J$ the output variables, and $\boldsymbol\eta$ the fixed simulator parameters. The forecasting method uses a finite history of output variables and prescribed control; it does not require every output to be an independent differential state.
 
 Define a **trajectory sample** as the paired control trajectory and simulator-generated multivariate response trajectory, together with initialization and sampling metadata. Define a **forecast trajectory** as the sequence of model predictions on the specified future grid. Use $i$ for trajectory sample, $h$ for forecast-grid index, $j$ for output variable, and $m$ for ensemble member. Use $N_{\rm cal}$, $N_{\rm eval}$, $H$, $J$, and $M$ for counts. Avoid using $M$ again for the number of GP velocity intervals; use $L$ there.
 
@@ -147,11 +147,11 @@ The selected original data are split by trajectory sample: 5,000 training, 1,000
 **Data coordinates.** Explain train-only min–max fitting and separate native input/output coordinates:
 
 $$
-\widetilde x_j=(x_j-a_j^X)/b_j^X,\qquad
+\widetilde \xi_j=(\xi_j-a_j^X)/b_j^X,\qquad
 \widetilde y_j=(y_j-a_j^Y)/b_j^Y.
 $$
 
-Here $a$ is the training minimum and $b$ the implemented span; the scaler replaces a zero span with 1.0. Reuse the saved scaler for all calibration/evaluation distributions. No new-data refitting and no clipping of scaled extrapolation are performed. Reconstruct input and output training arrays separately, including the prepared histories and window alignment, when independently auditing their minima and spans.
+Here $\xi_j$ denotes a neural-network input feature, distinct from the physical state vector $\mathbf x(t)$. The superscript $X$ identifies input coordinates. Here $a$ is the training minimum and $b$ the implemented span; the scaler replaces a zero span with 1.0. Reuse the saved scaler for all calibration/evaluation distributions. No new-data refitting and no clipping of scaled extrapolation are performed. Reconstruct input and output training arrays separately, including the prepared histories and window alignment, when independently auditing their minima and spans.
 
 **Window and control timing.** The configured lookback is $K=12$, but the dataset builder includes both endpoints and forms **13 rows**. For a training prediction of $\mathbf y_{k+1}$, row $r=0,\ldots,K$ contains
 
@@ -444,3 +444,7 @@ All paths below refer to the implementation reference commit identified at the t
 ## 7. Drafting order
 
 Write §2.1 definitions and §2.4 calibration objectives first, then §§2.2–2.3 sampling/forecasting and §2.5 current physics. Finalize study arms, metrics, and provenance before writing numerical conclusions. Create Figures 1–3 from the locked notation, adapt Figures 4–5, and build Figure 6 from retained input manifests. Then draft the introduction around the implemented contributions and supported results in the scientific style described above. No introduction statement should depend on the excluded broader-angle study.
+
+## 8. Executable figure production
+
+Use `scripts/generate_mace_paper_figures.py` with `scripts/mace_paper_figures_config.json`; see [the figure-generation workflow](../../scripts/mace_paper_figures_workflow.md). Stable IDs select sampling (Figure 1), dataset (Figure 5), operational control panels (Figure 6b–e), supplied graphics, and the retained operational forecast report. The runner generates scientific plots and exports original graphics unchanged; pure diagrams and their manual corrections remain figure-production tasks. In particular, Figure 6a is assembled separately from its generated data panels. New data-figure renderers can be registered as later manuscript sections are developed.
