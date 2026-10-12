@@ -269,7 +269,7 @@ def dataset_figure(config, out, path, options):
     inputs = []
     from matplotlib.collections import LineCollection
     with plt.rc_context(STYLE):
-        fig, axes = plt.subplots(4, 4, figsize=(178*MM, 135*MM), sharex=True, layout='constrained')
+        fig, axes = plt.subplots(4, 4, figsize=(178*MM, 155*MM), sharex=True, layout='constrained')
         try:
             # Stream finite chunks; rasterize dense paths within otherwise vector output.
             for start in range(0, len(candidates), 100):
@@ -497,7 +497,7 @@ def representative_forecast(config, out, path, options):
     modes = (data['raw'], data['bands'][source]['horizon'], data['bands'][source][mode])
     with plt.rc_context({**STYLE, 'font.size': 9, 'axes.labelsize': 9,
                          'legend.fontsize': 10, 'xtick.labelsize': 8, 'ytick.labelsize': 8}):
-        fig, axes = plt.subplots(4, 4, figsize=(178*MM, 115*MM), sharex=True)
+        fig, axes = plt.subplots(4, 4, figsize=(190*MM, 110*MM), sharex=True)
         time = data['time']
         axes.flat[0].plot(time, data['angle'], color='black', lw=1.5)
         axes.flat[0].set_xlabel(r'$\theta$ [deg]')
@@ -552,6 +552,6 @@ def representative_forecast(config, out, path, options):
                   else 'joint-trajectory conformal')
                 +' intervals at the same nominal level. Both calibrated bands use '
                 +source+' calibration. The first panel shows the prescribed drum angle. '
-                'Remaining panels follow native model output variables; bands are not '
+                'Remaining panels use the defined 15-variable display order; bands are not '
                 'clipped to physical limits. The plotted example was chosen by ID rather '
                 'than forecast accuracy or conformal coverage.')
