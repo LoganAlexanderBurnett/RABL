@@ -1,6 +1,6 @@
 % References cited in MACE_Introduction.tex.
-% Metadata follows docs/paper/MACE_Verified_Introduction_Sources.md
-% on branch mace-floor-sensitivity (verified 2026-10-12).
+% Metadata checked against the verified source register and primary publication
+% or originating-author records on 2026-10-12. Existing citation keys retained.
 @article{porcu2024matern,
   author = {Porcu, Emilio and Bevilacqua, Moreno and Schaback, Robert and Oates, Chris J.},
   title = {The {Mat\'ern} Model: A Journey Through Statistics, Numerical Analysis and Machine Learning},
@@ -131,16 +131,17 @@
   url = {https://papers.neurips.cc/paper_files/paper/2019/hash/5103c3584b063c431bd1268e9b5e76fb-Abstract.html}
 }
 
-@inproceedings{xu2021enbpi,
+% Retained key for EnbPI, now citing the final 2023 journal extension rather
+% than its 2021 conference version. These are not counted as separate methods.
+@article{xu2021enbpi,
   author = {Xu, Chen and Xie, Yao},
-  title = {Conformal prediction interval for dynamic time-series},
-  booktitle = {Proceedings of the 38th International Conference on Machine Learning},
-  series = {Proceedings of Machine Learning Research},
-  volume = {139},
-  pages = {11559--11569},
-  year = {2021},
-  publisher = {PMLR},
-  url = {https://proceedings.mlr.press/v139/xu21h.html}
+  title = {Conformal Prediction for Time Series},
+  journal = {IEEE Transactions on Pattern Analysis and Machine Intelligence},
+  volume = {45},
+  number = {10},
+  pages = {11575--11587},
+  year = {2023},
+  doi = {10.1109/TPAMI.2023.3272339}
 }
 
 @inproceedings{stankeviciute2021forecasting,
@@ -190,3 +191,173 @@
   year = {2025},
   doi = {10.1016/j.ecmx.2025.101090}
 }
+
+@article{hjalmarsson2005experiment,
+  author = {Hjalmarsson, H{\aa}kan},
+  title = {From experiment design to closed-loop control},
+  journal = {Automatica},
+  volume = {41},
+  number = {3},
+  pages = {393--438},
+  year = {2005},
+  doi = {10.1016/j.automatica.2004.11.021}
+}
+
+@article{schoukens2019roadmap,
+  author = {Schoukens, Johan and Ljung, Lennart},
+  title = {Nonlinear System Identification: A User-Oriented Road Map},
+  journal = {IEEE Control Systems Magazine},
+  volume = {39},
+  number = {6},
+  pages = {28--99},
+  year = {2019},
+  doi = {10.1109/MCS.2019.2938121}
+}
+
+@inproceedings{bengio2015scheduled,
+  author = {Bengio, Samy and Vinyals, Oriol and Jaitly, Navdeep and Shazeer, Noam},
+  title = {Scheduled Sampling for Sequence Prediction with Recurrent Neural Networks},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume = {28},
+  year = {2015},
+  url = {https://papers.neurips.cc/paper_files/paper/2015/hash/e995f98d56967d946471af29d7bf99f1-Abstract.html}
+}
+
+@article{vlachas2018chaotic,
+  author = {Vlachas, Pantelis R. and Byeon, Wonmin and Wan, Zhong Y. and Sapsis, Themistoklis P. and Koumoutsakos, Petros},
+  title = {Data-driven forecasting of high-dimensional chaotic systems with long short-term memory networks},
+  journal = {Proceedings of the Royal Society A: Mathematical, Physical and Engineering Sciences},
+  volume = {474},
+  number = {2213},
+  pages = {20170844},
+  year = {2018},
+  doi = {10.1098/rspa.2017.0844}
+}
+
+@inproceedings{kuleshov2018calibrated,
+  author = {Kuleshov, Volodymyr and Fenner, Nathan and Ermon, Stefano},
+  title = {Accurate Uncertainties for Deep Learning Using Calibrated Regression},
+  booktitle = {Proceedings of the 35th International Conference on Machine Learning},
+  series = {Proceedings of Machine Learning Research},
+  volume = {80},
+  pages = {2796--2804},
+  year = {2018},
+  publisher = {PMLR},
+  url = {https://proceedings.mlr.press/v80/kuleshov18a.html}
+}
+
+@article{levi2022regression,
+  author = {Levi, Dan and Gispan, Liran and Giladi, Niv and Fetaya, Ethan},
+  title = {Evaluating and Calibrating Uncertainty Prediction in Regression Tasks},
+  journal = {Sensors},
+  volume = {22},
+  number = {15},
+  pages = {5540},
+  year = {2022},
+  doi = {10.3390/s22155540}
+}
+
+@article{diquigiovanni2022multivariate,
+  author = {Diquigiovanni, Jacopo and Fontana, Matteo and Vantini, Simone},
+  title = {Conformal prediction bands for multivariate functional data},
+  journal = {Journal of Multivariate Analysis},
+  volume = {189},
+  pages = {104879},
+  year = {2022},
+  doi = {10.1016/j.jmva.2021.104879}
+}
+
+@article{schlembach2025multivariate,
+  author = {Schlembach, Filip and Smirnov, Evgueni and Koprinska, Irena and Winands, Mark H. M.},
+  title = {Conformal multistep-ahead multivariate time-series forecasting},
+  journal = {Machine Learning},
+  volume = {114},
+  pages = {165},
+  year = {2025},
+  doi = {10.1007/s10994-024-06722-9}
+}
+
+@article{gopakumar2026surrogates,
+  author = {Gopakumar, Vignesh and Gray, Ander and Oskarsson, Joel and Zanisi, Lorenzo and Giles, Daniel and Kusner, Matt J. and Pamela, Stanislas and Deisenroth, Marc Peter},
+  title = {Uncertainty quantification of surrogate models using conformal prediction},
+  journal = {Machine Learning: Science and Technology},
+  volume = {7},
+  pages = {015025},
+  year = {2026},
+  doi = {10.1088/2632-2153/ae2e7b}
+}
+
+@article{diquigiovanni2025bands,
+  author = {Diquigiovanni, Jacopo and Fontana, Matteo and Vantini, Simone},
+  title = {The Importance of Being a Band: Finite-Sample Exact Distribution-Free Prediction Sets for Functional Data},
+  journal = {Statistica Sinica},
+  volume = {35},
+  number = {2},
+  pages = {853--871},
+  year = {2025},
+  doi = {10.5705/ss.202022.0087}
+}
+
+@inproceedings{xu2024ellipsoidal,
+  author = {Xu, Chen and Jiang, Hanyang and Xie, Yao},
+  title = {Conformal prediction for multi-dimensional time series by ellipsoidal sets},
+  booktitle = {Proceedings of the 41st International Conference on Machine Learning},
+  series = {Proceedings of Machine Learning Research},
+  volume = {235},
+  pages = {55076--55099},
+  year = {2024},
+  publisher = {PMLR},
+  url = {https://proceedings.mlr.press/v235/xu24m.html}
+}
+
+@article{moya2025deeponet,
+  author = {Moya, Christian and Mollaali, Amirhossein and Zhang, Zecheng and Lu, Lu and Lin, Guang},
+  title = {{Conformalized-DeepONet}: A distribution-free framework for uncertainty quantification in deep operator networks},
+  journal = {Physica D: Nonlinear Phenomena},
+  volume = {471},
+  pages = {134418},
+  year = {2025},
+  doi = {10.1016/j.physd.2024.134418}
+}
+
+@inproceedings{tibshirani2019shift,
+  author = {Tibshirani, Ryan J. and Barber, Rina Foygel and Cand{\`e}s, Emmanuel J. and Ramdas, Aaditya},
+  title = {Conformal Prediction Under Covariate Shift},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume = {32},
+  year = {2019},
+  url = {https://papers.neurips.cc/paper_files/paper/2019/hash/8fb21ee7a2207526da55a679f0332de2-Abstract.html}
+}
+
+@inproceedings{gibbs2021adaptive,
+  author = {Gibbs, Isaac and Cand{\`e}s, Emmanuel},
+  title = {Adaptive Conformal Inference Under Distribution Shift},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume = {34},
+  year = {2021},
+  url = {https://proceedings.neurips.cc/paper/2021/hash/0d441de75945e5acbc865406fc9a2559-Abstract.html}
+}
+
+@article{gibbs2024online,
+  author = {Gibbs, Isaac and Cand{\`e}s, Emmanuel J.},
+  title = {Conformal Inference for Online Prediction with Arbitrary Distribution Shifts},
+  journal = {Journal of Machine Learning Research},
+  volume = {25},
+  number = {162},
+  pages = {1--36},
+  year = {2024},
+  url = {https://www.jmlr.org/papers/v25/22-1218.html}
+}
+
+@inproceedings{xu2023spci,
+  author = {Xu, Chen and Xie, Yao},
+  title = {Sequential Predictive Conformal Inference for Time Series},
+  booktitle = {Proceedings of the 40th International Conference on Machine Learning},
+  series = {Proceedings of Machine Learning Research},
+  volume = {202},
+  pages = {38707--38727},
+  year = {2023},
+  publisher = {PMLR},
+  url = {https://proceedings.mlr.press/v202/xu23r.html}
+}
+
