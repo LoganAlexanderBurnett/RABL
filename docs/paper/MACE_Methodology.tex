@@ -5,182 +5,218 @@
 \section{Methodology}
 \label{sec:methods}
 
-\subsection{Control-driven dynamics and forecasting task}
+\subsection{Physical system and forecasting problem}
 \label{sec:methods:problem}
 
-We consider a dynamical system whose physical state $\mathbf{x}(t)$ evolves under a prescribed control trajectory $\mathbf{u}(t)$, with fixed physical and numerical parameters $\boldsymbol{\eta}$. The reference simulator defines
+We consider the response of a dynamical system to a prescribed control trajectory. Its evolution is represented by
 \begin{equation}
-  \dot{\mathbf{x}}(t)=\mathbf{f}\!\left(\mathbf{x}(t),\mathbf{u}(t);\boldsymbol{\eta}\right),
-  \qquad
-  \mathbf{y}(t)=\mathbf{g}\!\left(\mathbf{x}(t),\mathbf{u}(t);\boldsymbol{\eta}\right),
-  \label{eq:mace:system}
+ \dot{\mathbf{x}}(t)=\mathbf{f}\bigl(\mathbf{x}(t),\mathbf{u}(t)\bigr)
+ \qquad
+ \mathbf{y}(t)=\mathbf{g}\bigl(\mathbf{x}(t),\mathbf{u}(t)\bigr).
+ \label{eq:mace:system}
 \end{equation}
-where $\mathbf{y}(t)\in\mathbb{R}^{J}$ denotes the selected \emph{output variables}, rather than necessarily a vector of independently integrated state quantities. A \emph{control trajectory} specifies the actuator history. Its simulation produces a \emph{multivariate response trajectory}; the paired control and response, together with initialization and sampling metadata, form a \emph{trajectory sample}. A \emph{forecast trajectory} is the ordered sequence of surrogate predictions obtained from an initial output history and the known future control, without subsequently revealing the simulator response.
+Here $\mathbf{x}(t)$ is the physical state and $\mathbf{u}(t)$ is the prescribed control. The vector $\mathbf{y}(t)\in\mathbb{R}^{J}$ contains the output variables of interest. These may include algebraic quantities as well as directly integrated states. A control trajectory defines the input over time. Its corresponding multivariate response trajectory is obtained from the reference simulator. Together they form one trajectory sample for model development and evaluation.
 
-For trajectory sample $i$, let $h=0,\ldots,H-1$ index a common fixed-origin forecast grid, $j=1,\ldots,J$ index output variables, and $m=1,\ldots,M$ index ensemble members. In the present application the control is the common angle $\theta(t)$ imposed on twelve drums, $J=15$, $M=10$, and $t_h=0.4h$~s, so $H=501$ covers 0--200~s. A horizon is a position in this grid, not an independently initialized forecast with new observations at each $h$. The reference response is used as the accuracy and interval-coverage target, not as a correction signal during rollout.
+The forecasting task is to predict $\mathbf{y}$ over a specified horizon using an initial history and the subsequent control trajectory. For trajectory $i$ we denote the reference output at forecast step $h$ by $\mathbf{y}_{i,h}$. The forecast contains $H$ steps with $h=0,\ldots,H-1$. Each output variable is indexed by $j=1,\ldots,J$. The present study uses $J=15$ outputs and $H=501$ forecast points over 200~s with a sampling interval of 0.4~s. The twelve reactor control drums follow the same angular trajectory $\theta(t)$. All predictions are produced recursively from the initial history. Simulator responses are used for training and subsequent evaluation but are not supplied during the forecast.
 
-Table~\ref{tab:mace:notation} establishes the distinction between data and uncertainty terms. We use \emph{calibration distribution} for the population supplying conformal scores and \emph{evaluation distribution} for the population on which accuracy, coverage, and width are assessed. Whether their trajectory samples are exchangeable determines the scope of the ordinary split-conformal argument.
-
-\begin{table}[t]
-\centering\small
-\caption{Forecasting and calibration terminology. All simultaneous coverage events refer to the recorded forecast grid.}
-\label{tab:mace:notation}
-\begin{tabular}{@{}p{0.31\linewidth}p{0.63\linewidth}@{}}
-\toprule
-Term & Definition\\
-\midrule
-Control trajectory & Prescribed time history $\mathbf{u}(t)$ (here drum angle $\theta(t)$).\\
-Multivariate response trajectory & Simulator outputs $\{\mathbf{y}(t_h)\}_{h=0}^{H-1}$.\\
-Trajectory sample & Control and associated simulator response, with initial-condition metadata.\\
-Forecast trajectory & Recursively predicted outputs $\{\widehat{\mathbf y}(t_h)\}_h$.\\
-Calibration distribution & Distribution providing held-out trajectory-level scores.\\
-Evaluation distribution & Distribution of trajectory samples on which intervals are tested.\\
-MACE-Horizon & Separate conformal threshold for each $(h,j)$.\\
-MACE-Trajectory & Separate threshold for each $j$ after maximizing its score over $h$.\\
-Horizon complete multivariate coverage & All $J$ outputs covered at a specified $h$.\\
-Trajectory complete multivariate coverage & All $J$ outputs covered at every evaluated $h$.\\
-\bottomrule
-\end{tabular}
-\end{table}
+We distinguish between the distribution used to calibrate prediction intervals and the distribution used to evaluate them. Calibration is performed using independent complete trajectories. This choice preserves correlations among time steps and output variables within each trajectory. The associated coverage objectives are defined in Section~\ref{sec:methods:mace}.
 
 \subsection{Stochastic control-trajectory sampling}
 \label{sec:methods:sampling}
 
-Sampling independent actuator positions at successive time steps would produce inputs whose instantaneous amplitudes may be admissible but whose temporal variation is not representative of sustained physical excitation. Instead, we prescribe a covariance for \emph{control velocity} and integrate its realizations to obtain continuous, piecewise-linear angle trajectories. This construction makes the correlation time, accumulated angular dispersion, and initial control condition independently interpretable. It is prespecified sampling, not uncertainty-directed acquisition of additional simulations.
+Control trajectories were generated by sampling correlated angular velocities and integrating them over time. This approach provides temporally structured excitation without selecting individual actuator angles independently at each time step. The velocity covariance determines the characteristic time scale of control motion while integration determines the corresponding angular trajectory.
 
-On a uniform control grid $t_r=r\Delta_c$, $\Delta_c=0.1$~s and $r=0,\ldots,L$, with $L=2000$, let $\mathbf{v}=(v_0,\ldots,v_{L-1})^{\mathsf T}$ contain interval velocities in degrees per second. Before conditioning the initial velocity, the implemented Mat\'ern-$5/2$ covariance is
+We use the Mat\'ern-$5/2$ covariance for the sampled angular velocity $v(t)=\dot{\theta}(t)$. Its correlation function is
 \begin{equation}
- K_{rs}=s_v\left(1+a_{rs}+\frac{a_{rs}^{2}}{3}\right)e^{-a_{rs}}
- +(n_v+\varepsilon_v)\delta_{rs},
- \qquad a_{rs}=\frac{\sqrt{5}\lvert t_r-t_s\rvert}{\ell},
+ \rho(\Delta t)=
+ \left(1+\frac{\sqrt{5}\Delta t}{\ell}
+       +\frac{5\Delta t^2}{3\ell^2}\right)
+ \exp\left(-\frac{\sqrt{5}\Delta t}{\ell}\right).
+ \label{eq:mace:matern}
+\end{equation}
+The parameter $\ell$ is the correlation length. The covariance matrix for the interval velocities is
+\begin{equation}
+ C_{rs}=\sigma_v^2\rho\bigl(|t_r-t_s|\bigr)
+       +(\sigma_n^2+\varepsilon_{\mathrm{cov}})\delta_{rs}.
  \label{eq:mace:velocitycov}
 \end{equation}
-where $s_v$ is the velocity sill in $(^\circ/\mathrm{s})^2$, $\ell$ is the correlation length, $n_v$ is the nugget, and $\varepsilon_v=(s_v+n_v)\varepsilon_{\mathrm{frac}}$ is numerical covariance jitter. Omitting nugget and jitter, the stationary velocity semivariogram is $\gamma_v(\Delta)=s_v[1-\rho_v(\Delta)]$, with $\rho_v$ the parenthesized Mat\'ern correlation. This is a semivariogram for the velocity process; the integrated angle process is generally nonstationary.
+Here $\sigma_v^2$ is the velocity sill and $\sigma_n^2$ is the nugget variance. The small diagonal term $\varepsilon_{\mathrm{cov}}$ provides numerical stability. The corresponding stationary velocity semivariogram is $\gamma(\Delta t)=\sigma_v^2[1-\rho(\Delta t)]$ when the nugget and numerical jitter are omitted. The integration of velocity produces a nonstationary angle process.
 
-Defining $B_{kr}=\Delta_c$ when $r<k$ and zero otherwise, the left-endpoint integration is
+The control interval is $\Delta t_c=0.1$~s and the time domain is 0--200~s. A sampled velocity vector contains $L=2000$ interval values. Angular position is obtained from
 \begin{equation}
-  \boldsymbol{\theta}=\theta_0\mathbf{1}+B\mathbf{v},
-  \qquad
-  \operatorname{Cov}(\boldsymbol{\theta})=BKB^{\mathsf T}.
-  \label{eq:mace:integratedcontrol}
+ \theta_k=\theta_0+\Delta t_c\sum_{r=0}^{k-1}v_r
+ \qquad  k=1,\ldots,L
+ \label{eq:mace:integratedcontrol}
 \end{equation}
-The generator initializes $\theta_0=45^\circ$ and conditions the first interval velocity to zero. Specifically, an unconditioned draw is transformed by subtracting $K_{:0}v_0/(K_{00}+\varepsilon_c)$ and then setting its first component exactly to zero; $\varepsilon_c$ regularizes the conditioning denominator. The angle table is subsequently formed by integration. The control signal consumed by Modelica is an interpolation of that tabulated angle, rather than a continuously differentiable analytic Gaussian-process realization.
-
-The velocity sill is selected using an \emph{unconditioned} endpoint-dispersion design. For correlation $\rho_v$, define
+with $\theta_0=45^\circ$. The first sampled interval velocity is conditioned to zero. For an unconditioned Gaussian velocity draw the implementation applies
 \begin{equation}
- A(\ell)=L+2\sum_{r=1}^{L-1}(L-r)\rho_v(r\Delta_c),\qquad
- s_v=\frac{\sigma_{\theta,\mathrm{design}}^2/\Delta_c^2-n_vL}{A(\ell)}.
+ v_r\longleftarrow v_r-
+ \frac{C_{r0}}{C_{00}+\varepsilon_c}v_0
+ \label{eq:mace:conditioning}
+\end{equation}
+and subsequently sets $v_0=0$ exactly. The regularization term $\varepsilon_c$ avoids numerical instability. The resulting angle is stored on the control grid and is interpolated by the Modelica simulation.
+
+The velocity sill is chosen to provide a specified standard deviation of angular displacement at the final time for the unconditioned process. For zero nugget and negligible numerical jitter this is expressed as
+\begin{equation}
+ \sigma_v^2=
+ \frac{(\sigma_\theta^{\star}/\Delta t_c)^2}
+ {L+2\displaystyle\sum_{r=1}^{L-1}(L-r)\rho(r\Delta t_c)}.
  \label{eq:mace:sill}
 \end{equation}
-For the documented batch-3 configuration, $\ell=10$~s, $\sigma_{\theta,\mathrm{design}}=2.5^\circ$, $n_v=0$, $\varepsilon_{\mathrm{frac}}=10^{-10}$, $\varepsilon_c=10^{-10}$, and the random seed is 123. The endpoint design standard deviation is not the standard deviation after conditioning and rejection. For exact reproduction, the covariance of the implemented regularized linear transformation, with the first velocity fixed at zero, must be propagated through $B$ rather than equating it to the unconditioned design covariance.
+The design value is $\sigma_\theta^{\star}=2.5^\circ$. The retained configuration uses $\ell=10$~s and zero nugget with a random seed of 123. The covariance jitter fraction and initial-conditioning regularization are both $10^{-10}$. The endpoint dispersion in Eq.~\eqref{eq:mace:sill} is defined before conditioning and rejection. It is therefore not the final standard deviation of the accepted angular trajectories.
 
-Generated profiles are rejected if any angular position falls outside $0^\circ$--$180^\circ$. The original stochastic trajectories selected for this study were specified to share the velocity semivariogram and to satisfy $|\dot{\theta}|<1^\circ/\mathrm{s}$; this retained-sample rate condition should not be confused with a rate rejection performed by the current covariance generator, which checks angle bounds but does not itself implement a hard velocity threshold. The generation manifests and saved velocity tables are the required evidence for verifying the full original population and its realized rate extrema. Figure~\ref{fig:mace:sampling} illustrates the Mat\'ern correlation, sample velocities and angles, and the distinct unconditioned and initialized dispersion curves.
+Generated profiles are rejected if their angular positions leave the interval $0^\circ$--$180^\circ$. The original dataset was also specified to contain trajectories with $|v|<1^\circ/\mathrm{s}$. This angular-velocity criterion applies to the retained profiles and should not be interpreted as an explicit speed limit in the current covariance generator. The original velocity records are needed to verify the maximum realized rate over the complete dataset. Figure~\ref{fig:mace:sampling} illustrates the correlation function and the relationship between sampled velocity and angular position.
 
 \begin{figure*}[t]
 \centering
 \includegraphics[width=\textwidth]{outputs/paper/mace_figures/sampling/fig01_control_trajectory_sampling.pdf}
-\caption{Construction of stochastic control trajectories from Mat\'ern-$5/2$ interval velocities. (a) Analytic velocity correlations for alternative correlation lengths, highlighting the retained $\ell=10$~s design. (b,c) Paired velocity and integrated-angle realizations on the 0.1-s control grid, initialized at $45^\circ$; the figure metadata distinguish actual batch-3 profiles from illustrative draws. (d) Unconditioned design and regularized zero-initial-velocity angle dispersion before bounded-path rejection. The $2.5^\circ$ terminal value is a design target, not a hard angle bound or the conditioned endpoint.}
+\caption{Stochastic control-trajectory generation using correlated angular velocities. (a) Mat\'ern-$5/2$ correlations for different values of $\ell$. (b) Sampled angular velocities. (c) Integrated angular trajectories initialized at $45^\circ$. (d) Angular dispersion before trajectory rejection. The design endpoint standard deviation is shown separately from the result of conditioning the initial velocity. Sampling metadata distinguish stored simulations from illustrative realizations.}
 \label{fig:mace:sampling}
 \end{figure*}
 
-Each accepted control trajectory is applied to the same reference simulation under the prescribed initial operating condition. Simulator responses are stored on the coarser, common 0.4-s output grid. The selected original partitions contain 5,000 training, 1,000 validation, 1,000 calibration, and 2,000 evaluation trajectory samples. The split is by whole trajectory, so time windows from a single sample do not cross partitions. Independence additionally requires verifying that shared-parent branches or duplicate controls did not enter different partitions; the current study does not use branching as a sampling or acquisition method.
+Each accepted control trajectory is supplied to the reference simulator. The corresponding multivariate responses are recorded at 0.4-s intervals. The original dataset contains 5{,}000 training trajectories and 1{,}000 validation trajectories. Separate sets of 1{,}000 calibration trajectories and 2{,}000 evaluation trajectories are used for uncertainty analysis. The partitions contain complete trajectories rather than individual time steps. Independence of the original partitions remains subject to confirmation from the archived sampling and genealogy records.
 
-\subsection{LSTM ensemble training and autoregressive forecasting}
+\subsection{Autoregressive LSTM ensemble}
 \label{sec:methods:forecasting}
 
-A recurrent surrogate maps a finite history of output variables and a shifted window of known controls to the next multivariate response. Let $\boldsymbol{\xi}$ denote neural-network input features, explicitly distinct from the physical state $\mathbf{x}(t)$. The training-only min--max transformations use native input coordinates $X$ and output coordinates $Y$,
+A ten-member ensemble of long short-term memory networks is used to predict the response of the simulator. Each model receives a short history of the output variables together with a shifted sequence of prescribed controls. The network predicts the output vector at the next time step. Its architecture consists of one LSTM layer with 64 hidden units followed by a fully connected layer with 64 units and a rectified linear activation. A final linear layer predicts the 15 output variables.
+
+Training data are normalized using the minimum and range of each variable computed from the training partition. Input and output scaling are fitted separately. We represent these transformations by
 \begin{equation}
- \widetilde{\xi}^{X}_{a}=\frac{\xi_a-a_a^X}{b_a^X},
+ \mathcal{S}_{\mathrm{in}}(z)=
+ \frac{z-z_{\min}^{\mathrm{in}}}{z_{\max}^{\mathrm{in}}-z_{\min}^{\mathrm{in}}}
  \qquad
- \widetilde y^{Y}_{j}=\frac{y_j-a_j^Y}{b_j^Y},
+ \mathcal{S}_{\mathrm{out}}(y)=
+ \frac{y-y_{\min}^{\mathrm{out}}}{y_{\max}^{\mathrm{out}}-y_{\min}^{\mathrm{out}}}.
  \label{eq:mace:scaling}
 \end{equation}
-where $a$ is the appropriate training minimum, $b$ is the training range (replaced with unity for a constant feature), and the superscript identifies the fitted coordinate system. The same stored scaler is used for every forecast, calibration, and evaluation distribution; extrapolating scaled values are not clipped or refitted.
+The operations are applied independently to each feature. Constant features use a unit range. The same fitted transformations are used during validation and all subsequent forecasts. We denote normalized output values by $\widetilde{\mathbf y}=\mathcal{S}_{\mathrm{out}}(\mathbf y)$.
 
-For the configured lookback $K=12$, the sequence builder includes both history endpoints. To predict output $\mathbf y_{k+1}$, row $r=0,\ldots,K$ contains the pair
+The lookback parameter is $K=12$. Each training input contains $K+1=13$ rows and 16 features per row. To predict $\mathbf y_{k+1}$ the input rows contain
 \begin{equation}
- \left[\widetilde{\mathbf y}^{\,X}_{k-K+r},
-       \widetilde{\mathbf u}^{\,X}_{k-K+1+r}\right].
+ \mathbf{z}_{k,r}=
+ \left[
+ \mathcal S_{\mathrm{in}}\bigl(\mathbf y_{k-K+r}\bigr)
+ \quad
+ \mathcal S_{\mathrm{in}}\bigl(\mathbf u_{k-K+1+r}\bigr)
+ \right]
+ \qquad r=0,\ldots,K.
  \label{eq:mace:window}
 \end{equation}
-Consequently the input has $13$ rows and $16$ features, consisting of the history of 15 output variables over $k-12,\ldots,k$ and the one prescribed drum angle over $k-11,\ldots,k+1$. Prepared steady-state rows initialize the first forecast at time zero. This indexing ensures the control corresponding to the predicted output time is available without supplying its unobserved response.
+The output-history window extends from $k-12$ through $k$. The prescribed control window extends from $k-11$ through $k+1$. Hence the control at the prediction time is available while the associated reference output is not. The initial sequence is prepared from the common steady operating condition.
 
-The ensemble contains ten LSTM predictors with identical architecture but independently sampled training subsets. Each member is trained on a 70\% subset of the 5,000 training trajectories, drawn without replacement within that member; subsets may overlap between members. This is subsampling-based ensemble training, not conventional with-replacement bootstrapping. The network comprises one LSTM layer with 64 hidden units, the final recurrent output, a $64\!\to\!64$ linear layer, a rectified linear activation, and a $64\!\to\!15$ output layer. Models optimize one-step mean-squared error using Adam, train with batch size 64 over at most 100 epochs, and restore the lowest-validation-loss checkpoint. The learning rate begins at $3\times10^{-4}$ and is halved after each 30 epochs; the configured early-stopping patience of 1,000 does not ordinarily stop a 100-epoch run. Configuration values and profile counts are summarized in Table~\ref{tab:mace:training}.
+Ensemble diversity is introduced through independent training subsets. Each member receives 70\% of the available training trajectories sampled without replacement. The subsets may overlap across members. This procedure differs from bootstrap resampling with replacement. Models are optimized using mean squared error and Adam with an initial learning rate of $3\times10^{-4}$. The batch size is 64 and the maximum training duration is 100 epochs. The learning rate is halved every 30 epochs. For each member the checkpoint with the lowest validation loss is retained. Table~\ref{tab:mace:training} summarizes the model configuration.
 
 \begin{table}[t]
 \centering\small
-\caption{Stored stochastic-dataset and ensemble training configuration.}
+\caption{Training and forecasting configuration of the LSTM ensemble.}
 \label{tab:mace:training}
-\begin{tabular}{@{}p{0.50\linewidth}p{0.44\linewidth}@{}}
+\begin{tabular}{@{}p{0.53\linewidth}p{0.41\linewidth}@{}}
 \toprule
 Quantity & Setting\\
 \midrule
-Training / validation / calibration / evaluation & 5,000 / 1,000 / 1,000 / 2,000 trajectories\\
-Forecast horizon / output grid & 501 points; 0--200 s; 0.4 s\\
-Inputs / outputs & $13\times16$ / 15\\
-Ensemble size / member sample & 10 / 70\% training trajectories\\
-Architecture & LSTM(64), Linear(64,64), ReLU, Linear(64,15)\\
-Optimizer / objective & Adam / one-step MSE\\
-Epochs / batch / learning rate & 100 / 64 / $3\times10^{-4}$\\
-Learning-rate schedule & StepLR(30, 0.5)\\
-Scaler / validation selection & Training-only min--max / best validation checkpoint\\
+Training trajectories & 5{,}000\\
+Validation trajectories & 1{,}000\\
+Calibration trajectories & 1{,}000\\
+Evaluation trajectories & 2{,}000\\
+Forecast duration & 200~s\\
+Time step & 0.4~s\\
+Input shape & $13\times16$\\
+Output variables & 15\\
+Ensemble members & 10\\
+Training fraction per member & 70\%\\
+Architecture & LSTM(64) $\to$ FC(64) $\to$ FC(15)\\
+Optimizer and loss & Adam and MSE\\
+Epochs and batch size & 100 and 64\\
+Initial learning rate & $3\times10^{-4}$\\
+Scheduler & StepLR(30 and 0.5)\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-For evaluation, every member is initialized from the same prepared history and recursively uses \emph{its own} preceding predictions. Importantly, a predicted vector in output-scaled coordinates cannot generally be inserted directly into the history expressed in input-scaled coordinates. For output variable $j$, feedback therefore uses
+During autoregressive forecasting each ensemble member advances independently. After the initial history has been supplied the model's previous prediction is used to construct its next input. Because the input and output scalers differ the predicted outputs must be converted to input-scaled coordinates before they are fed back. For member $m$ this mapping is
 \begin{equation}
- \widehat{\widetilde y}^{\,X}_{m,h,j}
- =\widehat{\widetilde y}^{\,Y}_{m,h,j}\frac{b_j^Y}{b_j^X}
- +\frac{a_j^Y-a_j^X}{b_j^X}.
+ \widehat{\mathbf y}_{m,h}^{\,\mathrm{in}}
+ =\mathcal{S}_{\mathrm{in}}\!
+ \left(\mathcal{S}_{\mathrm{out}}^{-1}
+ \left(\widehat{\widetilde{\mathbf y}}_{m,h}\right)\right).
  \label{eq:mace:feedback}
 \end{equation}
-The mapped vector is cast at the neural-network input boundary, the oldest history row is dropped, and the prescribed control window advances. Reference outputs are withheld after initialization. Neither the ensemble mean nor another member's predictions are used for member feedback. This correct native-coordinate recurrence is used in the operational evaluation; archival stochastic results generated using direct $Y$-to-$X$ feedback require an equivalent corrected rerun before their numerical values can be compared on the same basis.
+The oldest history row is then replaced with the mapped prediction and the prescribed control window is advanced. Each member uses its own predictions rather than the ensemble mean. The reference simulator output is not used after initialization. This recurrence is applied consistently in the operation-informed forecast evaluation. Original stochastic archives must be reconciled using the same mapping before comparative numerical results are finalized.
 
-In output-scaled coordinates the frozen ensemble produces
+The mean and standard deviation of the ensemble are calculated at each horizon for each output. With $M=10$ members the estimates in normalized output coordinates are
 \begin{equation}
- \mu_{i,h,j}=\frac{1}{M}\sum_{m=1}^{M}\widehat{\widetilde y}^{\,Y}_{m,i,h,j},
+ \mu_{i,h,j}=\frac{1}{M}\sum_{m=1}^{M}\widehat y_{i,h,j}^{(m)}
  \qquad
- \sigma_{i,h,j}=\left[\frac{1}{M}\sum_{m=1}^{M}
- \bigl(\widehat{\widetilde y}^{\,Y}_{m,i,h,j}-\mu_{i,h,j}\bigr)^2\right]^{1/2}.
+ \sigma_{i,h,j}=
+ \sqrt{\frac{1}{M}\sum_{m=1}^{M}
+ \left(\widehat y_{i,h,j}^{(m)}-\mu_{i,h,j}\right)^2}.
  \label{eq:mace:ensemble}
 \end{equation}
-The population convention ($\mathrm{ddof}=0$) is used. Here $\sigma$ measures member disagreement, not the standard error of the ensemble mean, and does not by itself define a calibrated Gaussian predictive distribution. The physical-unit ensemble mean is recovered using the saved output scaler. Figure~\ref{fig:mace:lstm} distinguishes one-step network architecture from member-specific recursive inference.
+Here $\widehat y_{i,h,j}^{(m)}$ denotes member $m$'s normalized output prediction. We use the population standard deviation with denominator $M$. The spread $\sigma$ measures disagreement between ensemble predictions and is not assumed to represent a calibrated predictive probability distribution. Figure~\ref{fig:mace:lstm} illustrates the model architecture and individual autoregressive prediction paths.
 
 \begin{figure*}[t]
 \centering
 \input{docs/paper/figures/fig02_lstm_autoregression.tikz.tex}
-\caption{Autoregressive LSTM ensemble. (a) Implemented $13\times16$ input window, one 64-unit recurrent layer, and 15-output prediction head. (b) Each member receives known shifted controls, predicts in output coordinates, converts that prediction into input coordinates, and updates its own history. Ten independently trained members are aggregated only after individual forecasts; no future reference responses or ensemble-mean feedback enter a member's recurrence.}
+\caption{LSTM ensemble forecasting architecture. (a) Each model receives a $13\times16$ input sequence and predicts 15 output variables. (b) Each ensemble member advances through the prescribed control trajectory using its own preceding predictions. The saved scaling transformations convert normalized outputs into the input coordinates required for feedback. Ensemble statistics are computed after the member forecasts.}
 \label{fig:mace:lstm}
 \end{figure*}
 
-\subsection{MACE: ensemble-normalized conformal prediction}
+\subsection{Multivariate Adaptive Conformal Ensemble}
 \label{sec:methods:mace}
 
-MACE uses the ensemble mean for interval centering and its time- and output-dependent spread for adaptive interval scaling. With a single positive additive floor $\tau=10^{-3}$ in output-scaled units, define
+MACE combines ensemble disagreement with conformal prediction to construct adaptive uncertainty intervals. The central forecast is the ensemble mean $\mu_{i,h,j}$ and the interval scale is obtained from the member spread $\sigma_{i,h,j}$. A positive constant $\epsilon$ is added to the spread to avoid division by zero. The normalized nonconformity score for calibration trajectory $i$ is
 \begin{equation}
- d_{i,h,j}=\sigma_{i,h,j}+\tau,\qquad
- s_{i,h,j}=\frac{\left|\widetilde y^{\,Y}_{i,h,j}-\mu_{i,h,j}\right|}{d_{i,h,j}}.
+ s_{i,h,j}=
+ \frac{\left|\widetilde y_{i,h,j}-\mu_{i,h,j}\right|}
+ {\sigma_{i,h,j}+\epsilon}.
  \label{eq:mace:score}
 \end{equation}
-The floor keeps the nonconformity score defined when ensemble members agree closely; it is common across outputs and horizons. Forecast-dependent adaptation arises only through $d$. The scale is not a trained conditional variance and the calibration step does not update network parameters. For outputs with persistently small spread, such as steam quality in some operating conditions, the floor may dominate, reducing variation in interval width. A larger floor need not monotonically widen the final interval because its conformal multiplier changes.
+The additive floor is set to $\epsilon=10^{-3}$ in normalized output coordinates. It is common to all output variables and forecast horizons. When the spread is small the floor limits the sensitivity of the interval scale to minor differences among members. The conformal multiplier also changes with the scale and a larger floor does not necessarily produce a wider calibrated interval.
 
-All calibrations use independent \emph{whole trajectory samples} as statistical units. For a nonconformity-score sample $R_1,\ldots,R_{N_{\mathrm{cal}}}$, the split-conformal threshold is the $k$-th smallest score without interpolation, where $k=\lceil(N_{\mathrm{cal}}+1)(1-\alpha)\rceil$. With $N_{\mathrm{cal}}=1{,}000$ and $\alpha=0.05$, $k=951$. The finite-threshold implementation requires $k\leq N_{\mathrm{cal}}$; the usual theoretical infinite-threshold convention when $k>N_{\mathrm{cal}}$ does not arise here.
+For a calibration set containing $N_{\mathrm{cal}}$ independent trajectories the conformal quantile is obtained from the ordered nonconformity scores. The order statistic is
+\begin{equation}
+ k=\left\lceil(N_{\mathrm{cal}}+1)(1-\alpha)\right\rceil
+ \qquad
+ q=S_{(k)}.
+ \label{eq:mace:quantile}
+\end{equation}
+Here $\alpha$ is the target miscoverage probability and $S_{(k)}$ is the $k$th smallest calibration score for the selected event. We use $N_{\mathrm{cal}}=1000$ and $\alpha=0.05$ which gives $k=951$. Quantiles are calculated without interpolation. The resulting bounds for a new forecast are
+\begin{equation}
+ I_{h,j}=
+ \left[
+ \mu_{h,j}-q(\sigma_{h,j}+\epsilon)
+ \;\;,\;\;
+ \mu_{h,j}+q(\sigma_{h,j}+\epsilon)
+ \right].
+ \label{eq:mace:bounds}
+\end{equation}
+The score reduction determines which conformal quantile appears in Eq.~\eqref{eq:mace:bounds}.
 
-We use three score reductions and corresponding calibrated events. First, \emph{MACE-Horizon} retains $s_{i,h,j}$ and calculates a separate $q_{h,j}$ across calibration samples for every horizon--output pair. The interval $I_{h,j}=[\mu_{h,j}\!-\!q_{h,j}d_{h,j},\mu_{h,j}\!+\!q_{h,j}d_{h,j}]$ targets marginal coverage of a specified $(h,j)$; the quantiles form an $H\times J$ array. Second, \emph{MACE-Trajectory} reduces each calibration trajectory to $R_{i,j}=\max_h s_{i,h,j}$ and selects one threshold $q_j$ per output variable. It targets the event that the entire \emph{single-output} forecast trajectory stays inside its band on the evaluated grid. Third, for \emph{joint trajectory calibration}, each sample contributes one scalar $R_i=\max_{h,j}s_{i,h,j}$ before selecting $q_{\mathrm{all}}$. The resulting common threshold targets every output variable at every evaluated horizon simultaneously, namely Trajectory complete multivariate coverage. Taking the maximum of independently calibrated $q_j$ is not equivalent to this scalar-score calibration.
+Three constructions are considered. \emph{MACE-Horizon} retains the score for each horizon and output variable. A separate conformal quantile $q_{h,j}$ is computed over calibration trajectories for every pair $(h,j)$. This provides a marginal coverage objective at each specified forecast coordinate. \emph{MACE-Trajectory} instead uses the largest normalized error over time for each output:
+\begin{equation}
+ S_{i,j}^{\mathrm{traj}}=\max_h s_{i,h,j}.
+ \label{eq:mace:trajectoryscore}
+\end{equation}
+The corresponding quantile $q_j$ is calibrated across complete trajectories. This targets coverage over the entire evaluated forecast of one output variable. For joint trajectory calibration we take the maximum over time and output variables:
+\begin{equation}
+ S_i^{\mathrm{joint}}=\max_{h,j}s_{i,h,j}.
+ \label{eq:mace:jointscore}
+\end{equation}
+A single quantile $q_{\mathrm{joint}}$ is then applied to all interval coordinates. This procedure targets coverage of every output variable over the complete forecast grid.
 
-These objectives must not be conflated with empirical complete multivariate diagnostics. \emph{Horizon complete multivariate coverage} requires every output to be contained in its interval at a fixed horizon, whereas \emph{Trajectory complete multivariate coverage} requires containment for all $(h,j)$ in the evaluated grid. MACE-Horizon does not directly calibrate the former event; that would require a horizon-level joint score such as $\max_j s_{i,h,j}$, which is not among the evaluated calibrations. Similarly, MACE-Trajectory's per-output trajectory guarantee does not imply complete multivariate trajectory coverage. Figure~\ref{fig:mace:events} depicts the distinct score reductions and events, with the illustrative event grids deliberately smaller than the actual $501\times15$ forecast.
+The coverage objectives differ in an important way. Marginal coverage for each output at one horizon is not equivalent to simultaneous coverage of all outputs at that horizon. We refer to the latter as \emph{Horizon complete multivariate coverage}. Similarly coverage of each output trajectory independently does not imply that all output trajectories are covered together. The joint construction targets \emph{Trajectory complete multivariate coverage}. These distinctions are illustrated in Figure~\ref{fig:mace:events}. The reported objectives refer to the discrete 501-point forecast grid.
 
 \begin{figure*}[t]
 \centering
 \input{docs/paper/figures/fig03_mace_calibration_events.tikz.tex}
-\caption{MACE score construction and conformal coverage objectives. (a) The frozen ensemble supplies mean and spread; held-out calibration responses yield normalized scores. (b) Separate order statistics across trajectory samples are formed from individual $(h,j)$ scores, each output's maximum over time, or each sample's maximum over time and outputs. Highlighted $5\times3$ grids schematically indicate the event targeted by each construction; they are not empirical success maps. Horizon complete multivariate coverage remains a diagnostic for MACE-Horizon, not an additional calibrated procedure.}
+\caption{MACE calibration and coverage objectives. (a) Normalized errors are formed from ensemble forecasts and held-out simulator responses. (b) MACE-Horizon calibrates each horizon and output separately. MACE-Trajectory uses each output's maximum error over time. Joint trajectory calibration uses the maximum over all outputs and horizons. Highlighted grids show schematic coverage events rather than evaluation results.}
 \label{fig:mace:events}
 \end{figure*}
 
-Conditional on the frozen ensemble, scaler, floor and score reduction, exchangeability of calibration and evaluation \emph{trajectory samples} makes the corresponding scalar scores exchangeable. The conformal order statistic then provides finite-sample marginal coverage for the chosen event. Dependence across horizons or outputs \emph{within} a sample does not invalidate this trajectory-level construction. Its finite-sample statement is population-marginal, applies to the recorded grid, and does not guarantee a fixed coverage rate within every control family, phase, or individual trajectory. Training trajectories can come from a different distribution without invalidating the split-calibration argument, provided the calibrated predictor remains fixed and the calibration/evaluation samples satisfy the required exchangeability. Changing the evaluation distribution without recalibration generally removes that ordinary guarantee.
+Split conformal inference provides marginal coverage when the calibration and evaluation trajectory samples are exchangeable. Correlations between the time steps and output variables within a trajectory are retained in the score construction. The resulting guarantee applies to the selected coverage event over the evaluation population. It does not establish the same coverage separately for every operating condition or for every phase of an individual transient. A change in the evaluation distribution can invalidate the original guarantee unless the calibration procedure is adapted.
 
-To separate the value of spread-based scaling from calibration itself, we construct matched \emph{absolute-error conformal} baselines by replacing $s_{i,h,j}$ with $\lvert\widetilde y^{\,Y}_{i,h,j}-\mu_{i,h,j}\rvert$. The same reductions, calibration sets, conformal rank, and coverage events are retained, while $d$ is replaced by one for interval construction. Any displayed $\mu\pm2\sigma$ envelope is only an uncalibrated ensemble diagnostic. This matched comparison avoids mistaking the simultaneous-coverage effect of taking a maximum for an efficiency improvement due to adaptive scaling.
+We compare MACE against absolute-error conformal prediction to examine the benefit of adaptive scaling. The baseline uses $s_{i,h,j}=|\widetilde y_{i,h,j}-\mu_{i,h,j}|$ and constructs intervals using the resulting quantiles without a spread multiplier. Both methods use the same calibration trajectories and order statistics. They also use the same horizon-based and trajectory-based coverage objectives. An uncalibrated envelope based only on ensemble spread is treated as a diagnostic rather than as a conformal prediction interval.
 
 \subsection{Reduced microreactor simulator and transient responses}
 \label{sec:methods:plant}
