@@ -1,12 +1,16 @@
 # MACE Methodology manuscript and figures
 
-The section is in [MACE_Methodology.tex](MACE_Methodology.tex). This is a
+The section is in [MACE_Methodology.tex](MACE_Methodology.tex). It describes the Multivariate Adaptive Conformal Ensemble (MACE) approach. This is a
 LaTeX section for insertion after the existing [Introduction](MACE_Introduction.tex),
 not a replacement for the full article. The methods add one citation in
 [MACE_Methodology_References.bib](MACE_Methodology_References.bib). Compile
 with both this file and `MACE_Introduction_References.bib`.
 
 ## Figure status
+
+The manuscript uses descriptive maneuver names in prose and figures. Internal
+B/C/D/F identifiers are retained only in the archived simulation manifests and
+filenames so the original datasets remain reproducible.
 
 | Figure | Manuscript asset | Source / required action |
 |---|---|---|
@@ -15,8 +19,8 @@ with both this file and `MACE_Introduction_References.bib`.
 | 3. MACE normalized scores / event sets | `docs/paper/figures/fig03_mace_calibration_events.tikz.tex` | New editable vector diagram; schematic event cells, not results |
 | 4. Updated reduced microreactor plant | `docs/paper/figures/fig04_microreactor_plant.tikz.tex` | New editable vector diagram based on current Modelica equations and wrapper; earlier raster retained as source at `docs/paper/assets/hpmr_bop_viz.png` |
 | 5. Original 4×4 simulator dataset | `docs/paper/assets/timeseries_batch_0003_ALL_PROFILES.png` | Supplied image preserved, not misrepresented as forecasting results. Re-render from raw batch data to verify trace count |
-| 6a. Frozen calibration comparison | `docs/paper/figures/fig06_calibration_design.tikz.tex` | New editable vector study schematic |
-| 6b–e. Operational control families | `outputs/paper/mace_figures/operational_controls/fig06_bcde_operational_controls.pdf` | Existing renderer reads retained `operational_manifest.json`; selects lowest three evaluation IDs per family |
+| 6a. Calibration distribution comparison | `docs/paper/figures/fig06_calibration_design.tikz.tex` | New editable vector study schematic |
+| 6b–e. Operation-informed maneuver types | `outputs/paper/mace_figures/operational_controls/fig06_bcde_operational_controls.pdf` | Existing renderer reads retained `operational_manifest.json`; selects lowest three evaluation IDs per maneuver type |
 | A1. Recursive forecast algorithm | `docs/paper/figures/figA1_recursive_forecast_algorithm.tikz.tex` | Source ready for a later appendix; not inserted into Methodology |
 
 **No archived production control CSVs or operational manifest are committed to
