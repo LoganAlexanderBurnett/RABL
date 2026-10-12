@@ -1,6 +1,9 @@
 {
   "output_dir": "outputs/paper/mace_figures",
-  "formats": ["png", "pdf"],
+  "formats": [
+    "png",
+    "pdf"
+  ],
   "dpi": 300,
   "assets_dir": "docs/paper/assets",
   "sampling": {
@@ -8,11 +11,11 @@
     "profiles_dir": "outputs/variography_profiles/batch_0003",
     "count": 8,
     "kernel": "matern52",
-    "ell_seconds": 10.0,
+    "ell_seconds": 10,
     "design_terminal_sd_degrees": 2.5,
-    "nugget_velocity": 0.0,
-    "baseline_degrees": 45.0,
-    "duration_seconds": 200.0,
+    "nugget_velocity": 0,
+    "baseline_degrees": 45,
+    "duration_seconds": 200,
     "intervals": 2000,
     "jitter_fraction": 1e-10,
     "conditioning_jitter": 1e-10,
@@ -29,6 +32,9 @@
     "scaler_file": "outputs/datasets/scaled_split/lstm_merged_batches_0001-0002-0003_k12_minmax_train5000profiles_val1000profiles_cal1000profiles_test2000profiles.h5",
     "profiles_per_family": 3,
     "calibration": "both",
-    "trajectory_mode": "both"
+    "trajectory_mode": "both",
+    "representative_profile_id": null,
+    "representative_calibration": "operational",
+    "representative_trajectory_mode": "target_trajectory"
   }
 }
