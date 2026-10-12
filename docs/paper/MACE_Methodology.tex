@@ -263,16 +263,16 @@ The corresponding heat-transfer rates are
  \end{aligned}
  \label{eq:mace:steamflows}
 \end{equation}
-The secondary heat addition is converted to specific enthalpy using $q=Q_{sg,fw}/\dot m_{fw}$. The simplified secondary closure gives
+The secondary heat addition is expressed as an increase in specific enthalpy $\Delta h=Q_{sg,fw}/\dot m_{fw}$. The simplified secondary closure gives
 \begin{equation}
  x_{\mathrm{out}}=
- \min\left(1,\max\left(0,\frac{q}{h_{fg}}\right)\right)
+ \min\left(1,\max\left(0,\frac{\Delta h}{h_{fg}}\right)\right)
  \label{eq:mace:quality}
 \end{equation}
 and
 \begin{equation}
  T_{\mathrm{out}}=
- T_{\mathrm{sat}}+\frac{\max(q-h_{fg},0)}{c_{p,\mathrm{sh}}}.
+ T_{\mathrm{sat}}+\frac{\max(\Delta h-h_{fg},0)}{c_{p,\mathrm{sh}}}.
  \label{eq:mace:steamclosure}
 \end{equation}
 Here $h_{fg}$ is the specified latent heat and $c_{p,\mathrm{sh}}$ is the effective heat capacity of superheated steam. The outlet quality and temperature are calculated outputs rather than boundary conditions. The feedwater mass flow rate is 2.95~kg/s and the outlet pressure is 1.5~MPa. The executed simulation wrapper specifies a steam-generator metal capacitance of $2.55\times10^5$~J/K. The simulation duration is 200~s with a numerical tolerance of $10^{-8}$.
