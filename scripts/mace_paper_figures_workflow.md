@@ -124,11 +124,14 @@ predefined test case, specify the exact ID from `operational_manifest.json`.
 
 ```powershell
 python scripts/generate_mace_paper_figures.py --figures representative_forecast --calibration-source operational --trajectory-mode target_trajectory --overwrite
-python scripts/generate_mace_paper_figures.py --figures representative_forecast --profile-id results_drum_profile_11001 --calibration-source original --trajectory-mode joint_trajectory --overwrite
+$manifest = Get-Content outputs/ml_results/mace_operational_validation_v1/operational_manifest.json -Raw | ConvertFrom-Json
+$testId = ($manifest.profiles | Where-Object { $_.split -eq "test" } | Select-Object -First 1).id
+python scripts/generate_mace_paper_figures.py --figures representative_forecast --profile-id $testId --calibration-source original --trajectory-mode joint_trajectory --overwrite
 ```
 
-The second command demonstrates the argument syntax: replace the sample ID with
-an **actual** test-profile ID in your manifest. Original calibration represents
+The second run demonstrates the explicit profile-ID override using a test ID
+read from the actual manifest. Replace `$testId` with any other test-profile ID
+to select a particular recorded maneuver. Original calibration represents
 the nonexchangeable transfer diagnostic. Operational calibration uses matching
 independent samples from the prespecified maneuver mixture. The plot metadata
 records selected test IDs, control moves, hashes, and exact array-consistency
