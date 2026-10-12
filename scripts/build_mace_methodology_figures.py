@@ -69,8 +69,8 @@ def main() -> int:
     ap.add_argument("--output-dir", default="outputs/paper/mace_figures/methodology_diagrams")
     ap.add_argument("--dpi", type=int, default=300)
     ap.add_argument("--diagrams-only", action="store_true", help="Do not run data-figure generator")
-    ap.add_argument("--require-real-control-data", action="store_true",
-                    help="Require stored batch-3 controls and retained operational manifest")
+    ap.add_argument("--illustrative-sampling", action="store_true",
+                    help="Explicitly permit reproducible illustrative GP draws instead of stored controls")
     args = ap.parse_args()
     if args.dpi < 300:
         ap.error("Use >= 300 dpi for preview exports")
@@ -95,8 +95,8 @@ def main() -> int:
         command = [sys.executable, str(ROOT / "scripts/generate_mace_paper_figures.py"),
                    "--config", "scripts/mace_paper_figures_config.json",
                    "--figures", "sampling", "dataset", "operational_controls",
-                   "--sampling-mode", "stored" if args.require_real_control_data else "illustrative"]
-        if not args.require_real_control_data:
+                   "--sampling-mode", "illustrative" if args.illustrative_sampling else "stored"]
+        if args.illustrative_sampling:
             print("NOTE: sampling illustration is illustrative only; not eligible as an empirical manuscript panel.")
         run = subprocess.run(command, cwd=ROOT)
         if run.returncode:
