@@ -183,7 +183,7 @@ def _plot_profile(profile: str, method_data: dict[str, dict[str, Any]], methods:
         name_to_idx = {name: idx for idx, name in enumerate(target_names)}
         t_seconds = _forecast_time_seconds(first["t"])
 
-        fig, axes = plt.subplots(4, 4, figsize=(10.0, 5.2), sharex=True)
+        fig, axes = plt.subplots(4, 4, figsize=(12.0, 6.5), sharex=True)
         axes = np.asarray(axes).ravel()
 
         axes[0].plot(t_seconds, first["u"], color="black", linewidth=1.4)
