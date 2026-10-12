@@ -1,6 +1,6 @@
 # Verified literature for the MACE introduction
 
-Verified 12 October 2026. Recommended citation pool: 21 core papers and 7 supporting papers, organized around the introduction's argument. The aim is a cohesive review, not 28 disconnected paper summaries. The supplied refs.bib is preserved; its useful references are retained here with corrected metadata.
+Originally verified 12 October 2026 and expanded later the same day. The register now contains 51 distinct candidates: 28 original entries and 23 additional peer-reviewed publications. Tibshirani et al. (2019) was already S27 and is not counted again. The goal is a cohesive review rather than a sequence of disconnected paper summaries. The supplied refs.bib is preserved; its useful references are retained here with corrected metadata.
 
 ## Verification scope
 
@@ -314,16 +314,323 @@ The sampling construction, accurate autoregressive model, MACE formulation and r
 
 **Suggested key:** `xu2023spci`.
 
+## Expanded peer-reviewed source register (12 October 2026)
+
+The following 23 references extend S01–S28 and correspond to the additional papers identified during the October 2026 literature review. The preceding list already includes Tibshirani et al. (2019) as S27. That work is therefore **not duplicated**. The newly added literature comprises peer-reviewed journal articles and conference proceedings. Publication details were checked against publisher pages or official proceedings. Secondary scholarly records were used only where a publisher's final pagination was inaccessible. Suggested keys are provisional and have not been added automatically to the manuscript bibliography.
+
+### A. Experiment design and dynamical-system identification
+
+#### S29. Hjalmarsson (2005) — informative excitation for system identification [2026 expansion; core]
+
+**Reference:** Håkan Hjalmarsson. *From experiment design to closed-loop control*. Automatica **41**(3), 393–438 (2005).
+
+**DOI / primary record:** [10.1016/j.automatica.2004.11.021](https://doi.org/10.1016/j.automatica.2004.11.021). [Publisher or official proceedings](https://www.sciencedirect.com/science/article/pii/S0005109804003346).
+
+**Verification:** Publisher journal record confirms author, year, volume, issue, page range, DOI and the connection between experiment design, identification and control.
+
+**Use and distinction:** Strengthen the motivation for designing informative control trajectories under physical constraints. The paper discusses identification and control-design requirements rather than Matérn velocity integration. MACE samples a prescribed set of admissible trajectories and does not optimize input excitation for a closed-loop control objective.
+
+**Suggested key:** `hjalmarsson2005experiment`.
+
+#### S30. Ljung (2010) — information content and system identification [2026 expansion; core]
+
+**Reference:** Lennart Ljung. *Perspectives on system identification*. Annual Reviews in Control **34**(1), 1–12 (2010).
+
+**DOI / primary record:** [10.1016/j.arcontrol.2009.12.001](https://doi.org/10.1016/j.arcontrol.2009.12.001). [Publisher or official proceedings](https://www.sciencedirect.com/science/article/pii/S1367578810000027).
+
+**Verification:** Publisher journal record confirms the bibliographic metadata and the author's discussion of data information content, model complexity and validation.
+
+**Use and distinction:** Connect the informativeness of control and response trajectories with validation of the learned dynamics. This is system-identification background and does not establish accuracy of any specific MACE ensemble.
+
+**Suggested key:** `ljung2010perspectives`.
+
+#### S31. Schoukens and Ljung (2019) — nonlinear system-identification considerations [2026 expansion; core]
+
+**Reference:** Johan Schoukens and Lennart Ljung. *Nonlinear System Identification: A User-Oriented Road Map*. IEEE Control Systems Magazine **39**(6), 28–99 (2019).
+
+**DOI / primary record:** [10.1109/MCS.2019.2938121](https://doi.org/10.1109/MCS.2019.2938121). [Publisher or official proceedings](https://ieeexplore.ieee.org/document/8897147/).
+
+**Verification:** IEEE publisher record and Eindhoven University research listing confirm article identity, author attribution and pagination.
+
+**Use and distinction:** Provide a substantive treatment of nonlinear excitation, modeling choices and validation limitations. Cite alongside the control-trajectory literature while noting that MACE is surrogate forecasting from simulator data rather than general black-box system identification.
+
+**Suggested key:** `schoukens2019roadmap`.
+
+### B. Autoregressive sequence forecasting
+
+#### S32. Bengio et al. (2015) — training-versus-inference mismatch [2026 expansion; core]
+
+**Reference:** Samy Bengio, Oriol Vinyals, Navdeep Jaitly and Noam Shazeer. *Scheduled Sampling for Sequence Prediction with Recurrent Neural Networks*. Advances in Neural Information Processing Systems **28** (NeurIPS 2015).
+
+**DOI / primary record:** [Publisher or official proceedings](https://research.google/pubs/scheduled-sampling-for-sequence-prediction-with-recurrent-neural-networks/).
+
+**Verification:** Google Research's author publication page and NeurIPS proceedings establish the accepted conference paper and the stated issue of error accumulation when model outputs replace true sequence inputs.
+
+**Use and distinction:** Directly support the motivation for evaluating LSTMs over complete autoregressive forecast trajectories. Scheduled sampling is a distinct training technique and is not implemented in MACE.
+
+**Suggested key:** `bengio2015scheduled`.
+
+#### S33. Lamb et al. (2016) — recurrent dynamics during free-running generation [2026 expansion; supporting]
+
+**Reference:** Alex M. Lamb, Anirudh Goyal, Ying Zhang, Saizheng Zhang, Aaron C. Courville and Yoshua Bengio. *Professor Forcing: A New Algorithm for Training Recurrent Networks*. Advances in Neural Information Processing Systems **29** (NeurIPS 2016).
+
+**DOI / primary record:** [Publisher or official proceedings](https://papers.neurips.cc/paper/2016/hash/16026d60ff9b54410b3435b403afd226-Abstract.html).
+
+**Verification:** Official NeurIPS 2016 proceedings identify the accepted paper and its adversarial approach to aligning training and sampling dynamics.
+
+**Use and distinction:** Add a second primary demonstration that free-running recurrence differs from observed-history training. Professor Forcing is not used in this study. It supports the forecasting problem statement rather than a claim of implementing its solution.
+
+**Suggested key:** `lamb2016professor`.
+
+#### S34. Vlachas et al. (2018) — recursive forecasting of physical dynamics [2026 expansion; core]
+
+**Reference:** Pantelis R. Vlachas, Wonmin Byeon, Zhong Y. Wan, Themistoklis P. Sapsis and Petros Koumoutsakos. *Data-driven forecasting of high-dimensional chaotic systems with long short-term memory networks*. Proceedings of the Royal Society A **474**(2213), 20170844 (2018).
+
+**DOI / primary record:** [10.1098/rspa.2017.0844](https://doi.org/10.1098/rspa.2017.0844). [Publisher or official proceedings](https://pmc.ncbi.nlm.nih.gov/articles/PMC5990702/).
+
+**Verification:** The journal article and full-text archive confirm the year, volume, article number, authors and physical-dynamics forecasting setting.
+
+**Use and distinction:** Discuss long-horizon data-driven prediction of dynamical systems with LSTMs. Its chaotic-flow examples and recurrent training choices are distinct from the controlled, reduced microreactor simulator.
+
+**Suggested key:** `vlachas2018chaotic`.
+
+#### S35. Gasparin et al. (2022) — energy time-series forecasting strategies [2026 expansion; supporting]
+
+**Reference:** Alberto Gasparin, Slobodan Lukovic and Cesare Alippi. *Deep learning for time series forecasting: The electric load case*. CAAI Transactions on Intelligence Technology **7**(1), 1–25 (2022).
+
+**DOI / primary record:** [10.1049/cit2.12060](https://doi.org/10.1049/cit2.12060). [Publisher or official proceedings](https://ietresearch.onlinelibrary.wiley.com/doi/10.1049/cit2.12060).
+
+**Verification:** Publisher article metadata confirm three authors, 2022 issue year, pages and DOI. The online-first date is 2021.
+
+**Use and distinction:** Broaden physical time-series context and differentiate one-step, recurrent and sequence prediction strategies. Do not present load-forecasting conclusions as evidence for nuclear physical-surrogate performance.
+
+**Suggested key:** `gasparin2022electric`.
+
+### C. Ensemble uncertainty and regression calibration
+
+#### S36. Kuleshov et al. (2018) — calibrated regression uncertainty [2026 expansion; core]
+
+**Reference:** Volodymyr Kuleshov, Nathan Fenner and Stefano Ermon. *Accurate Uncertainties for Deep Learning Using Calibrated Regression*. Proceedings of the 35th International Conference on Machine Learning, PMLR **80**, 2796–2804 (2018).
+
+**DOI / primary record:** [Publisher or official proceedings](https://proceedings.mlr.press/v80/kuleshov18a.html).
+
+**Verification:** Official ICML/PMLR proceedings provide title, byline, volume and pages. This is a published conference paper, not a journal article.
+
+**Use and distinction:** Support the distinction between obtaining uncertainty predictions from a trained model and calibrating their statistical behavior. Its recalibration method and probability notion should not be conflated with split-conformal finite-sample coverage.
+
+**Suggested key:** `kuleshov2018calibrated`.
+
+#### S37. Levi et al. (2022) — diagnosing informative regression uncertainty [2026 expansion; core]
+
+**Reference:** Dan Levi, Liran Gispan, Niv Giladi and Ethan Fetaya. *Evaluating and Calibrating Uncertainty Prediction in Regression Tasks*. Sensors **22**(15), 5540 (2022).
+
+**DOI / primary record:** [10.3390/s22155540](https://doi.org/10.3390/s22155540). [Publisher or official proceedings](https://www.mdpi.com/1424-8220/22/15/5540).
+
+**Verification:** Journal and PubMed records confirm author list, publication date, article number and DOI.
+
+**Use and distinction:** Motivate separating interval calibration from the usefulness of forecast-dependent spread. The paper critiques certain regression-uncertainty calibration metrics and proposes alternatives. It is not an analysis of trajectory-level conformal bands.
+
+**Suggested key:** `levi2022regression`.
+
+#### S38. Gawlikowski et al. (2023) — uncertainty estimation survey [2026 expansion; supporting]
+
+**Reference:** Jakob Gawlikowski, Cedrique Rovile Njieutcheu Tassi, Mohsin Ali and collaborators. *A survey of uncertainty in deep neural networks*. Artificial Intelligence Review **56** (Supplement 1), 1513–1589 (2023).
+
+**DOI / primary record:** [10.1007/s10462-023-10562-9](https://doi.org/10.1007/s10462-023-10562-9). [Publisher or official proceedings](https://link.springer.com/article/10.1007/s10462-023-10562-9).
+
+**Verification:** Springer final article identifies 2023 publication, supplement pagination and DOI. Full author metadata should be imported from the publisher when producing the .bib entry.
+
+**Use and distinction:** Supply terminology for ensemble disagreement, predictive uncertainty and calibration. Use as a review source without claiming that the present model separates aleatoric and epistemic contributions.
+
+**Suggested key:** `gawlikowski2023survey`.
+
+#### S39. Baño-Medina et al. (2025) — ensemble calibration for physical forecasts [2026 expansion; supporting]
+
+**Reference:** J. Baño-Medina, A. Sengupta, D. Watson-Parris, W. Hu and L. Delle Monache. *Toward Calibrated Ensembles of Neural Weather Model Forecasts*. Journal of Advances in Modeling Earth Systems **17**(4), e2024MS004734 (2025).
+
+**DOI / primary record:** [10.1029/2024MS004734](https://doi.org/10.1029/2024MS004734). [Publisher or official proceedings](https://agupubs.onlinelibrary.wiley.com/doi/10.1029/2024MS004734).
+
+**Verification:** AGU/Wiley journal page confirms final issue, article identifier, author list and DOI.
+
+**Use and distinction:** Give a physical forecasting example where the construction and calibration of neural ensembles must be evaluated together. Their weather ensembles incorporate considerations beyond deterministic member disagreement. This is context rather than a directly equivalent conformal procedure.
+
+**Suggested key:** `banomedina2025weather`.
+
+### D. Multivariate and physical-surrogate conformal prediction
+
+#### S40. Diquigiovanni et al. (2022) — multivariate functional conformal bands [2026 expansion; core]
+
+**Reference:** Jacopo Diquigiovanni, Matteo Fontana and Simone Vantini. *Conformal prediction bands for multivariate functional data*. Journal of Multivariate Analysis **189**, 104879 (2022).
+
+**DOI / primary record:** [10.1016/j.jmva.2021.104879](https://doi.org/10.1016/j.jmva.2021.104879). [Publisher or official proceedings](https://www.sciencedirect.com/science/article/pii/S0047259X21001573).
+
+**Verification:** Publisher record confirms authors, 2022 final publication, volume, article number and DOI. The abstract establishes simultaneous prediction bands for multivariate functional responses under exchangeability.
+
+**Use and distinction:** **High-priority methodological precedent.** Directly compare the statistical unit of a multivariate response function with MACE's complete simulated response trajectory. Their functional prediction bands preclude claiming that trajectory-level conformal coverage is novel by itself. Explain the distinct envelope geometry and spread normalization.
+
+**Suggested key:** `diquigiovanni2022multivariate`.
+
+#### S41. Schlembach et al. (2025) — multivariate multistep conformal forecasting [2026 expansion; core]
+
+**Reference:** Filip Schlembach, Evgueni Smirnov, Irena Koprinska and Mark H. M. Winands. *Conformal multistep-ahead multivariate time-series forecasting*. Machine Learning **114**, article 165 (2025).
+
+**DOI / primary record:** [10.1007/s10994-024-06722-9](https://doi.org/10.1007/s10994-024-06722-9). [Publisher or official proceedings](https://link.springer.com/article/10.1007/s10994-024-06722-9).
+
+**Verification:** Springer final article confirms 9 June 2025 publication, byline, volume and article number. A shorter 2022 conference version exists and should not replace this final journal citation.
+
+**Use and distinction:** **High-priority methodological precedent.** Analyze its non-exchangeable multi-target conformal method alongside MACE's separate independent simulation trajectories and joint max-score construction. The competing assumptions and region types must be distinguished.
+
+**Suggested key:** `schlembach2025multivariate`.
+
+#### S42. Gopakumar et al. (2026) — conformal prediction for physical surrogates [2026 expansion; core]
+
+**Reference:** Vignesh Gopakumar, Ander Gray, Joel Oskarsson, Lorenzo Zanisi, Daniel Giles, Matt J. Kusner, Stanislas Pamela and Marc Peter Deisenroth. *Uncertainty quantification of surrogate models using conformal prediction*. Machine Learning: Science and Technology **7**, 015025 (2026).
+
+**DOI / primary record:** [10.1088/2632-2153/ae2e7b](https://doi.org/10.1088/2632-2153/ae2e7b). [Publisher or official proceedings](https://doi.org/10.1088/2632-2153/ae2e7b).
+
+**Verification:** IOP final publication record confirms all eight authors, publication date 3 February 2026, volume, article number and DOI.
+
+**Use and distinction:** **High-priority physical-surrogate precedent.** Use to explain existing conformal calibration of high-dimensional physics surrogates. Compare nonconformity-score choices and calibration event definitions with MACE's normalized ensemble spread and complete-trajectory coverage. Do not claim conformalized physics surrogates are newly introduced here.
+
+**Suggested key:** `gopakumar2026surrogates`.
+
+#### S43. Diquigiovanni et al. (2025) — finite-sample conformal bands for functional data [2026 expansion; core]
+
+**Reference:** Jacopo Diquigiovanni, Matteo Fontana and Simone Vantini. *The Importance of Being a Band: Finite-Sample Exact Distribution-Free Prediction Sets for Functional Data*. Statistica Sinica **35**(2), 853–871 (2025).
+
+**DOI / primary record:** [10.5705/ss.202022.0087](https://doi.org/10.5705/ss.202022.0087). [Publisher or official proceedings](https://www3.stat.sinica.edu.tw/sstest/J35N2/j35n207/j35n207.html).
+
+**Verification:** The journal's final article and 2025 issue listing confirm DOI and final pagination. A separate pre-pagination PDF displays pages 1–19 and should not be used for final reference pages.
+
+**Use and distinction:** Establish that simultaneous prediction bands for entire functions can be constructed by conformal inference. Compare the band-based coverage event with the discrete-time output trajectory evaluated in MACE. This complements but does not duplicate the multivariate 2022 article.
+
+**Suggested key:** `diquigiovanni2025bands`.
+
+#### S44. Xu, Jiang and Xie (2024) — ellipsoidal multivariate conformal regions [2026 expansion; core]
+
+**Reference:** Chen Xu, Hanyang Jiang and Yao Xie. *Conformal prediction for multi-dimensional time series by ellipsoidal sets*. Proceedings of the 41st International Conference on Machine Learning, PMLR **235**, 55076–55099 (2024).
+
+**DOI / primary record:** [Publisher or official proceedings](https://proceedings.mlr.press/v235/xu24m.html).
+
+**Verification:** Official ICML/PMLR record confirms authors, proceedings series, volume and pages.
+
+**Use and distinction:** Contrast jointly calibrated ellipsoidal multivariate regions for non-exchangeable temporal observations with MACE's rectangular coordinate-wise bands and trajectory-level exchangeability. A different region shape can achieve a joint event without matching MACE's intervals.
+
+**Suggested key:** `xu2024ellipsoidal`.
+
+#### S45. Moya et al. (2025) — conformal calibration of operator-learning surrogates [2026 expansion; core]
+
+**Reference:** Christian Moya, Amirhossein Mollaali, Zecheng Zhang, Lu Lu and Guang Lin. *Conformalized-DeepONet: A distribution-free framework for uncertainty quantification in deep operator networks*. Physica D: Nonlinear Phenomena **471**, 134418 (2025).
+
+**DOI / primary record:** [10.1016/j.physd.2024.134418](https://doi.org/10.1016/j.physd.2024.134418). [Publisher or official proceedings](https://www.sciencedirect.com/science/article/abs/pii/S0167278924003683).
+
+**Verification:** Publisher indexed record confirms DOI, author list and study of conformalization for DeepONet regression. Bibliographic indexes confirm the final 2025 volume and article number.
+
+**Use and distinction:** Connect split conformal prediction to surrogate models for differential equations. Distinguish operator learning and its uncertainty models from MACE's LSTM ensemble and time-indexed autoregressive rollout.
+
+**Suggested key:** `moya2025deeponet`.
+
+#### S46. Yu et al. (2025) — dual-splitting conformal multistep forecasting [2026 expansion; supporting]
+
+**Reference:** Qingdi Yu, Zhiwei Cao, Ruihang Wang, Zhen Yang, Lijun Deng, Min Hu, Yong Luo and Xin Zhou. *Dual-splitting conformal prediction for multi-step time series forecasting*. Applied Soft Computing **184** (Part B), 113825 (2025).
+
+**DOI / primary record:** [10.1016/j.asoc.2025.113825](https://doi.org/10.1016/j.asoc.2025.113825). [Publisher or official proceedings](https://www.sciencedirect.com/science/article/pii/S156849462501138X).
+
+**Verification:** Publisher journal record and the author preprint agree on title and DOI. Final publication is December 2025, not the preprint's March 2025 deposit.
+
+**Use and distinction:** Provide a recent example of alternative multi-step calibration methods in applied forecasting and energy management. Its data and dual-splitting construction should not be conflated with independent trajectory-level calibration in MACE.
+
+**Suggested key:** `yu2025dualsplitting`.
+
+### E. Conformal calibration under changing distributions
+
+#### S47. Gibbs and Candès (2021) — adaptive conformal inference under shift [2026 expansion; core]
+
+**Reference:** Isaac Gibbs and Emmanuel Candès. *Adaptive Conformal Inference Under Distribution Shift*. Advances in Neural Information Processing Systems **34** (NeurIPS 2021).
+
+**DOI / primary record:** [Publisher or official proceedings](https://proceedings.neurips.cc/paper/2021/hash/0d441de75945e5acbc865406fc9a2559-Abstract.html).
+
+**Verification:** The official NeurIPS 2021 record confirms the authors and published method for sequentially adapting conformal coverage.
+
+**Use and distinction:** Contrast an online adaptive interval-calibration algorithm with MACE's separate batch recalibration on independent operation-informed trajectories. Its long-run coverage result is not a guarantee for arbitrary finite trajectory batches.
+
+**Suggested key:** `gibbs2021adaptive`.
+
+#### S48. Gibbs and Candès (2024) — online conformal inference with arbitrary shifts [2026 expansion; core]
+
+**Reference:** Isaac Gibbs and Emmanuel J. Candès. *Conformal Inference for Online Prediction with Arbitrary Distribution Shifts*. Journal of Machine Learning Research **25**(162), 1–36 (2024).
+
+**DOI / primary record:** [Publisher or official proceedings](https://www.jmlr.org/papers/v25/22-1218.html).
+
+**Verification:** JMLR journal article and original journal record confirm final issue, publication year and page range.
+
+**Use and distinction:** Develop the contrast between online local-in-time adaptation and MACE's offline redistribution of calibration scores. Emphasize that no sequential conformal update, online regret control or arbitrary-shift guarantee is implemented in this study.
+
+**Suggested key:** `gibbs2024online`.
+
+### F. Heat-pipe microreactor modeling context
+
+#### S49. Price et al. (2023) — heat-pipe thermal models [2026 expansion; supporting]
+
+**Reference:** Dean Price, Nathan Roskoff, Majdi I. Radaideh and Brendan Kochunas. *Thermal Modeling of an eVinci-like heat pipe microreactor using OpenFOAM*. Nuclear Engineering and Design **415**, 112709 (2023).
+
+**DOI / primary record:** [10.1016/j.nucengdes.2023.112709](https://doi.org/10.1016/j.nucengdes.2023.112709). [Publisher or official proceedings](https://www.sciencedirect.com/science/article/pii/S0029549323005587).
+
+**Verification:** Publisher record confirms authors, journal year, volume, article number and DOI. Its simplified heat-pipe network treatment is documented in the article highlights.
+
+**Use and distinction:** Support the selection of a heat-pipe microreactor as a coupled thermal response application. Their Serpent/OpenFOAM model is higher-dimensional and different from the reduced Modelica simulator used for MACE. No numerical validation transfers between the models.
+
+**Suggested key:** `price2023thermal`.
+
+#### S50. Price et al. (2024) — multiphysics and drum-position modeling [2026 expansion; supporting]
+
+**Reference:** Dean Price, Nathan Roskoff, Majdi I. Radaideh and Brendan Kochunas. *Multiphysics Modeling of Heat Pipe Microreactor with Critical Control Drum Position Search*. Nuclear Science and Engineering (published online 4 November 2024).
+
+**DOI / primary record:** [10.1080/00295639.2024.2409582](https://doi.org/10.1080/00295639.2024.2409582). [Publisher or official proceedings](https://www.tandfonline.com/doi/full/10.1080/00295639.2024.2409582).
+
+**Verification:** Taylor & Francis record confirms authors, journal, DOI and online publication date. The authors' research group also cites the 2024 article. Final volume/issue pagination was not resolved in this verification pass and should be checked again before BibTeX finalization.
+
+**Use and distinction:** Describe multiphysics calculations of critical control drum positions and thermal/neutronic coupling in heat-pipe systems. This is plant-design context and not proof of accurate reduced-order transient forecasting or conformity of prediction intervals.
+
+**Suggested key:** `price2024multiphysics`.
+
+#### S51. Jiao et al. (2025) — control-drum transient coupling in heat-pipe reactors [2026 expansion; supporting]
+
+**Reference:** Guanghui Jiao, Genglei Xia, Tao Zhou, Minjun Peng and Jianjun Wang. *Transient local effects analysis during typical accidents of a heat pipe cooled reactor*. Nuclear Engineering and Design **436**, 113988 (2025).
+
+**DOI / primary record:** [10.1016/j.nucengdes.2025.113988](https://doi.org/10.1016/j.nucengdes.2025.113988). [Publisher or official proceedings](https://www.sciencedirect.com/science/article/pii/S0029549325001657).
+
+**Verification:** Publisher record confirms all authors, date, journal volume, article number and DOI. It describes coupled neutronic/thermal-hydraulic simulation and rotating control-drum transients.
+
+**Use and distinction:** Motivate the application of prediction to control-drum transients in heat-pipe reactors. Its three-dimensional and multi-node accident analyses are distinct from the prescribed-control reduced Modelica case. Avoid implying real-plant validation or closed-loop control in MACE.
+
+**Suggested key:** `jiao2025transient`.
+
+### Literature-review integration and citation priorities
+
+| Section of review | High-priority additions | Complementary additions | Specific contribution to argument |
+|---|---|---|---|
+| Temporally structured sampling and surrogate data | S29–S31 | S01–S06 | Connect actuator excitation and nonlinear identification to the importance of prescribed control histories. |
+| Autoregressive ensemble forecasting | S32 and S34 | S33 and S35 | Establish training-versus-rollout mismatch and motivate long-horizon physical response evaluation. |
+| Ensemble spread and calibration | S36–S37 | S38–S39 | Explain why member disagreement may adapt widths without itself guaranteeing coverage. |
+| Simultaneous and multivariate conformal forecasting | **S40–S42** and S43–S45 | S46 | Compare functional bands, non-exchangeable multistep regions and physical-surrogate calibration with the actual MACE score reductions and coverage events. |
+| Calibration distribution transfer | Existing S27 plus S47–S48 | S19 and S28 | Distinguish importance weighting, online adjustment and offline recalibration from one another. |
+| Microreactor application context | S49–S51 | S20–S21 | Support heat-pipe reactor transient motivation without expanding the control-policy claim. |
+
+**Novelty boundary:** Prediction bands for entire functions and multivariate trajectories predate MACE. Physical surrogate conformalization and multistep conformal forecasting also have direct prior art. Position the MACE contribution around control-conditioned autoregressive LSTM ensembles, spread-based normalized scores with an additive floor, explicit horizon/per-output-trajectory/joint-trajectory coverage comparisons, and calibration transfer versus batch recalibration on independently simulated trajectory populations. Do not equate a pooled marginal coverage result with conditional coverage of each maneuver type.
+
+**Selection guidance:** This is a verified candidate register rather than a requirement to cite all 51 papers in the final article. A goal of roughly 40–60 distinct references across the complete manuscript remains compatible with synthesizing the most relevant studies in substantive paragraphs. The Introduction and bibliography have not been modified by this source-register update.
+
 ## Citation placement and emphasis
 
 | Literature-review topic | Recommended papers | Transition into this paper |
 |---|---|---|
-| Surrogate modeling and data generation | S02–S03 | Physical simulation data are useful but costly; their design matters. |
-| Data generation strategies / control trajectories | S01, S04–S06; S22–S23 if needed | We sample temporally structured control trajectories with specified covariance/dispersion instead of performing active acquisition. |
-| Deep learning for physical time series | S07–S09 | Train a control-conditioned surrogate and test genuine autoregressive forecasts. |
-| Ensemble methods and uncertainty | S10–S11; S24 if needed | Forecast-dependent disagreement provides an adaptation scale, but needs calibration. |
-| Conformal uncertainty and coverage objectives | S12–S19; S27–S28 if needed | State normalization, calibration unit, horizon/trajectory events and distribution assumptions explicitly. |
-| AI for control / microreactor application | S20–S21; S25–S26 if needed | Accurate, calibrated forecasts are potentially useful inputs to control, while this study does not learn or validate a controller. |
+| Surrogate modeling and data generation | S02–S03 and S29–S31 | Physical simulation data are useful but costly; their design matters. |
+| Data generation strategies / control trajectories | S01, S04–S06, S29–S31; S22–S23 if needed | We sample temporally structured control trajectories with specified covariance/dispersion instead of performing active acquisition. |
+| Deep learning for physical time series | S07–S09, S32–S35 | Train a control-conditioned surrogate and test genuine autoregressive forecasts. |
+| Ensemble methods and uncertainty | S10–S11, S36–S39; S24 if needed | Forecast-dependent disagreement provides an adaptation scale, but needs calibration. |
+| Conformal uncertainty and coverage objectives | S12–S19, S40–S46; S27–S28 and S47–S48 for shift | State normalization, calibration unit, horizon/trajectory events and distribution assumptions explicitly. |
+| AI for control / microreactor application | S20–S21, S49–S51; S25–S26 if needed | Accurate, calibrated forecasts are potentially useful inputs to control, while this study does not learn or validate a controller. |
 
 The introduction should synthesize themes and contrasts rather than give every source equal paragraph space. For example, one sentence can cite Zimmer/Lundby/Xie as evidence that control-trajectory design is an established identification problem, followed by a clear explanation of the particular construction evaluated here. The conformal paragraph should give especially clear attention to normalized scores, EnbPI and multivariate/multi-step forecasting because they are close methodological precedents.
 
