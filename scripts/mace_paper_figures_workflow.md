@@ -56,8 +56,9 @@ python scripts/generate_mace_paper_figures.py --figures all --output-dir outputs
 | `operational_forecasts` | Existing 4×4 forecast PNGs and one sectioned PDF | Calls the existing saved-result renderer; original/operational calibration and per-output/joint trajectory views stay separate. |
 | `representative_forecast` | `mace_representative_test_forecast.png/.pdf` | One saved operational test trajectory with simulator truth, ensemble mean, uncalibrated ±2σ, MACE-Horizon, and MACE-Trajectory (or joint-trajectory) bands. Selection by fixed test ID, independent of prediction error. |
 
-`--figures all` expands the entire registry, including subsequently registered
-figures. Pure flowcharts, the MACE event diagram, and manual artwork corrections
+`--figures all` builds the standard registered figures except the optional
+`operational_controls` renderer for omitted Figure 6. Request that stable ID
+explicitly when revisiting the control-trajectory illustrations. Pure flowcharts, the MACE event diagram, and manual artwork corrections
 are excluded from automatic scientific rendering. Figure 6 is no longer included
 in the Methodology. Its archived optional control plot remains accessible via
 `operational_controls`. The runner does not present uncorrected source graphics
