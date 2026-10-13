@@ -160,7 +160,7 @@ def _plot_all_profiles(results_csvs: list[Path], output_path: Path) -> None:
                 alpha=0.10,
             )
 
-        ax.set_ylabel(pretty_label)
+        ax.set_title(pretty_label, pad=5)
         ax.grid(True, which="both", alpha=0.2)
 
     for ax in axes[len(PLOT_VARS):]:
