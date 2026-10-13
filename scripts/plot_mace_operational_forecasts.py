@@ -106,7 +106,7 @@ def render_grid(data, *, profile, source, mode, alpha):
         fig, axes = plt.subplots(4, 4, figsize=(18, 11), sharex=True)
         time = data['time']
         axes.flat[0].plot(time, data['angle'], color='black', lw=1.8)
-        axes.flat[0].set_xlabel(r'$\theta$ [deg]')
+        axes.flat[0].set_ylabel(r'$\theta$ [deg]')
         for ax, j, ylabel in zip(list(axes.flat)[1:], indices, LABELS):
             for band, color in zip((data['raw'], data['bands'][source]['horizon'],
                                     data['bands'][source][mode]), colors):
@@ -115,7 +115,7 @@ def render_grid(data, *, profile, source, mode, alpha):
                 ax.plot(time, band[1][:, j], color=color, lw=.85)
             ax.plot(time, data['truth'][:, j], color='black', lw=1.8)
             ax.plot(time, data['mean'][:, j], color='#075cbb', lw=1.8)
-            ax.set_xlabel(ylabel)
+            ax.set_ylabel(ylabel)
             ax.ticklabel_format(axis='y', style='plain', useOffset=False)
         for ax in axes.flat:
             ax.set_xlim(0, 200)
