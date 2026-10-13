@@ -490,7 +490,7 @@ def _plot_target_grid(
         ax.plot(data[:, name_to_idx[name]], color=colors[name])
         if nominal is not None:
             ax.axhline(nominal, color="black", linestyle="--", linewidth=1.0)
-        ax.set_xlabel(_pretty_target_label(name))
+        ax.set_ylabel(_pretty_target_label(name))
         ax.grid(True, alpha=0.2)
     for ax in axes[len(order):]:
         ax.axis("off")
@@ -519,7 +519,7 @@ def _plot_error_vs_width_grid(analysis: dict[str, Any], out_dir: Path, *, show_t
         ax = axes[plot_idx]
         ax.plot(error[:, idx], label=r"Mean absolute error", color=colors[name])
         ax.plot(half_width[:, idx], label=r"Conformal half-width", color=colors[name], linestyle="--")
-        ax.set_xlabel(_pretty_target_label(name))
+        ax.set_ylabel(_pretty_target_label(name))
         ax.grid(True, alpha=0.2)
         ax.legend(fontsize=18, loc="best")
     for ax in axes[len(order):]:
@@ -624,7 +624,7 @@ def _plot_forecast_profiles(
         axes = np.atleast_1d(axes).ravel()
         t = np.asarray(record["t"], dtype=float)
         axes[0].plot(t, record["u"], color="black", label=r"$u(t)$")
-        axes[0].set_xlabel(r"$u(t)$")
+        axes[0].set_ylabel(r"$u(t)$")
         axes[0].grid(True, alpha=0.2)
         legend_handles = []
         legend_labels = []
@@ -649,7 +649,7 @@ def _plot_forecast_profiles(
                 legend_handles = [truth_line, pred_line, lower_line, upper_line, interval]
                 legend_labels = [handle.get_label() for handle in legend_handles]
             pretty_label = _pretty_target_label(name)
-            ax.set_xlabel(pretty_label)
+            ax.set_ylabel(pretty_label)
             ax.grid(True, alpha=0.2)
 
         if legend_handles:
