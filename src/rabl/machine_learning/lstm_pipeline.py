@@ -1600,7 +1600,7 @@ def plot_forecast_vs_truth_grid(
     # Control plot (top-left)
     ax0 = axes[0]
     ax0.plot(control_series, label=control_name)
-    ax0.set_ylabel(control_name)
+    ax0.set_title(control_name, fontsize=14, pad=5)
     ax0.grid(True)
     ax0.legend(loc="best")
 
@@ -1610,7 +1610,7 @@ def plot_forecast_vs_truth_grid(
         name = target_names[i]
         ax.plot(y_true[:, i], label="truth", color='black')
         ax.plot(y_pred[:, i], label="pred", color='blue')
-        ax.set_ylabel(name)
+        ax.set_title(name, fontsize=14, pad=5)
         _disable_y_offset_if_requested(ax, name)
         ax.grid(True)
         ax.legend(fontsize=7, loc="best")
@@ -1768,7 +1768,7 @@ def _plot_ensemble_forecast_vs_truth_grid(
     axes_flat = np.atleast_1d(axes).flatten()
 
     axes_flat[0].plot(t_series, control_series, linewidth=1.5, color="black")
-    axes_flat[0].set_ylabel(control_name)
+    axes_flat[0].set_title(control_name, fontsize=14, pad=5)
     axes_flat[0].grid(True, alpha=0.3)
 
     derivative_axes: list[plt.Axes] = []
@@ -1806,7 +1806,7 @@ def _plot_ensemble_forecast_vs_truth_grid(
                 label="d(x_sigma_scaled)/dt",
             )
             ax2.axhline(0.0, color="0.5", linewidth=0.9, linestyle="--", alpha=0.8)
-        ax.set_ylabel(target_name)
+        ax.set_title(target_name, fontsize=14, pad=5)
         _disable_y_offset_if_requested(ax, target_name)
         ax.grid(True, alpha=0.3)
 
