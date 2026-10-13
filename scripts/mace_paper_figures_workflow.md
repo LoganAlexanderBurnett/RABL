@@ -50,7 +50,7 @@ python scripts/generate_mace_paper_figures.py --figures all --output-dir outputs
 | Stable ID | Output | Source behavior |
 |---|---|---|
 | `sampling` | Three-panel Figure 1, PNG/PDF; sampling data NPZ | First eight sorted original batch-3 control CSVs. If absent in `auto` mode, explicitly labeled illustrative GP draws; `stored` requires actual tables. |
-| `dataset` | Required 4×4 Figure 5, PNG/PDF | All batch-3 simulator CSVs if present; defaults require exactly 5,000. Raw regeneration removes per-panel variable titles and displays variable identifiers below each subplot. `stored_image` copies the pre-existing image unchanged. |
+| `dataset` | Required 4×4 Figure 5, PNG/PDF | All batch-3 simulator CSVs if present; defaults require exactly 5,000. Raw regeneration removes per-panel variable titles and displays variable identifiers on each subplot's y-axis. `stored_image` copies the pre-existing image unchanged. |
 | `operational_controls` | Optional operation-informed controls PNG/PDF; data NPZ | Lowest three evaluation IDs in each retained maneuver type, reconstructed from saved moves. Plot legends now show angular excursions and not the numeric suffixes of profile IDs. Figure 6 is omitted from the manuscript. |
 | `existing_assets` | Original plant, LSTM architecture, autoregression, and Rolling Forecast graphics | Exact copied source PNGs plus raster PDF wrappers. These are explicitly marked as needing manual revisions. |
 | `operational_forecasts` | Existing 4×4 forecast PNGs and one sectioned PDF | Calls the existing saved-result renderer; original/operational calibration and per-output/joint trajectory views stay separate. |
@@ -110,8 +110,8 @@ The broader-angle recipe is rejected explicitly for both operational generators.
 Control panels use identical 44–49° axes and 0–200 s axes. Dataset panels use the
 supplied display order and physical power P, while the forecast report continues
 to display the model's normalized power output n. No bounds are clipped.
-All regenerated 4×4 plots use one per-panel variable identifier below the panel
-rather than repeating its name as both a title and a label. A shared figure-level
+All regenerated 4×4 plots use one per-panel variable identifier on the y-axis.
+Variable names are not repeated as subplot titles or x-axis labels. A shared figure-level
 label identifies the time axis. The six precursor variables appear as $c_1$ through
 $c_6$ without a misleading "(normalized)" suffix.
 
