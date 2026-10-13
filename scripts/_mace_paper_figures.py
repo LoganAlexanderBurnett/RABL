@@ -290,7 +290,7 @@ def dataset_figure(config, out, path, options):
                     ax.autoscale_view()
                 print(f'dataset: read {min(start+100, len(candidates))}/{len(candidates)} trajectories', flush=True)
             for ax, label in zip(axes.flat, LABELS):
-                ax.set_ylabel(label, fontsize=8)
+                ax.set_title(label, fontsize=8, pad=3)
                 ax.set_xlim(0, 200)
                 ax.set_xticks([0, 100, 200])
                 ax.grid(alpha=.15)
@@ -500,7 +500,7 @@ def representative_forecast(config, out, path, options):
         fig, axes = plt.subplots(4, 4, figsize=(190*MM, 110*MM), sharex=True)
         time = data['time']
         axes.flat[0].plot(time, data['angle'], color='black', lw=1.5)
-        axes.flat[0].set_ylabel(r'$\theta$ [deg]')
+        axes.flat[0].set_title(r'$\theta$ [deg]', fontsize=9, pad=4)
         for ax, j, label in zip(list(axes.flat)[1:], index, FORECAST_LABELS):
             for band, color in zip(modes, band_colors):
                 ax.fill_between(time, band[0][:, j], band[1][:, j],
@@ -509,7 +509,7 @@ def representative_forecast(config, out, path, options):
                 ax.plot(time, band[1][:, j], color=color, lw=.55, alpha=.85)
             ax.plot(time, data['truth'][:, j], color='black', lw=1.15, zorder=4)
             ax.plot(time, data['mean'][:, j], color='#005ab5', lw=1.15, zorder=5)
-            ax.set_ylabel(label)
+            ax.set_title(label, fontsize=9, pad=4)
             ax.ticklabel_format(axis='y', style='plain', useOffset=False)
         for ax in axes.flat:
             ax.set_xlim(0, 200)
