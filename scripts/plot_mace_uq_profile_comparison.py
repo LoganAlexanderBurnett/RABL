@@ -187,7 +187,7 @@ def _plot_profile(profile: str, method_data: dict[str, dict[str, Any]], methods:
         axes = np.asarray(axes).ravel()
 
         axes[0].plot(t_seconds, first["u"], color="black", linewidth=1.4)
-        axes[0].set_ylabel(r"$\theta$ [deg]", labelpad=3)
+        axes[0].set_title(r"$\theta$ [deg]", fontsize=10, pad=4)
         axes[0].grid(True, alpha=0.2)
 
         truth_handle = None
@@ -249,7 +249,7 @@ def _plot_profile(profile: str, method_data: dict[str, dict[str, Any]], methods:
                 )
                 method_handles.setdefault(method_id, fill)
 
-            ax.set_ylabel(_target_axis_label(target), labelpad=3)
+            ax.set_title(_target_axis_label(target), fontsize=10, pad=4)
             ax.grid(True, alpha=0.2)
 
         for ax in axes[len(order) + 1:]:
