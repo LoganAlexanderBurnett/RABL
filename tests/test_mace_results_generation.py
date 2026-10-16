@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from _mace_results_figures import choose_profile, unsaturated_fraction
 from generate_mace_results_tables import _latex_table, make_tables
+from generate_mace_paper_figures import selected_figures
 
 
 class ResultsSelectionTests(unittest.TestCase):
@@ -30,6 +31,12 @@ class ResultsSelectionTests(unittest.TestCase):
         a[0,0]=np.nan
         with self.assertRaisesRegex(ValueError, "Invalid"):
             unsaturated_fraction(a,4)
+
+    def test_results_registry_does_not_break_legacy_all(self):
+        ids = selected_figures(["results"])
+        self.assertEqual(len(ids), 4)
+        self.assertIn("stochastic_representative", ids)
+        self.assertTrue(set(ids).isdisjoint(selected_figures(["all"])))
 
     def test_latex_complete_standard_environment(self):
         body = _latex_table("lc", [r"A & B \\"], "Caption", "tab:sample")
