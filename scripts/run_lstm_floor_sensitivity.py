@@ -76,17 +76,51 @@ def plot_results(out: Path, aggregate: list[dict[str, Any]], targets: list[dict[
     plt.close(fig)
 
 
+
+def validate_corrected_forecasts(metadata_path: Path, cal_path: Path, test_path: Path,
+                                 profiles: dict[str, list[str]], target_names: list[str]) -> dict[str, Any]:
+    """Reject any mixture of historical forecasts and corrected forecast files."""
+    import h5py
+    from _mace_operational_forecasts import FEEDBACK
+    meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if (not meta.get("completed") or meta.get("feedback") != FEEDBACK
+            or not meta.get("original_calibration_reused")
+            or meta.get("profile_names") != {k: profiles[k] for k in ("cal", "test")}
+            or meta.get("target_names") != target_names):
+        raise ValueError("Corrected stochastic run is incomplete or has mismatched IDs/feedback/targets")
+    for filename, path, split in (("calibration_ensemble_forecasts_audit.h5", cal_path, "cal"),
+                                  ("test_ensemble_forecasts_audit.h5", test_path, "test")):
+        record = meta["output_hashes"][filename]
+        if fingerprint(path)["sha256"] != record["sha256"]:
+            raise ValueError(f"Corrected forecast SHA-256 mismatch: {filename}")
+        with h5py.File(path, "r") as f:
+            if (not f.attrs.get("completed") or f.attrs.get("feedback") != FEEDBACK
+                    or set(f.keys()) != set(profiles[split])
+                    or int(f.attrs.get("member_count", -1)) != 10
+                    or int(f.attrs.get("ensemble_std_ddof", -1)) != 0
+                    or decode_names(f.attrs.get("target_names", [])) != target_names):
+                raise ValueError(f"Corrected forecast file identity mismatch: {filename}")
+    return {"source": str(metadata_path), "feedback": FEEDBACK,
+            "original_calibration_reused": True, "forecast_hashes_match": True}
+
+
 def run(config: dict[str, Any], *, config_path: Path | None = None) -> Path:
     required = {"output_dir", "ensemble_experiment_dir", "external_scaled_h5_path",
                 "training_scaled_h5_path", "raw_h5_path", "reference_scaler_json_path",
                 "calibration_forecasts_h5_path", "test_forecasts_h5_path",
                 "train_manifest_path", "val_manifest_path", "cal_manifest_path", "test_manifest_path",
                 "saved_uq_comparison_dir"}
-    allowed = required | {"plots", "expected_profile_counts", "expected_steps", "expected_member_count", "alpha"}
+    corrected = "corrected_forecast_metadata_path" in config
+    if corrected:
+        required.remove("saved_uq_comparison_dir")
+    allowed = required | {"plots", "expected_profile_counts", "expected_steps", "expected_member_count", "alpha",
+                          "corrected_forecast_metadata_path"}
     if required - config.keys() or config.keys() - allowed:
         raise ValueError(f"Missing config keys: {sorted(required - config.keys())}; "
                          f"unknown keys: {sorted(config.keys() - allowed)}")
     paths = {k: Path(config[k]) for k in required}
+    if corrected:
+        paths["corrected_forecast_metadata_path"] = Path(config["corrected_forecast_metadata_path"])
     missing = [str(p) for k, p in paths.items() if k != "output_dir" and not p.exists()]
     if missing:
         raise FileNotFoundError("Required local study inputs are missing:\n" + "\n".join(missing))
@@ -112,7 +146,13 @@ def run(config: dict[str, Any], *, config_path: Path | None = None) -> Path:
         raise FileNotFoundError("All original ensemble checkpoints are required for provenance hashing.")
     for path in (paths["external_scaled_h5_path"], paths["training_scaled_h5_path"]):
         check_dataset_splits(path, manifests)
-    validate_saved_calibrations(paths["saved_uq_comparison_dir"], manifests["cal"], alpha, 1e-3)
+    if not corrected:
+        validate_saved_calibrations(paths["saved_uq_comparison_dir"], manifests["cal"], alpha, 1e-3)
+    else:
+        corrected_validation = validate_corrected_forecasts(
+            paths["corrected_forecast_metadata_path"],
+            paths["calibration_forecasts_h5_path"], paths["test_forecasts_h5_path"],
+            manifests, names)
     out.mkdir(parents=True)
     file_inputs = {k: p for k, p in paths.items() if p.is_file()}
     file_inputs.update({f"checkpoint_{i}": p for i,p in enumerate(model_paths)})
@@ -121,13 +161,14 @@ def run(config: dict[str, Any], *, config_path: Path | None = None) -> Path:
     source_paths = [Path(__file__), Path(__file__).with_name("_mace_floor_study.py"),
                     Path(__file__).with_name("_mace_scaler_audit.py")]
     # Hash all scientific inputs, including large HDF5 files, once before use.
-    # Metadata/scores from the current reference run are included as well.
-    for p in sorted(paths["saved_uq_comparison_dir"].glob("*/calibration_metadata.json")):
-        file_inputs[f"saved/{p.parent.name}/calibration"] = p
-    for p in sorted(paths["saved_uq_comparison_dir"].glob("*/coverage_metrics.json")):
-        file_inputs[f"saved/{p.parent.name}/metrics"] = p
-    for p in sorted(paths["saved_uq_comparison_dir"].glob("*/test_forecasts.h5")):
-        file_inputs[f"saved/{p.parent.name}/forecasts"] = p
+    # Historical reference files are only valid for the historical recurrence.
+    if not corrected:
+        for p in sorted(paths["saved_uq_comparison_dir"].glob("*/calibration_metadata.json")):
+            file_inputs[f"saved/{p.parent.name}/calibration"] = p
+        for p in sorted(paths["saved_uq_comparison_dir"].glob("*/coverage_metrics.json")):
+            file_inputs[f"saved/{p.parent.name}/metrics"] = p
+        for p in sorted(paths["saved_uq_comparison_dir"].glob("*/test_forecasts.h5")):
+            file_inputs[f"saved/{p.parent.name}/forecasts"] = p
     print("Hashing fixed inputs (large HDF5 files may take a few minutes)", flush=True)
     hashes = {k: fingerprint(p) for k,p in file_inputs.items()}
     metadata = {"completed": False, "config": config, "config_path": config_path, "floors": list(FLOORS),
@@ -233,28 +274,33 @@ def run(config: dict[str, Any], *, config_path: Path | None = None) -> Path:
     for mode in METHODS:
         key = f"absolute_conformal_target_{mode}"
         current_results[key], current_quantiles[key] = baseline[mode], abs_q[mode]
-    reconciliation = reconcile_saved(current_results, current_quantiles,
-        saved_dir=paths["saved_uq_comparison_dir"], test=test, stats=stats,
-        profiles=manifests["test"], target_names=names)
-    write_json(out / "saved_run_reconciliation.json", reconciliation)
-    # Surface failures without accepting any broad numerical tolerance. Metric
-    # differences are recorded, since reduction order can differ by a few ULPs.
-    if any(not entry["quantiles"]["match"] for entry in reconciliation.values()):
-        raise ValueError("Current-floor/absolute quantiles differ from saved run; inspect reconciliation before interpreting the sweep.")
-    if any(not check["match"] for entry in reconciliation.values()
-           for check in entry["saved_coverage_count_comparisons"].values()):
-        raise ValueError("Regenerated legacy coverage counts disagree with the saved run; inspect reconciliation before interpreting the sweep.")
+    if corrected:
+        write_json(out / "saved_run_reconciliation.json",
+                   {"status": "not_applicable", "reason": "Corrected recurrence differs intentionally from historical forecasts",
+                    "corrected_forecasts": corrected_validation})
+        metadata["corrected_forecasts"] = corrected_validation
+    else:
+        reconciliation = reconcile_saved(current_results, current_quantiles,
+            saved_dir=paths["saved_uq_comparison_dir"], test=test, stats=stats,
+            profiles=manifests["test"], target_names=names)
+        write_json(out / "saved_run_reconciliation.json", reconciliation)
+        if any(not entry["quantiles"]["match"] for entry in reconciliation.values()):
+            raise ValueError("Current-floor/absolute quantiles differ from saved run; inspect reconciliation before interpreting the sweep.")
+        if any(not check["match"] for entry in reconciliation.values()
+               for check in entry["saved_coverage_count_comparisons"].values()):
+            raise ValueError("Regenerated legacy coverage counts disagree with the saved run; inspect reconciliation before interpreting the sweep.")
     metadata["input_file_sizes_and_mtimes_unchanged"] = all(
         p.stat().st_size == hashes[k]["bytes"] and p.stat().st_mtime_ns == hashes[k]["mtime_ns"]
         for k,p in file_inputs.items())
     if not metadata["input_file_sizes_and_mtimes_unchanged"]:
         raise ValueError("Fixed study inputs changed during execution.")
-    array_mismatches = [method for method, entry in reconciliation.items()
-                        if entry["saved_interval_arrays"]["status"] == "checked"
-                        and any(not check[key]["match"] for check in entry["saved_interval_arrays"]["profiles"]
-                                for key in ("lower", "upper"))]
-    if array_mismatches:
-        raise ValueError(f"Saved interval arrays disagree: {array_mismatches}. Inspect reconciliation.")
+    if not corrected:
+        array_mismatches = [method for method, entry in reconciliation.items()
+                            if entry["saved_interval_arrays"]["status"] == "checked"
+                            and any(not check[key]["match"] for check in entry["saved_interval_arrays"]["profiles"]
+                                    for key in ("lower", "upper"))]
+        if array_mismatches:
+            raise ValueError(f"Saved interval arrays disagree: {array_mismatches}. Inspect reconciliation.")
     if config.get("plots", True):
         plot_results(out, aggregates, target_rows)
     metadata["completed"] = True

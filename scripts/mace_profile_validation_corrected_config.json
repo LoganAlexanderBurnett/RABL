@@ -1,0 +1,11 @@
+{
+  "floor_study_dir": "outputs/ml_results/mace_floor_sensitivity_corrected_v1",
+  "output_dir": "outputs/ml_results/mace_profile_validation_corrected_v1",
+  "bootstrap_replicates": 10000,
+  "bootstrap_seed": 20261009,
+  "bootstrap_batch_size": 32,
+  "include_joint": true,
+  "plots": true,
+  "worst_cells_per_target": 3,
+  "control_change_threshold_degrees": 0.0001
+}

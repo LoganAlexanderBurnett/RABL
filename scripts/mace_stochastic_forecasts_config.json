@@ -1,0 +1,8 @@
+{
+  "floor_study_dir": "outputs/ml_results/mace_floor_sensitivity_v1",
+  "operational_study_dir": "outputs/ml_results/mace_operational_validation_v1",
+  "output_dir": "outputs/ml_results/mace_stochastic_corrected_forecasts_v1",
+  "device": "auto",
+  "torch_threads": 1,
+  "input_overrides": {}
+}
