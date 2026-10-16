@@ -2,19 +2,39 @@
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import h5py
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from run_mace_stochastic_forecasts import write_profile
+from run_mace_stochastic_forecasts import write_profile, checked_calibration_cache
 
 
 class CorrectedStochasticSerialization(unittest.TestCase):
     def setUp(self):
         self.stats = {"y": {"min": np.linspace(10, 24, 15, dtype=np.float64),
                             "span": np.linspace(1, 2, 15, dtype=np.float64)}}
+
+    def test_outdated_cache_source_recomputes_instead_of_bypassing_provenance(self):
+        with mock.patch("run_mace_stochastic_forecasts.validate_cache",
+                        side_effect=ValueError("Cache prediction/scaling source changed: src/rabl/machine_learning/lstm_pipeline.py")):
+            cache, reason = checked_calibration_cache({}, {}, {}, root=Path("."), runtime={})
+        self.assertIsNone(cache)
+        self.assertIn("lstm_pipeline.py", reason)
+
+    def test_invalid_frozen_cache_identity_is_not_ignored(self):
+        with mock.patch("run_mace_stochastic_forecasts.validate_cache",
+                        side_effect=ValueError("Cache frozen datasets/scaler/checkpoints differ")):
+            with self.assertRaisesRegex(ValueError, "frozen"):
+                checked_calibration_cache({}, {}, {}, root=Path("."), runtime={})
+
+    def test_valid_cache_reused(self):
+        with mock.patch("run_mace_stochastic_forecasts.validate_cache", return_value={"source": "valid"}):
+            cache, reason = checked_calibration_cache({}, {}, {}, root=Path("."), runtime={})
+        self.assertEqual(cache, {"source": "valid"})
+        self.assertIsNone(reason)
 
     def test_scaled_outputs_and_mean_spread(self):
         members = np.zeros((10, 501, 15), dtype=np.float32)
