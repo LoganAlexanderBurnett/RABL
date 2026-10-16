@@ -1,7 +1,8 @@
 """Reforecast the fixed stochastic test split with the operational Y-to-X recurrence.
 
-Reuse only a hash-validated corrected original calibration archive. Read the fixed
-scaled test inputs, never re-simulate, refit scalers, or train any network.
+Reuse a hash-validated original calibration archive when compatible; otherwise
+recompute original calibration with the same corrected recurrence as the test.
+Never re-simulate, refit scalers, or train any network.
 The exported HDF5 layout matches the historical MACE floor/profile readers, but
 the archived historical predictions and outputs are never overwritten.
 """
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from contextlib import nullcontext
 from pathlib import Path
 
 import h5py
@@ -89,11 +91,34 @@ def configure(path):
     return config, out
 
 
+def checked_calibration_cache(config, prior, hashes, *, root, runtime):
+    """Reuse only a fully verified cache; reforecast after compatible-code drift.
+
+    A stale cache must never be treated as verified. Code/runtime drift permits
+    recomputing *both* original calibration and test under the current frozen
+    ensemble, scaler, and common corrected recurrence. Failed identity, hash, or
+    content verification is not swallowed as an optional cache miss.
+    """
+    try:
+        return validate_cache(config, prior, hashes, root=root, runtime=runtime), None
+    except ValueError as exc:
+        reason = str(exc)
+        expected = ("Cache prediction/scaling source changed:",
+                    "Cache recurrence source is not a reviewed compatible version",
+                    "Cache runtime/precision settings differ")
+        if not reason.startswith(expected):
+            raise
+        print(f"Cached calibration not reusable: {reason}", flush=True)
+        print("Regenerating corrected original calibration from frozen models/data.", flush=True)
+        return None, reason
+
+
 def run(config_path):
     config, out = configure(config_path)
     prior, paths, hashes = frozen_inputs(config, ROOT)
     device, runtime = runtime_settings(config["device"], config["torch_threads"])
-    cache = validate_cache(config, prior, hashes, root=ROOT, runtime=runtime)
+    cache, cache_invalid_reason = checked_calibration_cache(
+        config, prior, hashes, root=ROOT, runtime=runtime)
     names = prior["target_names"]
     profiles = prior["profile_names"]
     if (len(names) != 15 or len(profiles["cal"]) != 1000
@@ -102,15 +127,15 @@ def run(config_path):
     stats, scaler_meta = read_scaler(paths["external_scaled_h5_path"])
     if scaler_meta["target_names"] != names or len(stats["x"]["min"]) != 16:
         raise ValueError("Frozen scaler feature/target order mismatch")
-    cache_path = Path(cache["input_records"]["forecasts"]["path"])
-    # This validates every calibration member/mean/spread, original ID and
-    # truth-scale transformation before reusing any forecast.
-    _arrays, reports = load_forecast(
-        cache_path, names=names, profile_names=profiles["cal"],
-        manifest_identity=cache["original_manifest_identity"], stats=stats)
-    if len(reports) != len(profiles["cal"]):
-        raise ValueError("Incomplete corrected original calibration")
-    del _arrays, reports
+    cache_path = Path(cache["input_records"]["forecasts"]["path"]) if cache else None
+    if cache is not None:
+        # Verify all saved calibration members, means, spreads, and coordinates.
+        _arrays, reports = load_forecast(
+            cache_path, names=names, profile_names=profiles["cal"],
+            manifest_identity=cache["original_manifest_identity"], stats=stats)
+        if len(reports) != len(profiles["cal"]):
+            raise ValueError("Incomplete corrected original calibration")
+        del _arrays, reports
 
     pipeline, bag, _cp, _ds, _uq = production_modules()
     architecture = []
@@ -129,9 +154,11 @@ def run(config_path):
     metadata = {
         "completed": False, "feedback": FEEDBACK,
         "no_training": True, "no_simulation": True, "no_scaler_refitting": True,
-        "original_calibration_reused": True,
-        "original_calibration_identity": cache["original_manifest_identity"],
-        "original_calibration_provenance": cache["input_records"],
+        "original_calibration_reused": cache is not None,
+        "original_calibration_regenerated": cache is None,
+        "original_calibration_recompute_reason": cache_invalid_reason,
+        "original_calibration_identity": cache["original_manifest_identity"] if cache else None,
+        "original_calibration_provenance": cache["input_records"] if cache else None,
         "input_hashes": hashes, "target_names": names,
         "profile_names": {"cal": profiles["cal"], "test": profiles["test"]},
         "runtime": runtime, "output_hashes": {},
@@ -139,6 +166,8 @@ def run(config_path):
             "scripts/run_mace_stochastic_forecasts.py": fingerprint(Path(__file__))["sha256"],
             "scripts/_mace_operational_forecasts.py": fingerprint(ROOT / "scripts/_mace_operational_forecasts.py")["sha256"],
             "scripts/_mace_scaler_use.py": fingerprint(ROOT / "scripts/_mace_scaler_use.py")["sha256"],
+            "src/rabl/machine_learning/lstm_pipeline.py": fingerprint(ROOT / "src/rabl/machine_learning/lstm_pipeline.py")["sha256"],
+            "src/rabl/machine_learning/bagging_ensemble.py": fingerprint(ROOT / "src/rabl/machine_learning/bagging_ensemble.py")["sha256"],
         },
         "physical_truth_representation": "float32 inverse transform of frozen scaled Y",
         "time_representation": "indexed 0..500; physical dt=0.4 s",
@@ -146,8 +175,8 @@ def run(config_path):
     out.mkdir(parents=True)
     write_json(out / "forecast_metadata.json", metadata)
     output_paths = {CAL_NAME: out / CAL_NAME, TEST_NAME: out / TEST_NAME}
-    with (h5py.File(paths["external_scaled_h5_path"], "r") as scaled,
-          h5py.File(cache_path, "r") as cal_source):
+    cal_context = h5py.File(cache_path, "r") if cache is not None else nullcontext(None)
+    with h5py.File(paths["external_scaled_h5_path"], "r") as scaled, cal_context as cal_source:
         def make_file(path):
             f = h5py.File(path, "w")
             f.attrs["target_names"] = np.asarray(names, dtype="S")
@@ -159,16 +188,23 @@ def run(config_path):
 
         with make_file(output_paths[CAL_NAME]) as dest:
             for n, name in enumerate(profiles["cal"]):
-                g = cal_source[name]
                 source = profile_group(scaled, "cal", name)
                 truth = np.asarray(source["Y"][()], dtype=np.float32)
-                if not np.array_equal(truth, g["truth"][()]):
-                    raise ValueError(f"Corrected calibration truth does not match fixed dataset: {name}")
                 x = np.asarray(source["X"][()], dtype=np.float32)
+                if x.shape != (501, 13, 16) or truth.shape != (501, 15):
+                    raise ValueError(f"Original calibration profile dimensions changed: {name}")
+                if cache is not None:
+                    g = cal_source[name]
+                    if not np.array_equal(truth, g["truth"][()]):
+                        raise ValueError(f"Corrected calibration truth does not match fixed dataset: {name}")
+                    members = g["member_predictions_scaled"][()]
+                else:
+                    members = np.stack([corrected_rollout(m, x, stats) for m in models])
                 control = x[:, -1, -1] * np.float32(stats["x"]["span"][-1]) + np.float32(stats["x"]["min"][-1])
-                write_profile(dest, name, g["member_predictions_scaled"][()], truth, control, stats)
+                write_profile(dest, name, members, truth, control, stats)
                 if (n + 1) % 100 == 0:
-                    print(f"Converted corrected calibration: {n + 1}/1000", flush=True)
+                    action = "Reused" if cache is not None else "Recomputed"
+                    print(f"{action} corrected calibration: {n + 1}/1000", flush=True)
             dest.attrs["completed"] = True
         with make_file(output_paths[TEST_NAME]) as dest:
             for n, name in enumerate(profiles["test"]):
@@ -184,7 +220,7 @@ def run(config_path):
                     print(f"Corrected stochastic test: {n + 1}/2000", flush=True)
             dest.attrs["completed"] = True
     same_hashes(paths, hashes)
-    if fingerprint(cache_path)["sha256"] != cache["input_records"]["forecasts"]["sha256"]:
+    if cache is not None and fingerprint(cache_path)["sha256"] != cache["input_records"]["forecasts"]["sha256"]:
         raise ValueError("Corrected original calibration cache changed during inference")
     for name, path in output_paths.items():
         with h5py.File(path, "r") as f:
