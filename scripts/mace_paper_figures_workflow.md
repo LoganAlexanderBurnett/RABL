@@ -185,30 +185,51 @@ calibration to obtain a more favorable figure.
 
 ## Results figures and copy-paste LaTeX tables
 
-**Run only after the corrected stochastic forecasts, floor study, and profile validation finish.**
-The Results renderers only read the saved studies. They do not simulate, train, forecast, recalibrate, or resample.
+Wait for the completed corrected stochastic forecasts, floor calibration and
+profile validation. These renderers are read-only and do not simulate, infer,
+recalibrate or resample the original experimental outputs.
 
-```powershell
-python scripts/generate_mace_paper_figures.py --figures stochastic_representative stochastic_uq_performance operational_representatives spread_error_relationship
-python scripts/generate_mace_results_tables.py --config scripts/mace_paper_figures_config.json
-```
+By default, representative rendering produces **10 separate Figure 6 stochastic
+4x4 plots** and **10 separate Figure 8 operational 2x2 composites**, each
+operational composite containing one selected test trajectory from each B/C/D/F
+maneuver family.
 
-Figure PDF/PNG files are written to separate descriptive-ID directories under outputs/paper/mace_figures.
-Tables are written as complete copy-paste-ready LaTeX environments in outputs/paper/mace_results_tables_v1:
-- table05_forecast_accuracy.tex: pooled stochastic and operational normalized MAE/RMSE.
-- table06_operational_uq.tex: both operational-test MACE-Horizon calibration arms, paired bootstrap intervals, and a paired difference.
+PowerShell commands:
 
-All manuscript figures use a fixed source-inventory check and save input hashes, selected profile IDs and captions.
-The source reference x_steam_out (not predictions) must be <1 for >=10% of 501 forecast samples.
-One middle-sorted eligible stochastic test ID and one from each operational family is used; no ranking by forecast error.
-If an operational family lacks a qualifying test profile, rendering fails rather than selecting a different kind of profile.
-Figure 6 follows Figure 5's 4x4 variable order and titles and includes two MACE and two matched absolute CP methods, with no uncalibrated ensemble band.
-Figure 7 makes Horizon-to-Horizon and Trajectory-to-Trajectory comparisons.
-Figure 8 uses trajectory-group colors, solid simulator curves, dashed forecasts, and ONLY operationally calibrated MACE-Horizon intervals.
-Figure 9 defines bins from saved ensemble spread, then aggregates errors and widths from all stochastic test predictions.
+    python scripts/generate_mace_paper_figures.py --figures stochastic_representative operational_representatives --representative-count 10
+    python scripts/generate_mace_paper_figures.py --figures results --representative-count 20 --representative-seed 20261016 --overwrite
+    python scripts/generate_mace_results_tables.py --config scripts/mace_paper_figures_config.json
 
-The figure generator does not overwrite canonical docs/paper/figures assets; visually inspect the rendered outputs before including them.
-For new table versions change results.results_tables_output_dir in the JSON config (existing table directories are protected).
-The tabular LaTeX files use no nonstandard package; adjust table* float width in the Overleaf project if needed.
+The positive integer CLI argument --representative-count changes the number of
+saved figures (default: 10). The optional --representative-seed controls
+reproducible, uniform sampling without replacement (default: 20261016).
+These settings also reside in the results configuration block.
 
-For all four new Results figures alone, use `python scripts/generate_mace_paper_figures.py --figures results`. The historical `--figures all` selection continues to mean the legacy standard figure set, without the new Results renderers.
+**Selection criterion:** The native simulator-reference x_steam_out must be
+strictly below one at *any* saved time point. No minimum time fraction/duration
+is required. The fraction is retained in figure metadata. Profile selection
+never uses forecast errors, interval width, or coverage. Select once from
+stochastic test and independently from each B/C/D/F operational test group.
+If a population has fewer eligible profiles than requested, rendering stops
+with its eligible count, rather than silently repeating a trajectory.
+
+Each Figure 6/8 result is saved as a numbered PDF and PNG, for example
+fig06_stochastic_representative_01.png through _10.png, and a corresponding
+numbered .caption.md sidecar. Common figure_metadata.json lists every selected
+ID, steam-quality fraction, group eligibility count, RNG seed and input/output
+hashes.
+
+Figure 6 reuses the 4x4 Figure 5 variable ordering. It shows simulator,
+ensemble mean and four calibrated (MACE/absolute CP x Horizon/Trajectory)
+uncertainty methods, but no raw ensemble band. Figure 8 colors represent
+trajectory groups, with solid simulator curves, dashed ensemble means,
+and operationally calibrated MACE-Horizon intervals only.
+
+Figure 7 and Figure 9 remain unchanged and continue to generate single plots.
+Use --figures results to request Figures 6-9 together. The original --figures
+all remains the legacy set. Use --overwrite after inspecting previous figures.
+
+The two Overleaf-ready tables are written by the independent table command
+into outputs/paper/mace_results_tables_v1 as
+table05_forecast_accuracy.tex and table06_operational_uq.tex. Version the
+table output directory in config to avoid overwriting an existing version.

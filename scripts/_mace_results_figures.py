@@ -197,77 +197,119 @@ def _unique(rows, **where):
 
 
 def stochastic_representative(config, out, path, options):
-    """Figure 6: 4x4 in exactly the Figure-5 display order (control + 15)."""
+    """Figure 6: one publication-style 4x4 plot per selected stochastic profile.
+
+    Output count is set by --representative-count (default 10). The same saved
+    stochastic calibrations are used for every profile; selection uses truth only.
+    """
     d = _stochastic(config, path)
     names, ids, stats = d["names"], d["ids"], d["stats"]
     quality = names.index("x_steam_out")
-    with h5py.File(d["files"]["test"], "r") as f:
-        if not f.attrs.get("completed") or decode_names(f.attrs["target_names"]) != names or set(f.keys()) != set(ids):
-            raise ValueError("Incomplete or changed stochastic test forecast file")
-        candidates = [(pid, unsaturated_fraction(f[pid]["y_true_physical"][()], quality)) for pid in ids]
-        (chosen, fraction), eligible = choose_profile(candidates, d["threshold"])
-        g = f[chosen]
-        mean = g["ensemble_mean_scaled"][()]
-        spread = g["ensemble_std_scaled"][()]
-        truth = g["y_true_physical"][()]
-        control = g["control"][()]
-        if (mean.shape != (501, 15) or spread.shape != mean.shape
-                or truth.shape != mean.shape or control.shape != (501,)):
-            raise ValueError("Stochastic representative has unexpected dimensions")
-        with h5py.File(d["files"]["quant"], "r") as qf:
-            if decode_names(qf.attrs["target_names"]) != names or qf.attrs["alpha"] != .05:
-                raise ValueError("Stochastic calibration coordinate/nominal mismatch")
-            bands = {}
-            for method, mode in METHODS:
-                key = "absolute" if method == "absolute" else "floor_0.001"
-                q = qf[f"{key}/{mode}"][()]
-                lo, hi = bounds({"mean": mean, "spread": spread}, q,
-                                None if method == "absolute" else FLOOR)
-                bands[(method, mode)] = (lo.astype(float)*stats["y"]["span"]+stats["y"]["min"],
-                                          hi.astype(float)*stats["y"]["span"]+stats["y"]["min"])
+    count, seed = d["representative_count"], d["representative_seed"]
+    files, details = [], []
     display, labels = _display()
     colors = ("#009E73", "#CC79A7", "#0072B2", "#D55E00")
-    with plt.rc_context(_style()):
-        fig, axes = plt.subplots(4, 4, figsize=(190/25.4, 168/25.4),
-                                 sharex=True, layout="constrained")
-        for ax, key, label in zip(axes.flat, display, labels):
-            ax.set_title(label, fontsize=8, pad=3)
-            if key == "drumAngleDeg":
-                ax.plot(TIME, control, color="black", lw=1.0)
-            else:
-                j, factor = _physical_index(key, names)
-                for (method, mode), c in zip(METHODS, colors):
-                    lo, hi = bands[(method, mode)]
-                    ax.fill_between(TIME, lo[:, j]*factor, hi[:, j]*factor,
-                                    color=c, alpha=.055, linewidth=0)
-                    ax.plot(TIME, lo[:, j]*factor, color=c, alpha=.75, linewidth=.55)
-                    ax.plot(TIME, hi[:, j]*factor, color=c, alpha=.75, linewidth=.55)
-                ax.plot(TIME, truth[:, j]*factor, color="black", lw=1.05, zorder=5)
-                physical_mean = mean[:, j].astype(float)*stats["y"]["span"][j]+stats["y"]["min"][j]
-                ax.plot(TIME, physical_mean*factor, color="#555555", lw=1.0, ls="--", zorder=6)
-            ax.set_xlim(0, 200)
-            ax.set_xticks([0, 100, 200])
-            ax.tick_params(labelsize=6)
-            ax.ticklabel_format(axis="y", style="plain", useOffset=False)
-            ax.grid(alpha=.15)
-        handles = [Line2D([], [], color="black", label="Simulator"),
-                   Line2D([], [], color="#555555", ls="--", label="Ensemble mean")]
-        handles += [Line2D([], [], color=c, label=label) for c, label in zip(colors, METHOD_LABELS)]
-        fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(.5, 1.03),
-                   ncol=3, frameon=False)
-        fig.supxlabel("Time (s)", fontsize=8)
-        files = _save(fig, out, "fig06_stochastic_representative", options)
-    return {"files": files, "inputs": d["inputs"], "selected_profile_id": chosen,
-            "selection_fraction": fraction, "eligible_profiles": eligible,
-            "selection_rule": "Middle sorted ID meeting reference x_steam,out<1 fraction threshold",
-            "caption": "Corrected autoregressive ensemble forecast for one stochastic evaluation trajectory. "
-                       "Simulator truth and ensemble mean are compared with 95% nominal MACE-Horizon, "
-                       "MACE-Trajectory, Absolute CP-Horizon and Absolute CP-Trajectory bands, "
-                       "all calibrated on the stochastic calibration set. The prescribed drum angle "
-                       "occupies the first panel; power equals six times normalized neutron population. "
-                       "Bands are not physically clipped. The trajectory was selected by the recorded "
-                       "reference steam-quality criterion, not its forecast error."}
 
+    with h5py.File(d["files"]["quant"], "r") as qf:
+        if decode_names(qf.attrs["target_names"]) != names or float(qf.attrs["alpha"]) != .05:
+            raise ValueError("Stochastic calibration coordinate/nominal mismatch")
+        quantiles = {}
+        for method, mode in METHODS:
+            key = "absolute" if method == "absolute" else "floor_0.001"
+            quantiles[(method, mode)] = qf[f"{key}/{mode}"][()]
+
+    with h5py.File(d["files"]["test"], "r") as f:
+        if (not f.attrs.get("completed") or decode_names(f.attrs["target_names"]) != names
+                or set(f.keys()) != set(ids)):
+            raise ValueError("Incomplete or changed stochastic test forecast file")
+        candidates = [(pid, unsaturated_fraction(f[pid]["y_true_physical"][()], quality))
+                      for pid in ids]
+        chosen, eligible = choose_profiles(candidates, count=count, seed=seed)
+        for figure_number, (pid, fraction) in enumerate(chosen, start=1):
+            g = f[pid]
+            mean = g["ensemble_mean_scaled"][()]
+            spread = g["ensemble_std_scaled"][()]
+            truth = g["y_true_physical"][()]
+            control = g["control"][()]
+            if (mean.shape != (501, 15) or spread.shape != mean.shape
+                    or truth.shape != mean.shape or control.shape != (501,)):
+                raise ValueError(f"Stochastic representative dimensions differ: {pid}")
+            bands = {}
+            for method, mode in METHODS:
+                lo, hi = bounds({"mean": mean, "spread": spread},
+                                quantiles[(method, mode)],
+                                None if method == "absolute" else FLOOR)
+                bands[(method, mode)] = (
+                    lo.astype(float)*stats["y"]["span"]+stats["y"]["min"],
+                    hi.astype(float)*stats["y"]["span"]+stats["y"]["min"])
+
+            with plt.rc_context(_style()):
+                fig, axes = plt.subplots(4, 4, figsize=(190/25.4, 168/25.4),
+                                         sharex=True)
+                for ax, key, label in zip(axes.flat, display, labels):
+                    ax.set_title(label, fontsize=8, pad=3)
+                    if key == "drumAngleDeg":
+                        ax.plot(TIME, control, color="black", lw=1.0)
+                    else:
+                        j, factor = _physical_index(key, names)
+                        for (method, mode), c in zip(METHODS, colors):
+                            lo, hi = bands[(method, mode)]
+                            ax.fill_between(TIME, lo[:, j]*factor, hi[:, j]*factor,
+                                            color=c, alpha=.055, linewidth=0)
+                            ax.plot(TIME, lo[:, j]*factor, color=c, alpha=.75, linewidth=.55)
+                            ax.plot(TIME, hi[:, j]*factor, color=c, alpha=.75, linewidth=.55)
+                        ax.plot(TIME, truth[:, j]*factor, color="black", lw=1.05, zorder=5)
+                        physical_mean = (mean[:, j].astype(float)*stats["y"]["span"][j]
+                                         + stats["y"]["min"][j])
+                        ax.plot(TIME, physical_mean*factor, color="#555555",
+                                lw=1.0, ls="--", zorder=6)
+                    ax.set_xlim(0, 200)
+                    ax.set_xticks([0, 100, 200])
+                    ax.tick_params(labelsize=6)
+                    ax.ticklabel_format(axis="y", style="plain", useOffset=False)
+                    ax.grid(alpha=.15)
+                handles = [Line2D([], [], color="black", label="Simulator"),
+                           Line2D([], [], color="#555555", ls="--", label="Ensemble mean")]
+                handles += [Line2D([], [], color=c, label=label)
+                            for c, label in zip(colors, METHOD_LABELS)]
+                fig.subplots_adjust(top=.85, bottom=.08, left=.08, right=.99,
+                                    wspace=.40, hspace=.55)
+                fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(.5,.99),
+                           ncol=3, fontsize=7, frameon=False)
+                fig.supxlabel("Time (s)", y=.025, fontsize=8)
+                stem = f"fig06_stochastic_representative_{figure_number:02d}"
+                generated = _save(fig, out, stem, options)
+            files.extend(generated)
+            caption = (
+                f"Corrected autoregressive forecast for stochastic test profile {pid}. "
+                f"The simulator reference has outlet steam quality strictly below unity "
+                f"for {fraction:.1%} of saved forecast points. Simulator truth (solid black), "
+                f"ensemble mean (dashed gray), and nominal 95% MACE-Horizon, "
+                f"MACE-Trajectory, Absolute CP-Horizon and Absolute CP-Trajectory "
+                f"bounds use a common stochastic calibration set. The prescribed "
+                f"drum angle is shown in the first panel; P = 6n MW. "
+                f"Uncertainty bounds are not clipped to physical limits.")
+            caption_filename = f"{stem}.caption.md"
+            (out/caption_filename).write_text(caption+"\n", encoding="utf-8")
+            files.append(caption_filename)
+            details.append({"number": figure_number, "profile_id": pid,
+                            "unsaturated_fraction": fraction, "figure_stem": stem,
+                            "caption_file": caption_filename})
+            print(f"Stochastic representative {figure_number}/{count}: {pid} "
+                  f"(reference x_steam,out<1: {fraction:.2%})", flush=True)
+    return {
+        "files": files, "inputs": d["inputs"], "requested_count": count,
+        "generated_count": len(details), "representative_seed": seed,
+        "eligible_profiles": eligible, "selected_profiles": details,
+        "selection_rule": "Uniform seeded no-replacement sample among stochastic test profiles "
+                          "with simulator-reference x_steam,out<1 at one or more saved time points; "
+                          "no ranking by prediction residuals or coverage",
+        "caption": (f"Series of {len(details)} 4-by-4 stochastic-test forecasts using the "
+                    "same 95% nominal Horizon and Trajectory MACE and absolute-error CP "
+                    "calibrations. All test profiles were selected solely by the presence "
+                    "of simulator steam quality below unity. Per-figure captions and "
+                    "selected IDs are included in numbered sidecars and metadata.")
+    }
 
 def stochastic_uq_performance(config, out, path, options):
     """Figure 7: nominal coverage by calibration objective plus width and score."""
@@ -342,89 +384,145 @@ def stochastic_uq_performance(config, out, path, options):
 
 
 def operational_representatives(config, out, path, options):
-    """Figure 8: four maneuver groups, trajectory colors, common line semantics."""
+    """Figure 8: one composite four-group 2x2 plot per selected set.
+
+    Each subplot is color-coded by the operational maneuver family (B/C/D/F),
+    not by output variable. Saved operational MACE-Horizon intervals only.
+    """
     d = _operational(config, path)
     names, ids = d["names"], d["ids"]
     quality = names.index("x_steam_out")
+    count, seed = d["representative_count"], d["representative_seed"]
     candidates = {}
     with h5py.File(d["files"]["test"], "r") as f:
         if (not f.attrs.get("completed") or decode_names(f.attrs["target_names"]) != names
                 or f.attrs.get("manifest_identity") != d["manifest"]["identity"]):
             raise ValueError("Operational forecasts do not match saved study")
         for p in d["manifest"]["profiles"]:
-            if p["split"] != "test": continue
+            if p["split"] != "test":
+                continue
             g = f[p["id"]]
             if g.attrs.get("family") != p["family"] or g.attrs.get("split") != "test":
                 raise ValueError("Operational family mismatch")
             candidates.setdefault(p["family"], []).append(
                 (p["id"], unsaturated_fraction(g["truth_physical"][()], quality)))
     selected, eligible = {}, {}
-    for family in FAMILIES:
-        selected[family], eligible[family] = choose_profile(candidates.get(family, []), d["threshold"])
-    with h5py.File(d["files"]["test"], "r") as f, h5py.File(d["files"]["intervals"], "r") as iq:
+    for i, family in enumerate(FAMILIES):
+        try:
+            selected[family], eligible[family] = choose_profiles(
+                candidates.get(family, []), count=count, seed=seed+i)
+        except ValueError as exc:
+            raise ValueError(f"Operational family {family}: {exc}") from exc
+
+    files, details = [], []
+    with h5py.File(d["files"]["test"], "r") as f, h5py.File(
+            d["files"]["intervals"], "r") as iq:
         if decode_names(iq.attrs["test_profile_names"]) != ids:
             raise ValueError("Operational interval profile ordering mismatch")
-        panels = []
-        for family in FAMILIES:
-            pid, frac = selected[family]
-            g = f[pid]
-            idx = ids.index(pid)
-            mean = g["mean"][()]
-            truth = g["truth_physical"][()]
-            angle = g["control_physical"][()]
-            lower = iq["intervals/horizon/operational/mace/lower"][idx]
-            upper = iq["intervals/horizon/operational/mace/upper"][idx]
-            mask = iq["intervals/horizon/operational/mace/mask"][idx]
-            if (mean.shape != (501,15) or truth.shape != mean.shape
-                    or angle.shape != (501,) or lower.shape != mean.shape
-                    or upper.shape != mean.shape):
-                raise ValueError("Operational representative has unexpected dimensions")
-            physical = lambda z: z.astype(float)*d["stats"]["y"]["span"]+d["stats"]["y"]["min"]
-            if not np.array_equal(mask, (lower<=g["truth"][()]) & (g["truth"][()]<=upper)):
-                raise ValueError("Operational saved band/coverage mismatch")
-            panels.append((family, angle, truth, physical(mean), physical(lower), physical(upper)))
-    with plt.rc_context(_style()):
-        fig, axs = plt.subplots(2, 2, figsize=(178/25.4, 118/25.4), sharex=True, layout="constrained")
-        specs = [("drum", r"$\theta$ (degree)"),
-                 ("Tf", r"$T_f$ (K)"),
-                 ("n", r"$P$ (MW)"),
-                 ("rho_dollars", r"$\rho_{\$}$ (dollars)")]
-        for ax, (key, label) in zip(axs.flat, specs):
-            ax.set_title(label)
-            for (family, angle, truth, mean, lo, hi), color in zip(panels, PALETTE):
-                if key == "drum":
-                    ax.plot(TIME, angle, color=color, lw=1.2)
-                else:
-                    j, scale = _physical_index("P_MW" if key=="n" else key, names)
-                    ax.fill_between(TIME, lo[:,j]*scale, hi[:,j]*scale, color=color, alpha=.11, lw=0)
-                    ax.plot(TIME, truth[:,j]*scale, color=color, lw=1.25)
-                    ax.plot(TIME, mean[:,j]*scale, color=color, lw=1.0, ls="--")
-            ax.set_xlim(0,200); ax.set_xticks([0,100,200])
-            ax.ticklabel_format(axis="y", style="plain", useOffset=False)
-            ax.grid(alpha=.15)
-        legend = [Line2D([], [], color=c, lw=1.8, label=label) for c,label in zip(
-            PALETTE, ("Single maneuver + hold", "Successive maneuvers + holds",
-                      "Maneuver + return", "Bidirectional + return"))]
-        legend += [Line2D([], [], color="gray", label="Simulator"),
-                   Line2D([], [], color="gray", ls="--", label="Ensemble mean"),
-                   Patch(facecolor="gray", alpha=.15, label="Operational MACE-Horizon")]
-        fig.legend(handles=legend, loc="upper center", ncol=2, frameon=False,
-                   bbox_to_anchor=(.5,1.12), fontsize=6.5)
-        fig.supxlabel("Time (s)")
-        files = _save(fig, out, "fig08_operational_representatives", options)
-    return {"files": files, "inputs": d["inputs"],
-            "selected_profile_ids": {k:v[0] for k,v in selected.items()},
-            "selected_unsaturated_fractions": {k:v[1] for k,v in selected.items()},
-            "eligible_profile_counts": eligible,
-            "selection_rule": "Middle sorted eligible ID within each saved test family; truth x_steam,out<1",
-            "caption": "One independently selected simulator trajectory from each of four operation-informed "
-                       "maneuver families. Color identifies the maneuver family in every panel; solid curves "
-                       "show simulator truth and dashed curves show ensemble mean. Shading denotes only "
-                       "MACE-Horizon 95% nominal intervals calibrated on independent operation-informed "
-                       "calibration profiles. Power is six times normalized neutron population. "
-                       "All selected reference trajectories spend the configured fraction of the record "
-                       "with outlet steam quality below unity."}
+        profiles_index = {pid: i for i, pid in enumerate(ids)}
+        expected = {
+            "lower": iq["intervals/horizon/operational/mace/lower"],
+            "upper": iq["intervals/horizon/operational/mace/upper"],
+            "mask": iq["intervals/horizon/operational/mace/mask"],
+        }
+        for figure_number in range(1, count+1):
+            panels, identities = [], {}
+            for family in FAMILIES:
+                pid, fraction = selected[family][figure_number-1]
+                g = f[pid]
+                idx = profiles_index[pid]
+                mean = g["mean"][()]
+                truth = g["truth_physical"][()]
+                angle = g["control_physical"][()]
+                lower = expected["lower"][idx]
+                upper = expected["upper"][idx]
+                mask = expected["mask"][idx]
+                if (mean.shape != (501,15) or truth.shape != mean.shape
+                        or angle.shape != (501,) or lower.shape != mean.shape
+                        or upper.shape != mean.shape):
+                    raise ValueError(f"Operational representative dimensions differ: {pid}")
+                scaled_truth = g["truth"][()]
+                if not np.array_equal(mask, (lower<=scaled_truth) & (scaled_truth<=upper)):
+                    raise ValueError(f"Operational saved band/coverage mismatch: {pid}")
+                def physical(z):
+                    return z.astype(float)*d["stats"]["y"]["span"]+d["stats"]["y"]["min"]
+                panels.append((family, angle, truth, physical(mean),
+                               physical(lower), physical(upper)))
+                identities[family] = {"profile_id": pid, "unsaturated_fraction": fraction}
 
+            with plt.rc_context(_style()):
+                fig, axs = plt.subplots(2, 2, figsize=(178/25.4, 118/25.4),
+                                        sharex=True)
+                specs = [("drum", r"$\theta$ (degree)"),
+                         ("Tf", r"$T_f$ (K)"),
+                         ("n", r"$P$ (MW)"),
+                         ("rho_dollars", r"$\rho_{\$}$ (dollars)")]
+                for ax, (key, label) in zip(axs.flat, specs):
+                    ax.set_title(label)
+                    for (family, angle, truth, mean, lo, hi), color in zip(panels, PALETTE):
+                        if key == "drum":
+                            ax.plot(TIME, angle, color=color, lw=1.2)
+                        else:
+                            j, scale = _physical_index(
+                                "P_MW" if key == "n" else key, names)
+                            ax.fill_between(TIME, lo[:, j]*scale, hi[:, j]*scale,
+                                            color=color, alpha=.11, lw=0)
+                            ax.plot(TIME, truth[:, j]*scale, color=color, lw=1.25)
+                            ax.plot(TIME, mean[:, j]*scale, color=color,
+                                    lw=1.0, ls="--")
+                    ax.set_xlim(0, 200)
+                    ax.set_xticks([0, 100, 200])
+                    ax.ticklabel_format(axis="y", style="plain", useOffset=False)
+                    ax.grid(alpha=.15)
+                legend = [Line2D([], [], color=c, lw=1.8, label=label)
+                          for c, label in zip(
+                            PALETTE, ("B: Single maneuver + hold",
+                                      "C: Successive maneuvers + holds",
+                                      "D: Maneuver + return",
+                                      "F: Bidirectional maneuvers"))]
+                legend += [Line2D([], [], color="gray", label="Simulator"),
+                           Line2D([], [], color="gray", ls="--", label="Ensemble mean"),
+                           Patch(facecolor="gray", alpha=.15,
+                                 label="Operational MACE-Horizon")]
+                fig.subplots_adjust(top=.77, bottom=.11, left=.09, right=.98,
+                                    wspace=.38, hspace=.42)
+                fig.legend(handles=legend, loc="upper center", ncol=2,
+                           frameon=False, bbox_to_anchor=(.5,.995), fontsize=6.5)
+                fig.supxlabel("Time (s)", y=.025)
+                stem = f"fig08_operational_representatives_{figure_number:02d}"
+                generated = _save(fig, out, stem, options)
+            files.extend(generated)
+            caption = (
+                "Operational forecast comparison across four maneuver families, "
+                + ", ".join(f"{family} ({identities[family]['profile_id']})"
+                            for family in FAMILIES)
+                + ". Colors identify families across every subplot. Simulator "
+                "truth is solid, ensemble mean is dashed, and shaded bands are "
+                "only MACE-Horizon 95% nominal intervals calibrated using the "
+                "independent operation-informed calibration set. P = 6n MW. "
+                "Every selected reference profile has x_steam,out<1 at least once.")
+            caption_filename = f"{stem}.caption.md"
+            (out/caption_filename).write_text(caption+"\n", encoding="utf-8")
+            files.append(caption_filename)
+            details.append({"number": figure_number, "profiles": identities,
+                            "figure_stem": stem, "caption_file": caption_filename})
+            print(f"Operational representative set {figure_number}/{count}: "
+                  + ", ".join(f"{k}={identities[k]['profile_id']}" for k in FAMILIES),
+                  flush=True)
+    return {
+        "files": files, "inputs": d["inputs"], "requested_count": count,
+        "generated_count": len(details), "representative_seed": seed,
+        "eligible_profile_counts": eligible, "selected_sets": details,
+        "selection_rule": "For each operational test family independently, seeded no-replacement "
+                          "sample among profiles with simulator-reference x_steam,out<1 "
+                          "at one or more forecast times; seeds differ by family index",
+        "caption": (f"Series of {len(details)} 2-by-2 operational comparisons, each "
+                    "containing one distinct representative from each maneuver family. "
+                    "Color distinguishes the group rather than the variable, "
+                    "and only operationally calibrated MACE-Horizon prediction "
+                    "intervals are shown. Individual IDs and captions are saved "
+                    "in metadata and numbered caption files.")
+    }
 
 def spread_error_relationship(config, out, path, options):
     """Figure 9: bin by saved stochastic ensemble spread, never fit on test errors."""

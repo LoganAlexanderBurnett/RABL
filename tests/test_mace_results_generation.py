@@ -14,22 +14,31 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from _mace_results_figures import choose_profile, unsaturated_fraction
+from _mace_results_figures import choose_profiles, unsaturated_fraction, stochastic_representative, operational_representatives
 from generate_mace_results_tables import _latex_table, make_tables
 from generate_mace_paper_figures import selected_figures
 
 
 class ResultsSelectionTests(unittest.TestCase):
-    def test_deterministic_unsaturated_truth_selection(self):
-        a = np.ones((501,15))
-        a[:102,4] = .9
-        self.assertAlmostEqual(unsaturated_fraction(a,4),102/501)
-        self.assertEqual(choose_profile([("z",.3),("b",.25),("a",.04),("d",.2)],.1),
-                         (("d",.2),3))
-        with self.assertRaisesRegex(ValueError, "No reference profile"):
-            choose_profile([("a",.05)],.1)
+    def test_one_unsaturated_time_point_is_enough(self):
+        a = np.ones((501, 15), dtype=np.float32)
+        a[200, 4] = .9
+        fraction = unsaturated_fraction(a, 4)
+        self.assertAlmostEqual(fraction, 1/501)
+        profiles = [("z",fraction),("b",fraction),("d",fraction),("a",0.)]
+        result, count = choose_profiles(profiles, count=2, seed=17)
+        self.assertEqual(count,3)
+        self.assertEqual(len(result),2)
+        self.assertEqual(len({p[0] for p in result}),2)
+        self.assertEqual(result,choose_profiles(list(reversed(profiles)),2,17)[0])
+        with self.assertRaisesRegex(ValueError,"only 3 qualify"):
+            choose_profiles(profiles,count=4)
+        with self.assertRaisesRegex(ValueError,"positive integer"):
+            choose_profiles(profiles,count=0)
+        with self.assertRaisesRegex(ValueError,"Duplicate"):
+            choose_profiles([("z",fraction),("z",fraction)])
         a[0,0]=np.nan
-        with self.assertRaisesRegex(ValueError, "Invalid"):
+        with self.assertRaisesRegex(ValueError,"Invalid"):
             unsaturated_fraction(a,4)
 
     def test_results_registry_does_not_break_legacy_all(self):
@@ -43,6 +52,88 @@ class ResultsSelectionTests(unittest.TestCase):
         for token in (r"\begin{table}[t]",r"\caption{Caption}",r"\label{tab:sample}",
                       r"\begin{tabular}{lc}",r"\end{table}"):
             self.assertIn(token,body)
+
+
+    def test_multiple_stochastic_4x4_figures_and_numbered_captions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            names = ["TN2", "Tm", "Thp", "Tf", "Tsg", "T_steam_out",
+                     "x_steam_out", *[f"c[{i}]" for i in range(1,7)],
+                     "n", "rho_dollars"]
+            ids = ["stoc_a", "stoc_b", "stoc_c"]
+            forecasts, quantiles = root/"test.h5", root/"quant.h5"
+            with h5py.File(forecasts, "w") as f:
+                f.attrs["completed"] = True
+                f.attrs["target_names"] = np.asarray(names, dtype="S")
+                for i, pid in enumerate(ids):
+                    g = f.create_group(pid)
+                    truth = np.ones((501, 15), dtype=np.float32)
+                    if i < 2:
+                        truth[100+i, names.index("x_steam_out")] = .995
+                    g["y_true_physical"] = truth
+                    g["ensemble_mean_scaled"] = np.ones_like(truth)
+                    g["ensemble_std_scaled"] = np.full_like(truth, .02)
+                    g["control"] = np.full(501, 45., dtype=np.float32)
+            with h5py.File(quantiles, "w") as f:
+                f.attrs["target_names"] = np.asarray(names, dtype="S")
+                f.attrs["alpha"] = .05
+                for key in ("absolute", "floor_0.001"):
+                    f.create_dataset(key+"/horizon", data=np.full((501, 15), .05))
+                    f.create_dataset(key+"/trajectory", data=np.full(15, .05))
+            d = {"names": names, "ids": ids, "stats": {"y": {"min": np.zeros(15),
+                 "span": np.ones(15)}}, "files": {"test": forecasts, "quant": quantiles},
+                 "inputs": [], "representative_count": 2, "representative_seed": 23}
+            with mock.patch("_mace_results_figures._stochastic", return_value=d):
+                result = stochastic_representative({}, root, lambda p: p,
+                                                    {"formats": ["png"], "dpi": 72})
+            self.assertEqual(result["generated_count"], 2)
+            self.assertEqual(result["eligible_profiles"], 2)
+            self.assertEqual(len(list(root.glob("fig06_*.png"))), 2)
+            self.assertEqual(len(list(root.glob("fig06_*.caption.md"))), 2)
+
+
+    def test_two_operational_2x2_composites_using_all_four_groups(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            names = ["TN2", "Tm", "Thp", "Tf", "Tsg", "T_steam_out",
+                     "x_steam_out", *[f"c[{i}]" for i in range(1, 7)],
+                     "n", "rho_dollars"]
+            ids = [f"{fam}_{i}" for fam in "BCDF" for i in range(2)]
+            forecast, intervals = root/"op.h5", root/"intervals.h5"
+            with h5py.File(forecast, "w") as f:
+                f.attrs["completed"] = True
+                f.attrs["target_names"] = np.asarray(names, dtype="S")
+                f.attrs["manifest_identity"] = "fixture"
+                for pid in ids:
+                    fam, i = pid.split("_")
+                    g = f.create_group(pid)
+                    g.attrs["family"], g.attrs["split"] = fam, "test"
+                    truth = np.ones((501, 15), dtype=np.float32)
+                    truth[23+int(i), names.index("x_steam_out")] = .98
+                    g["truth_physical"] = truth
+                    g["truth"] = np.zeros((501, 15), dtype=np.float32)
+                    g["mean"] = np.zeros((501, 15), dtype=np.float32)
+                    g["control_physical"] = np.full(501, 45.)
+            with h5py.File(intervals, "w") as f:
+                f.attrs["test_profile_names"] = np.asarray(ids, dtype="S")
+                for key, value in (("lower",-1.), ("upper",1.), ("mask",True)):
+                    f.create_dataset("intervals/horizon/operational/mace/"+key,
+                        data=np.full((len(ids),501,15),value))
+            d = {"names":names, "ids":ids,
+                 "stats":{"y":{"span":np.ones(15),"min":np.zeros(15)}},
+                 "files":{"test":forecast,"intervals":intervals},
+                 "manifest":{"identity":"fixture", "profiles":[
+                     {"id":pid,"split":"test","family":pid[0]} for pid in ids]},
+                 "inputs":[],"representative_count":2,"representative_seed":23}
+            with mock.patch("_mace_results_figures._operational",return_value=d):
+                result = operational_representatives({},root,lambda p:p,
+                                                      {"formats":["png"],"dpi":72})
+            self.assertEqual(result["generated_count"],2)
+            self.assertEqual(result["eligible_profile_counts"],
+                             {fam:2 for fam in "BCDF"})
+            self.assertEqual(len(list(root.glob("fig08_*.png"))),2)
+            for record in result["selected_sets"]:
+                self.assertEqual(set(record["profiles"]),set("BCDF"))
 
 
 class SyntheticResultsTablesTests(unittest.TestCase):

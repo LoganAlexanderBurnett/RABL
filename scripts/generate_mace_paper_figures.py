@@ -48,7 +48,8 @@ def selected_figures(value):
 
 def run(config_file, *, figures=('all',), output_dir=None, overwrite=False,
         formats=None, dpi=None, sampling_mode=None, dataset_mode=None,
-        profile_id=None, calibration_source=None, trajectory_mode=None, repo_root=None):
+        profile_id=None, calibration_source=None, trajectory_mode=None,
+        representative_count=None, representative_seed=None, repo_root=None):
     root = Path(repo_root or ROOT).resolve()
     cfg_path = Path(config_file)
     if not cfg_path.is_absolute(): cfg_path = root/cfg_path
@@ -59,6 +60,12 @@ def run(config_file, *, figures=('all',), output_dir=None, overwrite=False,
     if profile_id: config['operational']['representative_profile_id'] = profile_id
     if calibration_source: config['operational']['representative_calibration'] = calibration_source
     if trajectory_mode: config['operational']['representative_trajectory_mode'] = trajectory_mode
+    if representative_count is not None:
+        if representative_count < 1: raise ValueError('--representative-count must be positive')
+        config['results']['representative_count'] = representative_count
+    if representative_seed is not None:
+        if representative_seed < 0: raise ValueError('--representative-seed must be nonnegative')
+        config['results']['representative_seed'] = representative_seed
     options = dict(formats=formats or config['formats'], dpi=dpi or config['dpi'])
     if not options['formats'] or set(options['formats'])-{'png', 'pdf', 'svg'} or options['dpi'] < 72:
         raise ValueError('Formats must be PNG/PDF/SVG; dpi must be >=72')
@@ -137,6 +144,8 @@ def main():
     p.add_argument('--sampling-mode', choices=('auto', 'stored', 'illustrative'))
     p.add_argument('--dataset-mode', choices=('auto', 'raw', 'stored_image'))
     p.add_argument('--profile-id', help='Saved operation-informed test ID for representative_forecast')
+    p.add_argument('--representative-count', type=int, help='Number of stochastic profiles and four-group operational figure sets (default: 10)')
+    p.add_argument('--representative-seed', type=int, help='Seed for reproducible representative sampling')
     p.add_argument('--calibration-source', choices=('original', 'operational'),
                    help='Calibration population for the representative test forecast')
     p.add_argument('--trajectory-mode', choices=('target_trajectory', 'joint_trajectory'),
@@ -149,7 +158,9 @@ def main():
                  overwrite=args.overwrite, formats=args.formats, dpi=args.dpi,
                  sampling_mode=args.sampling_mode, dataset_mode=args.dataset_mode,
                  profile_id=args.profile_id, calibration_source=args.calibration_source,
-                 trajectory_mode=args.trajectory_mode)
+                 trajectory_mode=args.trajectory_mode,
+                 representative_count=args.representative_count,
+                 representative_seed=args.representative_seed)
     if not result['completed']: raise SystemExit(1)
 
 
