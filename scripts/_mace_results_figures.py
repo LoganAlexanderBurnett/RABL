@@ -48,14 +48,17 @@ def _settings(config, path):
     s = config["results"]
     base = {k: path(s[k]) for k in ("stochastic_forecasts_dir", "stochastic_floor_dir",
                                    "stochastic_validation_dir", "operational_dir", "scaler_file")}
-    threshold = float(s["minimum_unsaturated_fraction"])
-    if not 0 < threshold <= 1:
-        raise ValueError("minimum_unsaturated_fraction must be in (0,1]")
-    return s, base, threshold
+    count = s.get("representative_count", 10)
+    seed = s.get("representative_seed", 20261016)
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError("representative_count must be a positive integer")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("representative_seed must be a nonnegative integer")
+    return s, base, {"count": count, "seed": seed}
 
 
 def _stochastic(config, path, *, require_validation=True):
-    s, base, threshold = _settings(config, path)
+    s, base, selection = _settings(config, path)
     forecasts = base["stochastic_forecasts_dir"]
     study = base["stochastic_floor_dir"]
     fm_path = forecasts/"forecast_metadata.json"
@@ -89,11 +92,12 @@ def _stochastic(config, path, *, require_validation=True):
     if scaler_meta["target_names"] != names:
         raise ValueError("Scaled output coordinate order differs from forecast")
     return {"paths": base, "files": {"test": test_path, "quant": quant_path},
-            "names": names, "ids": ids, "stats": stats, "inputs": inputs, "threshold": threshold}
+            "names": names, "ids": ids, "stats": stats, "inputs": inputs,
+            "representative_count": selection["count"], "representative_seed": selection["seed"]}
 
 
 def _operational(config, path):
-    s, base, threshold = _settings(config, path)
+    s, base, selection = _settings(config, path)
     root = base["operational_dir"]
     locations = {"manifest": root/"operational_manifest.json",
                  "forecast_meta": root/"forecasts/forecast_metadata.json",
@@ -120,7 +124,8 @@ def _operational(config, path):
         raise ValueError("Operational scaler output order mismatch")
     inputs.append(_verified(base["scaler_file"], fm["input_hashes"]["external_scaled_h5_path"]["sha256"]))
     return {"paths": base, "files": locations, "manifest": manifest, "ids": ids,
-            "names": names, "stats": stats, "inputs": inputs, "threshold": threshold}
+            "names": names, "stats": stats, "inputs": inputs,
+            "representative_count": selection["count"], "representative_seed": selection["seed"]}
 
 
 def unsaturated_fraction(truth, quality_column):
@@ -131,13 +136,32 @@ def unsaturated_fraction(truth, quality_column):
     return float(np.mean(a[:, quality_column] < 1.0))
 
 
-def choose_profile(candidates, threshold):
-    """Deterministic middle-ID eligible profile; never rank by errors/coverage."""
-    valid = sorted(((name, frac) for name, frac in candidates if frac >= threshold), key=lambda x: x[0])
-    if not valid:
-        raise ValueError(f"No reference profile qualifies with x_steam,out<1 for >= {threshold:.1%}")
-    return valid[len(valid)//2], len(valid)
+def choose_profiles(candidates, count=10, seed=20261016):
+    """Uniformly sample qualifying reference profiles without replacement.
 
+    A profile qualifies if the simulator has x_steam,out < 1 at *any* time.
+    Selection uses a recorded PCG64 seed and never examines forecast residuals
+    or conformal coverage. Returned IDs are sorted for stable output numbering.
+    """
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError("representative_count must be a positive integer")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("representative_seed must be a nonnegative integer")
+    ids = [name for name, _ in candidates]
+    if len(ids) != len(set(ids)):
+        raise ValueError("Duplicate representative profile IDs")
+    if any(not np.isfinite(frac) or not 0 <= frac <= 1 for _, frac in candidates):
+        raise ValueError("Invalid reference steam-quality fraction")
+    eligible = sorted(((name, frac) for name, frac in candidates if frac > 0),
+                      key=lambda item: item[0])
+    if len(eligible) < count:
+        raise ValueError(
+            f"Requested {count} representative profiles with reference "
+            f"x_steam,out < 1 at least once, but only {len(eligible)} qualify. "
+            "Choose a smaller --representative-count.")
+    selected_indices = np.sort(np.random.default_rng(seed).choice(
+        len(eligible), size=count, replace=False))
+    return [eligible[int(i)] for i in selected_indices], len(eligible)
 
 def _style():
     from _mace_paper_figures import STYLE
