@@ -28,13 +28,21 @@ REGISTRY = {
 }
 
 
+RESULT_FIGURES = ('stochastic_representative', 'stochastic_uq_performance',
+                  'operational_representatives', 'spread_error_relationship')
+
+
 def selected_figures(value):
     requested = [part for item in value for part in item.split(',') if part]
     if requested == ['all']:
-        # Figure 6 was removed from the manuscript. Keep its data plot opt-in.
-        return [name for name in REGISTRY if name != 'operational_controls']
-    if not requested or 'all' in requested or set(requested)-set(REGISTRY):
-        raise ValueError(f'Choose all or specific IDs: {", ".join(REGISTRY)}')
+        # Preserve the historical default 'all' set: added Results figures are opt-in.
+        return [name for name in REGISTRY if name != 'operational_controls'
+                and name not in RESULT_FIGURES]
+    if requested == ['results']:
+        return list(RESULT_FIGURES)
+    if (not requested or 'all' in requested or 'results' in requested
+            or set(requested)-set(REGISTRY)):
+        raise ValueError(f'Choose all, results or specific IDs: {", ".join(REGISTRY)}')
     return list(dict.fromkeys(requested))
 
 
@@ -120,7 +128,7 @@ def run(config_file, *, figures=('all',), output_dir=None, overwrite=False,
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--config', type=Path, default=Path('scripts/mace_paper_figures_config.json'))
-    p.add_argument('--figures', nargs='+', default=['all'], help='all, space-separated IDs, or comma-separated IDs')
+    p.add_argument('--figures', nargs='+', default=['all'], help='all (legacy), results, space-separated IDs, or comma-separated IDs')
     p.add_argument('--list', action='store_true', help='List available IDs without loading data or plotting dependencies')
     p.add_argument('--output-dir', type=Path)
     p.add_argument('--overwrite', action='store_true', help='Replace successful selected figure folders only')
