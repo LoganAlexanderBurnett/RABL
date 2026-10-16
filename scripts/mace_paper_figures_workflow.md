@@ -181,3 +181,32 @@ coverage, width, interval-score, and floor figures should consume archived metri
 or endpoints using the paper's single recurrence/numerical convention. The current
 runner does not invent missing corrected stochastic-study results or recalculate
 calibration to obtain a more favorable figure.
+
+
+## Results figures and copy-paste LaTeX tables
+
+**Run only after the corrected stochastic forecasts, floor study, and profile validation finish.**
+The Results renderers only read the saved studies. They do not simulate, train, forecast, recalibrate, or resample.
+
+```powershell
+python scripts/generate_mace_paper_figures.py --figures stochastic_representative stochastic_uq_performance operational_representatives spread_error_relationship
+python scripts/generate_mace_results_tables.py --config scripts/mace_paper_figures_config.json
+```
+
+Figure PDF/PNG files are written to separate descriptive-ID directories under outputs/paper/mace_figures.
+Tables are written as complete copy-paste-ready LaTeX environments in outputs/paper/mace_results_tables_v1:
+- table05_forecast_accuracy.tex: pooled stochastic and operational normalized MAE/RMSE.
+- table06_operational_uq.tex: both operational-test MACE-Horizon calibration arms, paired bootstrap intervals, and a paired difference.
+
+All manuscript figures use a fixed source-inventory check and save input hashes, selected profile IDs and captions.
+The source reference x_steam_out (not predictions) must be <1 for >=10% of 501 forecast samples.
+One middle-sorted eligible stochastic test ID and one from each operational family is used; no ranking by forecast error.
+If an operational family lacks a qualifying test profile, rendering fails rather than selecting a different kind of profile.
+Figure 6 follows Figure 5's 4x4 variable order and titles and includes two MACE and two matched absolute CP methods, with no uncalibrated ensemble band.
+Figure 7 makes Horizon-to-Horizon and Trajectory-to-Trajectory comparisons.
+Figure 8 uses trajectory-group colors, solid simulator curves, dashed forecasts, and ONLY operationally calibrated MACE-Horizon intervals.
+Figure 9 defines bins from saved ensemble spread, then aggregates errors and widths from all stochastic test predictions.
+
+The figure generator does not overwrite canonical docs/paper/figures assets; visually inspect the rendered outputs before including them.
+For new table versions change results.results_tables_output_dir in the JSON config (existing table directories are protected).
+The tabular LaTeX files use no nonstandard package; adjust table* float width in the Overleaf project if needed.

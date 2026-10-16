@@ -36,5 +36,14 @@
     "representative_profile_id": null,
     "representative_calibration": "operational",
     "representative_trajectory_mode": "target_trajectory"
+  },
+  "results": {
+    "stochastic_forecasts_dir": "outputs/ml_results/mace_stochastic_corrected_forecasts_v1",
+    "stochastic_floor_dir": "outputs/ml_results/mace_floor_sensitivity_corrected_v1",
+    "stochastic_validation_dir": "outputs/ml_results/mace_profile_validation_corrected_v1",
+    "operational_dir": "outputs/ml_results/mace_operational_validation_v1",
+    "scaler_file": "outputs/datasets/scaled_split/lstm_merged_batches_0001-0002-0003_k12_minmax_train5000profiles_val1000profiles_cal1000profiles_test2000profiles.h5",
+    "minimum_unsaturated_fraction": 0.1,
+    "results_tables_output_dir": "outputs/paper/mace_results_tables_v1"
   }
 }

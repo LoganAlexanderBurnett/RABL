@@ -21,6 +21,10 @@ REGISTRY = {
     'existing_assets': ('existing_assets', 'Preserve supplied graphics; manual corrections stay manual'),
     'operational_forecasts': ('operational_forecasts', 'Saved 4×4 forecasts: PNGs + one consolidated PDF'),
     'representative_forecast': ('representative_forecast', 'Single saved operational test forecast: 4×4 MACE UQ comparison'),
+    'stochastic_representative': ('stochastic_representative', 'Figure 6: four calibrated methods on a stochastic test profile'),
+    'stochastic_uq_performance': ('stochastic_uq_performance', 'Figure 7: matched stochastic Horizon/Trajectory comparisons'),
+    'operational_representatives': ('operational_representatives', 'Figure 8: four operational trajectory groups'),
+    'spread_error_relationship': ('spread_error_relationship', 'Figure 9: ensemble spread versus error and interval width'),
 }
 
 
@@ -61,6 +65,11 @@ def run(config_file, *, figures=('all',), output_dir=None, overwrite=False,
     # Never replace source inputs through an ill-chosen output destination.
     sources = [path(config['assets_dir']), path(config['sampling']['profiles_dir']),
                path(config['dataset']['simulation_dir']), path(config['operational']['results_dir'])]
+    if 'results' in config:
+        sources += [path(config['results'][key]) for key in (
+            'stochastic_forecasts_dir', 'stochastic_floor_dir',
+            'stochastic_validation_dir', 'operational_dir', 'scaler_file')]
+        sources.append(path(config['results']['results_tables_output_dir']))
     if destination == root or any(destination == s or destination in s.parents or s in destination.parents for s in sources):
         raise ValueError('Paper output directory must be separate from all source directories')
     for key in selected:

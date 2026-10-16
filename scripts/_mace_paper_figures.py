@@ -555,3 +555,10 @@ def representative_forecast(config, out, path, options):
                 'Remaining panels use the defined 15-variable display order; bands are not '
                 'clipped to physical limits. The plotted example was chosen by ID rather '
                 'than forecast accuracy or conformal coverage.')
+
+
+# Results-only read-only renderers share this existing manuscript entrypoint.
+from _mace_results_figures import (
+    stochastic_representative, stochastic_uq_performance,
+    operational_representatives, spread_error_relationship,
+)
