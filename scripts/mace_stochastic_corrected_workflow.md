@@ -10,6 +10,12 @@ This does not simulate, retrain, refit scalers, modify historical archives,
 or change the original profile partitions. The corrected original stochastic
 calibration is reused only if the completed operation-informed study's hashes,
 identities, feedback label, runtime settings and prediction sources pass validation.
+If recorded source versions differ (including changes to shared plotting functions),
+the runner does NOT bypass the cache check. Instead it regenerates predictions
+for the original 1,000 calibration trajectories using the same current corrected
+rollout as the 2,000 test trajectories. Frozen input/scaler/checkpoint mismatches,
+corrupt cache metadata, and other unrecognized failures remain fatal.
+The chosen path and its reason are recorded in forecast_metadata.json.
 
 The corrected stochastic forecast runner saves the historical *reader schema*
 under a new directory; the files explicitly carry a corrected feedback marker.
