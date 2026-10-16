@@ -83,8 +83,10 @@ def validate_corrected_forecasts(metadata_path: Path, cal_path: Path, test_path:
     import h5py
     from _mace_operational_forecasts import FEEDBACK
     meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+    reused = meta.get("original_calibration_reused") is True
+    regenerated = meta.get("original_calibration_regenerated") is True
     if (not meta.get("completed") or meta.get("feedback") != FEEDBACK
-            or not meta.get("original_calibration_reused")
+            or reused == regenerated
             or meta.get("profile_names") != {k: profiles[k] for k in ("cal", "test")}
             or meta.get("target_names") != target_names):
         raise ValueError("Corrected stochastic run is incomplete or has mismatched IDs/feedback/targets")
@@ -101,7 +103,9 @@ def validate_corrected_forecasts(metadata_path: Path, cal_path: Path, test_path:
                     or decode_names(f.attrs.get("target_names", [])) != target_names):
                 raise ValueError(f"Corrected forecast file identity mismatch: {filename}")
     return {"source": str(metadata_path), "feedback": FEEDBACK,
-            "original_calibration_reused": True, "forecast_hashes_match": True}
+            "original_calibration_reused": reused,
+            "original_calibration_regenerated": regenerated,
+            "forecast_hashes_match": True}
 
 
 def run(config: dict[str, Any], *, config_path: Path | None = None) -> Path:
