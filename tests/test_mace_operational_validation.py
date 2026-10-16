@@ -416,7 +416,7 @@ class OperationalTests(unittest.TestCase):
                 c = configuration(dict(output_dir=str(out), floor_study_dir=str(Path(tmp)/"study"),
                                        operational_calibration_count=20, operational_test_count=8, plots=False))
                 m = generate(out, calibration_count=20, test_count=8, seed=c["profile_seed"], settling_seconds=20)
-                current = {k.replace("/", separator): v for k, v in actual.items()}
+                current = {k.replace("\\", "/").replace("/", separator): v for k, v in actual.items()}
                 before = current.copy()
                 for k, hashes in PRE_FIX_SOURCE_HASHES.items():
                     before[k.replace("/", separator)] = sorted(hashes)[0]
