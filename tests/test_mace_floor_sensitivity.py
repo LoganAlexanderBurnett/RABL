@@ -241,8 +241,8 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(len(json.loads((out/"floor_fraction_distributions.json").read_text())),28)
             self.assertTrue(json.loads((out/"study_metadata.json").read_text())["completed"])
             metadata=json.loads((out/"study_metadata.json").read_text())
-            self.assertTrue(all("/ensemble/model_" in metadata["input_hashes"][f"checkpoint_{i}"]["path"]
-                                for i in range(10)))
+            self.assertTrue(all(Path(metadata["input_hashes"][f"checkpoint_{i}"]["path"]).parts[-3:]
+                                == ("ensemble", f"model_{i}", "model.pt") for i in range(10)))
             with self.assertRaises(FileExistsError):run(config)
 
     def test_actual_scaled_samples_detect_corruption_with_matching_metadata(self):
