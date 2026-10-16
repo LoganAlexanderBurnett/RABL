@@ -210,3 +210,5 @@ Figure 9 defines bins from saved ensemble spread, then aggregates errors and wid
 The figure generator does not overwrite canonical docs/paper/figures assets; visually inspect the rendered outputs before including them.
 For new table versions change results.results_tables_output_dir in the JSON config (existing table directories are protected).
 The tabular LaTeX files use no nonstandard package; adjust table* float width in the Overleaf project if needed.
+
+For all four new Results figures alone, use `python scripts/generate_mace_paper_figures.py --figures results`. The historical `--figures all` selection continues to mean the legacy standard figure set, without the new Results renderers.
