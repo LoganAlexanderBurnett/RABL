@@ -102,8 +102,14 @@ class OperationalPlotTests(unittest.TestCase):
                 self.assertEqual(len(fig.axes),16)
                 for ax,name in zip(fig.axes[1:],ORDER):
                     j=names.index(name)
-                    np.testing.assert_array_equal(ax.lines[-2].get_ydata(),data['truth'][:,j])
-                    np.testing.assert_array_equal(ax.lines[-1].get_ydata(),data['mean'][:,j])
+                    factor = 6.0 if name == 'n' else 1.0
+                    np.testing.assert_array_equal(ax.lines[-2].get_ydata(),
+                                                  data['truth'][:,j]*factor)
+                    np.testing.assert_array_equal(ax.lines[-1].get_ydata(),
+                                                  data['mean'][:,j]*factor)
+                    if name == 'n':
+                        self.assertIn('P', ax.get_title())
+                        self.assertIn('MW', ax.get_title())
                 self.assertIn('MACE joint trajectory',[x.get_text() for x in fig.legends[0].get_texts()])
                 self.assertNotIn('MACE target trajectory',[x.get_text() for x in fig.legends[0].get_texts()])
             finally:plt.close(fig)

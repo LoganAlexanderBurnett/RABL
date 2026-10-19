@@ -69,6 +69,28 @@ class PaperFigureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'0–200'):
             sampling_covariance(config['sampling'])
 
+    def test_control_legend_only_in_second_panel(self):
+        from unittest import mock
+        import _mace_paper_figures as paper
+        original_save = paper.save_figure
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);config,file=make_fixture(root)
+            inspection = []
+            def spy_save(fig, directory, stem, options):
+                if stem == 'fig06_operational_controls':
+                    inspection.append(
+                        [ax.get_legend() is not None for ax in fig.axes])
+                    legend = fig.axes[1].get_legend()
+                    self.assertEqual(
+                        [x.get_text() for x in legend.get_texts()],
+                        ['Trajectory 1'])
+                    self.assertEqual(legend._ncols, 1)
+                return original_save(fig, directory, stem, options)
+            with mock.patch.object(paper, 'save_figure', side_effect=spy_save):
+                status=run(file, figures=['operational_controls'], repo_root=root)
+            self.assertTrue(status['completed'])
+            self.assertEqual(inspection, [[False, True, False, False]])
+
     def test_selective_run_units_order_data_and_sources_unchanged(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);config,file=make_fixture(root)

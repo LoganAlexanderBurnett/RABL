@@ -12,13 +12,14 @@ import numpy as np
 
 from _mace_floor_study import bounds, fingerprint, write_json
 from _mace_scaler_audit import compare_arrays, decode_names, read_scaler
+from _mace_plot_units import POWER_MW_PER_N
 
 ROOT = Path(__file__).resolve().parents[1]
 ORDER = ('Tf', 'Tm', 'Thp', 'TN2', 'Tsg', 'T_steam_out', 'x_steam_out',
          'c[1]', 'c[2]', 'c[3]', 'c[4]', 'c[5]', 'c[6]', 'n', 'rho_dollars')
 LABELS = (r'$T_f$ [K]', r'$T_m$ [K]', r'$T_{hp}$ [K]', r'$T_{N_2}$ [K]',
           r'$T_{sg}$ [K]', r'$T_{\mathrm{steam,out}}$ [K]', r'$x_{\mathrm{steam,out}}$ [-]',
-          *[rf'$c_{i}$' for i in range(1, 7)], r'$n$', r'$\rho$ [dollars]')
+          *[rf'$c_{i}$' for i in range(1, 7)], r'$P$ [MW]', r'$\rho$ [dollars]')
 TIME = np.round(np.linspace(0, 200, 501), 8)
 FEEDBACK = 'native-Y-to-X-affine-float32-v1'
 
@@ -108,13 +109,16 @@ def render_grid(data, *, profile, source, mode, alpha):
         axes.flat[0].plot(time, data['angle'], color='black', lw=1.8)
         axes.flat[0].set_title(r'$\theta$ [deg]', fontsize=12, pad=5)
         for ax, j, ylabel in zip(list(axes.flat)[1:], indices, LABELS):
+            # Native n is dimensionless; display power P [MW] = 6*n.
+            factor = POWER_MW_PER_N if data['names'][j] == 'n' else 1.0
             for band, color in zip((data['raw'], data['bands'][source]['horizon'],
                                     data['bands'][source][mode]), colors):
-                ax.fill_between(time, band[0][:, j], band[1][:, j], color=color, alpha=.10, lw=0)
-                ax.plot(time, band[0][:, j], color=color, lw=.85)
-                ax.plot(time, band[1][:, j], color=color, lw=.85)
-            ax.plot(time, data['truth'][:, j], color='black', lw=1.8)
-            ax.plot(time, data['mean'][:, j], color='#075cbb', lw=1.8)
+                ax.fill_between(time, band[0][:, j]*factor, band[1][:, j]*factor,
+                                color=color, alpha=.10, lw=0)
+                ax.plot(time, band[0][:, j]*factor, color=color, lw=.85)
+                ax.plot(time, band[1][:, j]*factor, color=color, lw=.85)
+            ax.plot(time, data['truth'][:, j]*factor, color='black', lw=1.8)
+            ax.plot(time, data['mean'][:, j]*factor, color='#075cbb', lw=1.8)
             ax.set_title(ylabel, fontsize=12, pad=5)
             ax.ticklabel_format(axis='y', style='plain', useOffset=False)
         for ax in axes.flat:

@@ -251,3 +251,41 @@ LaTeX documents independently:
 `outputs/paper/mace_results_tables_v1/table05_forecast_accuracy.tex`
 and
 `outputs/paper/mace_results_tables_v1/table06_operational_uq.tex`.
+
+## Publication figure refinements
+
+- Figure 6: All four operation-informed maneuver titles are descriptive and
+  omit internal letter codes. Three example commands are shown in a
+  colorblind-conscious navy/teal/coral palette (line styles also differ).
+  The legend appears ONLY in the top-left corner of panel (b), stacked in
+  three rows, and the archive still records the original profile IDs.
+- Figure 7: The same four calibrated conformal bands and their audit are
+  preserved; the two-line figure legend is closer to the first row without
+  overlapping. The attached audit from 10 representative profiles showed
+  no >5% float32 width loss and no zero-width loss. Plotting is unchanged
+  scientifically.
+- Figure 8: Output-variable symbols in the trajectory coverage subplot
+  are displayed at a larger font size.
+- Figure 9: Six operational panels in this order: row 1 = drum angle,
+  P (MW), reactivity in dollars; row 2 = fuel temperature, outlet steam
+  temperature, outlet steam quality. Colors identify distinct maneuver
+  trajectories, not output variables. A thin black stroke outlines each
+  dash of the corresponding colored ensemble mean. The legend uses
+  descriptive maneuver types, omitting internal family letter codes.
+- Figure 10: The empirical spread-versus-error curve is dark gray to
+  distinguish it from the colored MACE and absolute-CP intervals; the
+  plotted bin values, definitions, and comparative panel are unchanged.
+
+### Power-display consistency
+
+Native LSTM target `n` is the dimensionless neutron-power multiplier.
+For EVERY physical-power figure, its reference, point forecast and interval
+endpoints are rendered as `P [MW] = 6 n` using the common plotting-unit
+constant `POWER_MW_PER_N = 6.0`. This includes the manuscript Results
+Figures 7 and 9, the legacy 4x4 operational forecast report, and the
+independent 4x4 operational representative plot. The Figure 5 simulator
+dataset already contains `P_MW` and is **not** multiplied again.
+Figure 8's coverage is dimensionless so its `n` column is only relabeled
+as `P`, with no transformation to coverage or loss statistics.
+Saved forecasts, CP quantiles, and normalized calibration/evaluation metrics
+stay in their original coordinates.

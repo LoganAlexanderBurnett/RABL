@@ -16,6 +16,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from matplotlib import patheffects as pe
+
+from _mace_plot_units import plot_index_and_scale, POWER_MW_PER_N
 
 from _mace_floor_study import bounds, fingerprint
 from _mace_scaler_audit import decode_names, read_scaler
@@ -184,9 +187,7 @@ def _display():
 
 
 def _physical_index(key, names):
-    if key == "P_MW":
-        return names.index("n"), 6.0
-    return names.index(key), 1.0
+    return plot_index_and_scale(key, names)
 
 
 def _read_rows(path):
@@ -263,7 +264,7 @@ def verify_representative_widths(mean, spread, quantiles, stats, names):
             # tracked instead of silently being assumed zero.
             frac_zero = float(np.mean((observed[mask] == 0))) if np.any(mask) else 0.
             frac_loss = float(np.mean((observed[mask] < .95*reference[mask]))) if np.any(mask) else 0.
-            display_factor = 6.0 if name == "n" else 1.0
+            display_factor = POWER_MW_PER_N if name == "n" else 1.0
             expected_display = reference*display_factor
             actual_display = upper[:,j]*display_factor - lower[:,j]*display_factor
             if (np.any(np.abs(actual_display-expected_display) > allowed[:,j]*display_factor)
@@ -368,9 +369,9 @@ def stochastic_representative(config, out, path, options):
                            Line2D([], [], color="#555555", ls="--", label="Ensemble mean")]
                 handles += [Line2D([], [], color=c, label=label)
                             for c, label in zip(colors, METHOD_LABELS)]
-                fig.subplots_adjust(top=.85, bottom=.08, left=.08, right=.99,
+                fig.subplots_adjust(top=.895, bottom=.08, left=.08, right=.99,
                                     wspace=.40, hspace=.55)
-                fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(.5,.99),
+                fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(.5,.995),
                            ncol=3, fontsize=7, frameon=False)
                 fig.supxlabel("Time (s)", y=.025, fontsize=8)
                 stem = f"fig07_stochastic_representative_{figure_number:02d}"
@@ -479,7 +480,7 @@ def stochastic_uq_performance(config, out, path, options):
         ax.set(title="(b) Per-output trajectory coverage", xlabel="Output variable",
                ylabel="Whole-trajectory coverage", ylim=(.9,1.0), xticks=x)
         ax.set_xticklabels([symbols[n] for n in d["names"]], rotation=55,
-                           ha="right", rotation_mode="anchor", fontsize=6)
+                           ha="right", rotation_mode="anchor", fontsize=8.5)
         ax.legend(frameon=False, fontsize=6)
         labels = ["Abs-H", "MACE-H", "Abs-T", "MACE-T"]
         for ax, key, title, ylabel in (
@@ -506,7 +507,7 @@ def stochastic_uq_performance(config, out, path, options):
 
 
 def operational_representatives(config, out, path, options):
-    """Figure 9: one composite four-group 2x2 plot per selected set.
+    """Figure 9: one composite six-panel plot per selected set.
 
     Each subplot is color-coded by the operational maneuver family (B/C/D/F),
     not by output variable. Saved operational MACE-Horizon intervals only.
@@ -574,44 +575,65 @@ def operational_representatives(config, out, path, options):
                 identities[family] = {"profile_id": pid, "unsaturated_fraction": fraction}
 
             with plt.rc_context(_style()):
-                fig, axs = plt.subplots(2, 2, figsize=(178/25.4, 118/25.4),
+                fig, axs = plt.subplots(2, 3, figsize=(190/25.4, 135/25.4),
                                         sharex=True)
-                specs = [("drum", r"$\theta$ (degree)"),
-                         ("Tf", r"$T_f$ (K)"),
-                         ("n", r"$P$ (MW)"),
-                         ("rho_dollars", r"$\rho_{\$}$ (dollars)")]
+                # Display P [MW] = 6*n, never plot native dimensionless n
+                # as though it were MW. The bounds use the same affine scale.
+                specs = [
+                    ("drum", r"$\theta$ (degree)"),
+                    ("P_MW", r"$P$ (MW)"),
+                    ("rho_dollars", r"$\rho_{\$}$ (dollars)"),
+                    ("Tf", r"$T_f$ (K)"),
+                    ("T_steam_out", r"$T_{\mathrm{steam,out}}$ (K)"),
+                    ("x_steam_out", r"$x_{\mathrm{steam,out}}$ (–)"),
+                ]
                 for ax, (key, label) in zip(axs.flat, specs):
                     ax.set_title(label)
                     for (family, angle, truth, mean, lo, hi), color in zip(panels, PALETTE):
                         if key == "drum":
-                            ax.plot(TIME, angle, color=color, lw=1.2)
+                            ax.plot(TIME, angle, color=color, lw=1.25)
                         else:
-                            j, scale = _physical_index(
-                                "P_MW" if key == "n" else key, names)
+                            j, scale = _physical_index(key, names)
                             ax.fill_between(TIME, lo[:, j]*scale, hi[:, j]*scale,
-                                            color=color, alpha=.11, lw=0)
-                            ax.plot(TIME, truth[:, j]*scale, color=color, lw=1.25)
-                            ax.plot(TIME, mean[:, j]*scale, color=color,
-                                    lw=1.0, ls="--")
+                                            color=color, alpha=.10, lw=0)
+                            ax.plot(TIME, truth[:, j]*scale, color=color, lw=1.3)
+                            # Stroke follows each dash, giving a fine black
+                            # outline without replacing the group color.
+                            mean_line, = ax.plot(
+                                TIME, mean[:, j]*scale, color=color,
+                                lw=1.05, ls="--")
+                            mean_line.set_path_effects([
+                                pe.Stroke(linewidth=1.65, foreground="#242424"),
+                                pe.Normal()])
                     ax.set_xlim(0, 200)
                     ax.set_xticks([0, 100, 200])
+                    ax.tick_params(labelsize=6.5)
                     ax.ticklabel_format(axis="y", style="plain", useOffset=False)
                     ax.grid(alpha=.15)
-                legend = [Line2D([], [], color=c, lw=1.8, label=label)
-                          for c, label in zip(
-                            PALETTE, ("B: Single maneuver + hold",
-                                      "C: Successive maneuvers + holds",
-                                      "D: Maneuver + return",
-                                      "F: Bidirectional maneuvers"))]
-                legend += [Line2D([], [], color="gray", label="Simulator"),
-                           Line2D([], [], color="gray", ls="--", label="Ensemble mean"),
-                           Patch(facecolor="gray", alpha=.15,
-                                 label="Operational MACE-Horizon")]
-                fig.subplots_adjust(top=.77, bottom=.11, left=.09, right=.98,
-                                    wspace=.38, hspace=.42)
+                legend = [
+                    Line2D([], [], color=c, lw=1.8, label=label)
+                    for c, label in zip(
+                        PALETTE,
+                        ("Single maneuver and hold",
+                         "Successive maneuvers and holds",
+                         "Maneuver and return",
+                         "Bidirectional maneuvers"))
+                ]
+                legend += [
+                    Line2D([], [], color="#222222", label="Simulator"),
+                    Line2D([], [], color="#777777", ls="--",
+                           lw=1.1, label="Ensemble mean",
+                           path_effects=[
+                               pe.Stroke(linewidth=1.65, foreground="black"),
+                               pe.Normal()]),
+                    Patch(facecolor="gray", alpha=.15,
+                          label="Operational MACE-Horizon"),
+                ]
+                fig.subplots_adjust(top=.76, bottom=.10, left=.075, right=.985,
+                                    wspace=.42, hspace=.46)
                 fig.legend(handles=legend, loc="upper center", ncol=2,
                            frameon=False, bbox_to_anchor=(.5,.995), fontsize=6.5)
-                fig.supxlabel("Time (s)", y=.025)
+                fig.supxlabel("Time (s)", y=.022)
                 stem = f"fig09_operational_representatives_{figure_number:02d}"
                 generated = _save(fig, out, stem, options)
             files.extend(generated)
@@ -620,7 +642,8 @@ def operational_representatives(config, out, path, options):
                 + ", ".join(f"{family} ({identities[family]['profile_id']})"
                             for family in FAMILIES)
                 + ". Colors identify families across every subplot. Simulator "
-                "truth is solid, ensemble mean is dashed, and shaded bands are "
+                "truth is solid, ensemble mean is dashed with fine black outlines, "
+                "and shaded bands are "
                 "only MACE-Horizon 95% nominal intervals calibrated using the "
                 "independent operation-informed calibration set. P = 6n MW. "
                 "Reference profiles in B/C/D have x_steam,out<1 at least once; "
@@ -645,7 +668,9 @@ def operational_representatives(config, out, path, options):
                           "unsaturated outlet conditions. Seeds differ by family index.",
         "selection_require_unsaturated_by_family": {f: (f != "F") for f in FAMILIES},
         "caption": (f"Series of {len(details)} 2-by-2 operational comparisons, each "
-                    "containing one distinct representative from each maneuver family. "
+                    "containing one distinct representative from each maneuver type. "
+                    "Panels show drum angle, P (MW), reactivity in dollars, "
+                    "fuel temperature, outlet steam temperature and outlet steam quality. "
                     "Color distinguishes the group rather than the variable, "
                     "and only operationally calibrated MACE-Horizon prediction "
                     "intervals are shown. Families B/C/D require at least one "
@@ -703,7 +728,7 @@ def spread_error_relationship(config, out, path, options):
         raise ValueError("Non-finite spread/error bin results")
     with plt.rc_context(_style()):
         fig, axs = plt.subplots(1,2,figsize=(178/25.4,77/25.4),layout="constrained")
-        axs[0].plot(x, observed, "o-", color=PALETTE[2], lw=1.25, ms=4)
+        axs[0].plot(x, observed, "o-", color="#424242", lw=1.25, ms=4)
         axs[0].set(title="(a) Spread versus forecast error",
                    xlabel="Mean ensemble spread (scaled)", ylabel="Mean absolute error (scaled)")
         axs[1].plot(x, mace_w, "s-", label="MACE-Horizon", color=PALETTE[2], lw=1.25, ms=4)

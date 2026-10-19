@@ -18,9 +18,17 @@ from _mace_results_figures import (choose_profiles, unsaturated_fraction,
     stochastic_representative, operational_representatives, verify_representative_widths)
 from generate_mace_results_tables import _latex_table, make_tables
 from generate_mace_paper_figures import selected_figures
+from _mace_plot_units import POWER_MW_PER_N, plot_index_and_scale
 
 
 class ResultsSelectionTests(unittest.TestCase):
+    def test_power_is_display_only_6mw_per_n(self):
+        names = ["Tf", "n", "x_steam_out"]
+        self.assertEqual(POWER_MW_PER_N, 6.0)
+        self.assertEqual(plot_index_and_scale("P_MW", names), (1, 6.0))
+        self.assertEqual(plot_index_and_scale("n", names), (1, 6.0))
+        self.assertEqual(plot_index_and_scale("Tf", names), (0, 1.0))
+
     def test_one_unsaturated_time_point_is_enough(self):
         a = np.ones((501, 15), dtype=np.float32)
         a[200, 4] = .9
@@ -116,7 +124,7 @@ class ResultsSelectionTests(unittest.TestCase):
             self.assertEqual(len(list(root.glob("fig07_*.caption.md"))), 2)
 
 
-    def test_two_operational_2x2_composites_using_all_four_groups(self):
+    def test_two_operational_six_panel_composites_using_all_four_groups(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             names = ["TN2", "Tm", "Thp", "Tf", "Tsg", "T_steam_out",
@@ -150,13 +158,27 @@ class ResultsSelectionTests(unittest.TestCase):
                  "manifest":{"identity":"fixture", "profiles":[
                      {"id":pid,"split":"test","family":pid[0]} for pid in ids]},
                  "inputs":[],"representative_count":2,"representative_seed":23}
-            with mock.patch("_mace_results_figures._operational",return_value=d):
+            import _mace_paper_figures as paper_figures
+            titles, power_trace = [], []
+            def check_plot(fig, output_dir, stem, options):
+                self.assertEqual(len(fig.axes), 6)
+                titles.append([ax.get_title() for ax in fig.axes])
+                power_trace.append(fig.axes[1].lines[0].get_ydata()[0])
+                self.assertTrue(all(not text.get_text().startswith(("B:", "C:", "D:", "F:"))
+                                    for text in fig.legends[0].texts))
+                return paper_figures.save_figure(fig, output_dir, stem, options)
+            with mock.patch("_mace_results_figures._operational",return_value=d), \
+                 mock.patch("_mace_results_figures._save",side_effect=check_plot):
                 result = operational_representatives({},root,lambda p:p,
                                                       {"formats":["png"],"dpi":72})
             self.assertEqual(result["generated_count"],2)
             self.assertEqual(result["eligible_profile_counts"],
                              {fam:2 for fam in "BCDF"})
             self.assertEqual(len(list(root.glob("fig09_*.png"))),2)
+            self.assertEqual(len(titles), 2)
+            self.assertTrue(all("$P$ (MW)" in row[1] and
+                                "$T_" in row[4] and "x_" in row[5] for row in titles))
+            self.assertTrue(all(abs(v - 6.0) < 1e-8 for v in power_trace))
             for record in result["selected_sets"]:
                 self.assertEqual(set(record["profiles"]),set("BCDF"))
                 self.assertEqual(record["profiles"]["F"]["unsaturated_fraction"], 0.)

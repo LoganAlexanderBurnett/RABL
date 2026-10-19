@@ -17,6 +17,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
+from _mace_plot_units import POWER_MW_PER_N
+
 MM = 1 / 25.4
 STYLE = {'font.family': 'DejaVu Serif', 'font.size': 8,
          'mathtext.fontset': 'dejavuserif', 'axes.labelsize': 8,
@@ -335,7 +337,7 @@ def operational_controls(config, out, path, options):
         for ax, family, label, letter in zip(axes.flat, 'BCDF', labels, 'abcd'):
             for number, (p, color, ls) in enumerate(zip(
                     [p for p in selected if p['family'] == family],
-                    ['black', '#0072B2', '#D55E00'], ['-', '--', ':']), start=1):
+                    ['#355C7D', '#2A9D8F', '#E76F51'], ['-', '--', ':']), start=1):
                 angle, velocity = control(p['moves'])
                 if not np.isfinite(angle).all() or angle.min() < 44.25 or angle.max() > 48.75:
                     raise ValueError(f"{p['id']}: outside retained recipe envelope")
@@ -348,7 +350,9 @@ def operational_controls(config, out, path, options):
             ax.axhline(45, color='.6', ls='--', lw=.5)
             ax.set(xlim=(0, 200), ylim=(44, 49), xticks=[0, 50, 100, 150, 200], yticks=[44, 45, 46, 47, 48, 49])
             panel(ax, letter, label)
-            ax.legend(frameon=False, ncol=count, loc='upper left')
+            if family == 'C':
+                ax.legend(frameon=False, ncol=1, loc='upper left',
+                          fontsize=7.5, handlelength=2.5)
         for ax in axes[-1]: ax.set_xlabel('Time (s)')
         for ax in axes[:, 0]: ax.set_ylabel('Control angle (degree)')
         files = save_figure(fig, out, 'fig06_operational_controls', options)
@@ -506,13 +510,14 @@ def representative_forecast(config, out, path, options):
         axes.flat[0].plot(time, data['angle'], color='black', lw=1.5)
         axes.flat[0].set_title(r'$\theta$ [deg]', fontsize=9, pad=4)
         for ax, j, label in zip(list(axes.flat)[1:], index, FORECAST_LABELS):
+            scale = POWER_MW_PER_N if data['names'][j] == 'n' else 1.0
             for band, color in zip(modes, band_colors):
-                ax.fill_between(time, band[0][:, j], band[1][:, j],
+                ax.fill_between(time, band[0][:, j]*scale, band[1][:, j]*scale,
                                 color=color, alpha=.10, linewidth=0)
-                ax.plot(time, band[0][:, j], color=color, lw=.55, alpha=.85)
-                ax.plot(time, band[1][:, j], color=color, lw=.55, alpha=.85)
-            ax.plot(time, data['truth'][:, j], color='black', lw=1.15, zorder=4)
-            ax.plot(time, data['mean'][:, j], color='#005ab5', lw=1.15, zorder=5)
+                ax.plot(time, band[0][:, j]*scale, color=color, lw=.55, alpha=.85)
+                ax.plot(time, band[1][:, j]*scale, color=color, lw=.55, alpha=.85)
+            ax.plot(time, data['truth'][:, j]*scale, color='black', lw=1.15, zorder=4)
+            ax.plot(time, data['mean'][:, j]*scale, color='#005ab5', lw=1.15, zorder=5)
             ax.set_title(label, fontsize=9, pad=4)
             ax.ticklabel_format(axis='y', style='plain', useOffset=False)
         for ax in axes.flat:
