@@ -76,30 +76,82 @@ def _stochastic_row(rows, *, method, mode, target=None):
         raise ValueError(f"Expected one stochastic row: {method}/{mode}/{target}; found {len(matches)}")
     return matches[0]
 
-def _write_panel(lines, *, title, names, entries, aggregate=None):
-    lines.append(r"\medskip\noindent\textbf{" + title + r"}\par\vspace{2pt}")
-    lines.extend([r"\begin{tabular}{@{}lcccc@{}}",
-                  r"\hline",
-                  r"Output & MACE-H & Abs-H & MACE-T & Abs-T " + ROW_END,
-                  r"\hline"])
-    for name in names:
-        lines.append(TARGET_SYMBOLS[name] + " & " +
-                     " & ".join(entries(name, kind, mode) for kind, mode, _ in METHODS)
-                     + ROW_END)
-    if aggregate is not None:
-        lines.extend([r"\hline", r"\textbf{Pooled} & " +
-                      " & ".join(aggregate(kind, mode) for kind, mode, _ in METHODS)
-                      + ROW_END])
-    lines.extend([r"\hline", r"\end{tabular}", ""])
+COLUMN_GROUPS = (
+    ("thermal", "thermal nodes", ("TN2", "Tm", "Thp", "Tf", "Tsg")),
+    ("precursor", "delayed precursors",
+     ("c[1]", "c[2]", "c[3]", "c[4]", "c[5]", "c[6]")),
+    ("system", "power, reactivity, and steam outputs",
+     ("n", "rho_dollars", "T_steam_out", "x_steam_out")),
+)
+TABLE_METRIC_LABELS = ("Coverage", "Full width", "Interval score")
 
-def _output_table(lines, caption, label):
-    return "\n".join(
-        [r"\begin{table*}[t]", r"\centering", r"\scriptsize",
-         r"\setlength{\tabcolsep}{3pt}",
-         r"\renewcommand{\arraystretch}{1.04}",
-         r"\caption{" + caption + "}",
-         r"\label{" + label + "}"]
-        + lines + [r"\end{table*}", ""]) 
+
+def _columns(group):
+    return group[2] + (("aggregate",) if group[0] == "system" else ())
+
+
+def _table(title, label, lines, *, fontsize=r"\footnotesize"):
+    return "\n".join([
+        r"\begin{table}[!htbp]", r"\centering", fontsize,
+        r"\setlength{\tabcolsep}{4.5pt}",
+        r"\renewcommand{\arraystretch}{1.08}",
+        r"\captionsetup{skip=3pt}",
+        r"\caption{" + title + "}", r"\label{" + label + "}",
+        *lines, r"\end{table}", "",
+    ])
+
+
+def _table_accuracy(group, *, point, aggregate):
+    name, description, _ = group
+    columns = _columns(group)
+    headers = [r"\textbf{Pooled}" if n == "aggregate" else TARGET_SYMBOLS[n]
+               for n in columns]
+    lines = [
+        rf"\begin{{tabular}}{{@{{}}l*{{{len(columns)}}}{{r}}@{{}}}}",
+        r"\toprule", "Metric & " + " & ".join(headers) + ROW_END,
+        r"\midrule",
+    ]
+    for label, metric in (("Stoch. MAE", "stochastic_mae"),
+                          ("Stoch. RMSE", "stochastic_rmse"),
+                          ("Oper. MAE", "operational_mae"),
+                          ("Oper. RMSE", "operational_rmse")):
+        vals = [aggregate[metric] if n == "aggregate" else point[n][metric]
+                for n in columns]
+        lines.append(label + " & " + " & ".join(_fmt(v) for v in vals) + ROW_END)
+    lines.extend([r"\bottomrule", r"\end{tabular}"])
+    caption = (f"Normalized forecast accuracy: {description}. Errors divided "
+               "by original training ranges.")
+    if name == "system":
+        caption += " Pooled values span all 15 outputs."
+    return _table(caption, "tab:mace_forecast_accuracy:" + name, lines)
+
+
+def _table_uq(group, *, caption_prefix, reference_prefix, values):
+    name, description, _ = group
+    columns = _columns(group)
+    headers = [r"\textbf{Pooled}" if n == "aggregate" else TARGET_SYMBOLS[n]
+               for n in columns]
+    lines = [
+        rf"\begin{{tabular}}{{@{{}}ll*{{{len(columns)}}}{{r}}@{{}}}}",
+        r"\toprule",
+        "Method & Metric & " + " & ".join(headers) + ROW_END,
+        r"\midrule",
+    ]
+    for mi, (method, mode, short) in enumerate(METHODS):
+        for i, (metric, display) in enumerate(zip(UQ_METRICS, TABLE_METRIC_LABELS)):
+            first = r"\multirow{3}{*}{" + short + "}" if i == 0 else ""
+            line = first + " & " + display + " & " + " & ".join(
+                _fmt(values(method, mode, scope)[metric]) for scope in columns)
+            lines.append(line + ROW_END)
+        if mi < len(METHODS)-1:
+            lines.append(r"\addlinespace[2pt]")
+    lines.extend([r"\bottomrule", r"\end{tabular}"])
+    caption = (f"{caption_prefix}: {description}. Coverage, normalized full width, "
+               "and interval score (95\\% nominal).")
+    if name == "system":
+        caption += " Pooled values span all 15 outputs."
+    return _table(caption, reference_prefix + ":" + name, lines)
+
 
 def _triplet(v):
     """Coverage/full-width/interval-score triple, all in normalized coordinates."""
@@ -255,57 +307,62 @@ def make_tables(config, path=_path):
         return output
 
     joint_summary = {kind: joint_values(kind) for kind in ("mace", "absolute")}
-    accuracy_lines = [
-        r"\noindent\textbf{(a) Autoregressive forecast accuracy}\par\vspace{2pt}",
-        r"\begin{tabular}{@{}lrrrr@{}}", r"\hline",
-        r"Output & Stoch.\ MAE & Stoch.\ RMSE & Oper.\ MAE & Oper.\ RMSE " + ROW_END,
-        r"\hline"]
-    for j, name in enumerate(names):
-        accuracy_lines.append(TARGET_SYMBOLS[name] + " & " + " & ".join(
-            _fmt(v[j]) for v in (stoch_mae, stoch_rmse, op_mae, op_rmse)
-        ) + ROW_END)
-    accuracy_lines.extend([r"\hline", r"\textbf{Pooled} & " + " & ".join(
-        _fmt(x) for x in (stochastic_mae, stochastic_rmse,
-                          operational_mae, operational_rmse)
-    ) + ROW_END, r"\hline", r"\end{tabular}", ""])
-
-    _write_panel(accuracy_lines, title="(b) Stochastic test: per-output conformal uncertainty",
-                 names=names,
-                 entries=lambda name, kind, mode: _triplet(stochastic_values(kind, mode, name)),
-                 aggregate=lambda kind,mode: _triplet(stochastic_aggregate(kind, mode)))
-    accuracy_lines.extend([
-        r"\medskip\noindent\textbf{(c) Joint complete-multivariate trajectory calibration}\par\vspace{2pt}",
-        r"\begin{tabular}{@{}lccc@{}}", r"\hline",
-        r"Method & Joint coverage & Mean width & Interval score " + ROW_END,
-        r"\hline",
-    ])
+    point_accuracy = {
+        name: {
+            "stochastic_mae": float(stoch_mae[j]),
+            "stochastic_rmse": float(stoch_rmse[j]),
+            "operational_mae": float(op_mae[j]),
+            "operational_rmse": float(op_rmse[j]),
+        } for j, name in enumerate(names)
+    }
+    aggregate_accuracy = {
+        "stochastic_mae": stochastic_mae,
+        "stochastic_rmse": stochastic_rmse,
+        "operational_mae": operational_mae,
+        "operational_rmse": operational_rmse,
+    }
+    accuracy_tables = [
+        _table_accuracy(group, point=point_accuracy, aggregate=aggregate_accuracy)
+        for group in COLUMN_GROUPS
+    ]
+    stochastic_tables = [
+        _table_uq(group, caption_prefix="Stochastic calibration/test",
+                  reference_prefix="tab:mace_stochastic_uq",
+                  values=lambda kind, mode, scope: (
+                      stochastic_aggregate(kind, mode) if scope == "aggregate"
+                      else stochastic_values(kind, mode, scope)))
+        for group in COLUMN_GROUPS
+    ]
+    joint_lines = [
+        r"\begin{tabular}{@{}lrrr@{}}", r"\toprule",
+        "Method & Coverage & Mean width & Interval score " + ROW_END,
+        r"\midrule",
+    ]
     for kind, label in (("mace", "MACE-Joint"), ("absolute", "Abs-Joint")):
-        v = joint_summary[kind]
-        accuracy_lines.append(label+" & "+" & ".join(_fmt(v[k]) for k in UQ_METRICS)
-                              +ROW_END)
-    accuracy_lines.extend([r"\hline", r"\end{tabular}"])
-    table5 = _output_table(
-        accuracy_lines,
-        "Forecast accuracy and stochastic-distribution conformal uncertainty for 15 "
-        "output variables (2,000 test trajectories each). (a) Normalized MAE/RMSE use "
-        "the original training-set output ranges. (b) Each entry is coverage / "
-        "mean normalized full width / mean normalized interval score, using the "
-        "indicated method's objective: individual forecast coordinates for Horizon "
-        "and complete per-output trajectories for Trajectory. All four methods "
-        "use the same stochastic calibration and evaluation sets. "
-        "(c) Joint calibration instead targets simultaneous coverage of all "
-        "15 outputs over all 501 forecast steps. Coverage is nominally 95\\%; "
-        "pointwise and trajectory coverage events are not interchangeable.",
-        "tab:mace_forecast_accuracy")
+        joint_lines.append(label + " & " + " & ".join(
+            _fmt(joint_summary[kind][metric]) for metric in UQ_METRICS) + ROW_END)
+    joint_lines.extend([r"\bottomrule", r"\end{tabular}"])
+    joint_table = _table(
+        "Joint complete-multivariate trajectory coverage on the stochastic "
+        "test distribution (95\\% nominal).",
+        "tab:mace_joint_uq", joint_lines, fontsize=r"\small")
+    table5 = "\n".join(accuracy_tables + stochastic_tables + [joint_table])
 
-    operation_lines = []
-    for source, heading in (("original", "(a) Stochastic calibration"),
-                            ("operational", "(b) Independent operation-informed calibration")):
-        _write_panel(operation_lines, title=heading, names=names,
-                     entries=lambda name, kind, mode, src=source:
-                         _triplet(op_values(src, kind, mode, name)),
-                     aggregate=lambda kind,mode,src=source:
-                         _triplet(op_values(src, kind, mode, "aggregate")))
+    transfer_tables = [
+        _table_uq(group, caption_prefix="Stochastic calibration, operational test",
+                  reference_prefix="tab:mace_operational_transfer",
+                  values=lambda kind, mode, scope: op_values(
+                      "original", kind, mode, scope))
+        for group in COLUMN_GROUPS
+    ]
+    recalibrated_tables = [
+        _table_uq(group, caption_prefix="Operation-informed calibration/test",
+                  reference_prefix="tab:mace_operational_recalibration",
+                  values=lambda kind, mode, scope: op_values(
+                      "operational", kind, mode, scope))
+        for group in COLUMN_GROUPS
+    ]
+
     # Paired bootstrap uses the SAME operational evaluation trajectory indices
     # under both calibration sources; no bootstrap is re-run for publication.
     paired_metrics = (
@@ -339,33 +396,20 @@ def make_tables(config, path=_path):
                     values.append(f"{point:+.4f} [{lo:+.4f}, {hi:+.4f}]")
             if scope == "aggregate":
                 paired_summary[short_name]["formatted"] = values
-    operation_lines.extend([
-        r"\medskip\noindent\textbf{(c) Paired pooled recalibration effects}\par\vspace{2pt}",
-        r"\begin{tabular}{@{}lccc@{}}", r"\hline",
-        r"Method & $\Delta$ coverage & $\Delta$ full width & $\Delta$ interval score " + ROW_END,
-        r"\hline"])
-    for _, _, label in METHODS:
-        operation_lines.append(
-            label + " & " + " & ".join(paired_summary[label]["formatted"]) + ROW_END)
-    operation_lines.extend([r"\hline", r"\end{tabular}"])
-    table6 = _output_table(
-        operation_lines,
-        "Conformal uncertainty for the same 2,000 operation-informed test trajectories "
-        "under two alternative calibration distributions. Entries are coverage / "
-        "mean normalized full interval width / mean normalized interval score, "
-        "for MACE-Horizon (MACE-H), Absolute CP-Horizon (Abs-H), "
-        "MACE-Trajectory (MACE-T) and Absolute CP-Trajectory (Abs-T). "
-        "Horizon coverage is pointwise; Trajectory coverage requires coverage "
-        "throughout the forecast for each output variable. "
-        "The ensemble predictions are identical between panels; only calibration "
-        "thresholds differ. Entries are point estimates; descriptive 95\\% "
-        "whole-trajectory bootstrap intervals for every operational method, "
-        "variable and metric are retained in the companion detail CSV. "
-        "The pooled paired effects in panel (c) are operation-informed minus "
-        "stochastic calibration, with 95\\% paired bootstrap intervals; "
-        "the companion CSV also retains paired effects for each output. "
-        "Nominal coverage is 95\\%.",
-        "tab:mace_operational_recalibration")
+    paired_lines = [
+        r"\begin{tabular}{@{}lccc@{}}", r"\toprule",
+        r"Method & $\Delta$ coverage & $\Delta$ width & $\Delta$ interval score " + ROW_END,
+        r"\midrule",
+    ]
+    for _, _, short in METHODS:
+        paired_lines.append(
+            short + " & " + " & ".join(paired_summary[short]["formatted"]) + ROW_END)
+    paired_lines.extend([r"\bottomrule", r"\end{tabular}"])
+    paired_table = _table(
+        "Pooled operation-informed minus stochastic calibration: differences "
+        "and 95\\% paired whole-trajectory bootstrap intervals.",
+        "tab:mace_operational_paired", paired_lines)
+    table6 = "\n".join(transfer_tables + recalibrated_tables + [paired_table])
 
     detail_fields=("dataset","calibration","output","method","mode","metric","units","bound","value")
     # csv.writer is used for proper quoting, including scientific variable labels.

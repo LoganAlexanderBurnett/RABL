@@ -246,52 +246,57 @@ uniform without replacement among qualifying trajectories. If any group
 has fewer than N eligible test profiles, the corresponding renderer fails
 with an eligibility count, without changing its selection criteria.
 
-The table generator now saves two revised Overleaf-ready LaTeX documents
-and an exact-metric companion CSV under the **new versioned directory**:
+The Results tables are now transposed and divided by output group, with
+**variable symbols across columns** and each UQ method spanning three
+separate rows: empirical coverage, normalized full width, and normalized
+interval score. All 15 output variables are retained in exactly one of:
 
-- `outputs/paper/mace_results_tables_v2/table05_forecast_accuracy.tex`:
-  15-output forecasting MAE/RMSE on both evaluation populations;
-  stochastic-test coverage/normalized full width/normalized interval score
-  for MACE-Horizon, Absolute CP-Horizon, MACE-Trajectory, and Absolute
-  CP-Trajectory; a short joint complete-multivariate trajectory-coverage
-  summary from the frozen stochastic joint validation.
-- `outputs/paper/mace_results_tables_v2/table06_operational_uq.tex`:
-  all four UQ methods for each of 15 outputs and pooled, for both
-  stochastic calibration (transfer) and independent operation-informed
-  calibration on the identical operational test profiles. A short pooled paired-calibration difference panel reports changes in
-  coverage, width and interval score with bootstrap intervals. This table
-  contains no maneuver-family or phase breakdown.
-- `outputs/paper/mace_results_tables_v2/table_metrics_detail.csv`:
-  long-format exact point estimates for all table cells, with
-  95% whole-trajectory bootstrap bounds where available in the saved
-  operational and joint-validation archives, including per-output
-  paired recalibration differences. Pointwise versus
-  per-output trajectory versus complete-multivariate joint coverage
-  remain distinct events; never compare coverage numbers as though
-  they used the same event.
+- five reactor and thermal-node temperatures,
+- six delayed-neutron precursor concentrations,
+- reactor power, reactivity, steam outlet temperature, steam outlet quality.
 
-For UQ table cells, the tuple is `coverage / normalized full width /
-normalized interval score`, with the original Y training spans for
-per-output width and score. In Table 6, the original operational
-per-output output CSV stores *physical* widths and interval scores;
-these are converted to normalized units using exactly those spans.
-In Table 5, the stochastic UQ CSV also stores per-output physical
-widths and scores and receives the same conversion. Full intervals
-are not dropped or summarized as a single arbitrary method.
+The pooled mean across all 15 outputs is in the last group, clearly
+distinguished from the four variable-specific columns. The 95% nominal
+coverage event differs for Horizon, per-output Trajectory and joint
+multivariate Trajectory calibration, as defined in Methodology.
 
-Regenerate with
+In `docs/paper/MACE_Results.tex`, three separate accuracy tables appear
+in Section 3.1; three stochastic UQ tables plus one small joint UQ table
+appear in Section 3.2; and three transferred-calibration tables, three
+independently recalibrated tables and one paired-bootstrap comparison
+appear near their respective discussions in Section 3.3. Each is a
+standalone LaTeX float and has its own citation label. The manuscript
+tables are embedded, so **Overleaf requires no extra table inputs**.
+
+`scripts/generate_mace_results_tables.py` generates the exact same
+**layout** from frozen results, writing two files containing grouped
+float environments, plus the detailed data CSV. The new output version
+is `outputs/paper/mace_results_tables_v3` to preserve v2:
+
+- `table05_forecast_accuracy.tex`: three accuracy floats, three stochastic
+  UQ floats, and one joint multivariate coverage float
+- `table06_operational_uq.tex`: three transferred-calibration UQ floats,
+  three operation-informed calibration UQ floats, and the pooled paired
+  bootstrap differences
+- `table_metrics_detail.csv`: exact point estimates and available 95%
+  whole-trajectory bootstrap bounds, including paired comparisons by output
+
+**Units:** coverage is a fraction; the MAE, RMSE, mean full interval width,
+and mean interval score displayed are dimensionless after normalization
+by each output's original training-set range. Display of power in MW in
+plots does not change the normalization used for tables. For stochastic
+and operational UQ, the archived per-output physical widths/scores are
+divided by that original training span.
+
+To regenerate:
 
 ```powershell
 python -m unittest discover -s tests -p "test_mace_*.py" -q
 python scripts/generate_mace_results_tables.py --config scripts/mace_paper_figures_config.json
 ```
 
-The generator rejects an existing output directory instead of
-overwriting it. The new `v2` output location leaves the earlier
-`v1` scientific table results intact. This script reads frozen
-scientific archives without recomputing predictions, conformal
-quantiles, or bootstrap replicates.
-
+The generator still rejects existing output directories and never
+recomputes model forecasts, conformal quantiles, or bootstrap samples.
 
 ## Publication figure refinements
 
