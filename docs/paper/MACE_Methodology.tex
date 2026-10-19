@@ -425,7 +425,7 @@ The product equals one only when all $H$ intervals cover the reference response.
  \label{eq:mace:jointcoverage}
 \end{equation}
 
-Coverage at an individual forecast horizon is calculated by averaging the corresponding coverage variables across evaluation trajectories. Requiring simultaneous coverage of all outputs at that horizon instead uses the product over $j$. These measures are reported separately because coverage of individual predictions does not imply simultaneous coverage across time or output variables. In the Results, matched-distribution coverage is reported both per output and, for joint trajectory calibration, for the complete multivariate response.
+Coverage at an individual forecast horizon is calculated by averaging the corresponding coverage variables across evaluation trajectories. Requiring simultaneous coverage of all outputs at that horizon instead uses the product over $j$. These coverage events are kept distinct because coverage of individual predictions does not imply simultaneous coverage across time or output variables. In the Results, matched-distribution coverage is reported both per output and, for joint trajectory calibration, for the complete multivariate response.
 
 In addition to coverage, we evaluate the efficiency of the prediction intervals through their full width, $W=U-L$. Output-specific widths are expressed in physical units, while aggregate widths are evaluated in normalized coordinates to give equal weight to each output. The relative reduction in mean interval width compared with the corresponding absolute-error conformal prediction baseline is
 
