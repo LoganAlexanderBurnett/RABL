@@ -242,7 +242,10 @@ def verify_representative_widths(mean, spread, quantiles, stats, names):
         # Physical-unit cancellation should be much smaller than a meaningful
         # manuscript band. Reject it explicitly rather than rendering a zero.
         allowed = np.maximum(2e-11*np.maximum(1, np.abs(center)), 1e-5*expected_full)
-        if np.any(np.abs(shown_full-expected_full) > allowed):
+        nonzero = expected_full > 0
+        if (np.any(np.abs(shown_full-expected_full) > allowed)
+                or np.any(nonzero & (np.abs(shown_full-expected_full)
+                                     > .05*expected_full))):
             raise ValueError(f"Plotted endpoints suppress calibrated interval width: {method}/{mode}")
         # The earlier float32 endpoint pathway is audited separately. If that
         # route loses width, the float64 plotted bands remain mathematically
@@ -263,7 +266,10 @@ def verify_representative_widths(mean, spread, quantiles, stats, names):
             display_factor = 6.0 if name == "n" else 1.0
             expected_display = reference*display_factor
             actual_display = upper[:,j]*display_factor - lower[:,j]*display_factor
-            if np.any(np.abs(actual_display-expected_display) > allowed[:,j]*display_factor):
+            if (np.any(np.abs(actual_display-expected_display) > allowed[:,j]*display_factor)
+                    or np.any((expected_display > 0)
+                              & (np.abs(actual_display-expected_display)
+                                 > .05*expected_display))):
                 raise ValueError(f"Plot-unit conversion suppressed width: {method}/{mode}/{name}")
             rows.append(dict(method=method, calibration=mode, target=name,
                              display_factor=display_factor,
