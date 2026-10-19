@@ -327,38 +327,42 @@ def operational_controls(config, out, path, options):
         if len(group) < count:
             raise ValueError(f'Family {family} has fewer than {count} evaluation profiles')
         selected.extend(group[:count])
-    labels = ('Single maneuver with hold', 'Successive maneuvers with holds',
-              'Maneuver with return', 'Bidirectional maneuvers')
-    traces = []
+    labels = ('Single maneuver and hold', 'Successive maneuvers and holds',
+              'Maneuver and return', 'Bidirectional maneuvers')
+    traces, trajectories = [], []
     with plt.rc_context(STYLE):
         fig, axes = plt.subplots(2, 2, figsize=(178*MM, 110*MM), sharex=True, sharey=True, layout='constrained')
-        for ax, family, label, letter in zip(axes.flat, 'BCDF', labels, 'bcde'):
-            for p, color, ls in zip([p for p in selected if p['family'] == family],
-                                    ['black', '#0072B2', '#D55E00'], ['-', '--', ':']):
+        for ax, family, label, letter in zip(axes.flat, 'BCDF', labels, 'abcd'):
+            for number, (p, color, ls) in enumerate(zip(
+                    [p for p in selected if p['family'] == family],
+                    ['black', '#0072B2', '#D55E00'], ['-', '--', ':']), start=1):
                 angle, velocity = control(p['moves'])
                 if not np.isfinite(angle).all() or angle.min() < 44.25 or angle.max() > 48.75:
                     raise ValueError(f"{p['id']}: outside retained recipe envelope")
-                excursion = angle.max() - 45.0 if family != 'F' else angle.max() - angle.min()
-                descriptor = (f'Peak +{excursion:.2f}°' if family != 'F'
-                              else f'Range {angle.min():.2f}–{angle.max():.2f}°')
-                ax.plot(TIME, angle, color=color, ls=ls, lw=1, label=descriptor)
+                ax.plot(TIME, angle, color=color, ls=ls, lw=1, label=f'Trajectory {number}')
                 traces.append(angle)
+                trajectories.append(dict(profile_id=p['id'], family=family,
+                                         label=f'Trajectory {number}',
+                                         minimum_angle_degrees=float(angle.min()),
+                                         maximum_angle_degrees=float(angle.max())))
             ax.axhline(45, color='.6', ls='--', lw=.5)
             ax.set(xlim=(0, 200), ylim=(44, 49), xticks=[0, 50, 100, 150, 200], yticks=[44, 45, 46, 47, 48, 49])
             panel(ax, letter, label)
             ax.legend(frameon=False, ncol=count, loc='upper left')
         for ax in axes[-1]: ax.set_xlabel('Time (s)')
         for ax in axes[:, 0]: ax.set_ylabel('Control angle (degree)')
-        files = save_figure(fig, out, 'fig06_bcde_operational_controls', options)
+        files = save_figure(fig, out, 'fig06_operational_controls', options)
     np.savez_compressed(out/'operational_controls_data.npz', time=TIME, angle=np.stack(traces))
     files.append('operational_controls_data.npz')
     return dict(files=files, inputs=[fingerprint(file), fingerprint(inspect.getfile(control))], selected_ids=[p['id'] for p in selected],
-                selected_profiles=selected, manifest_identity=identity, recipe=manifest['recipe'],
+                selected_profiles=selected, trajectory_labels_and_extrema=trajectories,
+                manifest_identity=identity, recipe=manifest['recipe'],
                 caption='Representative operation-informed control trajectories for the calibration study. '
                 'The three lowest evaluation IDs for each maneuver type are selected independently of errors '
                 'and coverage. Curves reconstruct the saved prescribed moves, not noisy applied-angle samples. '
-                'Legend values describe the angular excursions rather than profile IDs. '
-                'Time and angle axes are shared. Archived profile IDs remain in metadata.')
+                'Within each panel, labels Trajectory 1–3 distinguish the three illustrated commands; '
+                'actual saved IDs and angle extrema are recorded in metadata. Shared axes indicate '
+                'the common 45-degree baseline and 0–200 s duration.')
 
 
 def existing_assets(config, out, path, options):

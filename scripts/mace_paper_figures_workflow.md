@@ -51,18 +51,16 @@ python scripts/generate_mace_paper_figures.py --figures all --output-dir outputs
 |---|---|---|
 | `sampling` | Three-panel Figure 1, PNG/PDF; sampling data NPZ | First eight sorted original batch-3 control CSVs. If absent in `auto` mode, explicitly labeled illustrative GP draws; `stored` requires actual tables. |
 | `dataset` | Required 4×4 Figure 5, PNG/PDF | All batch-3 simulator CSVs if present; defaults require exactly 5,000. Raw regeneration shows the variable name as each subplot title, with no repeated variable label on the y-axis. `stored_image` copies the pre-existing image unchanged. |
-| `operational_controls` | Optional operation-informed controls PNG/PDF; data NPZ | Lowest three evaluation IDs in each retained maneuver type, reconstructed from saved moves. Plot legends now show angular excursions and not the numeric suffixes of profile IDs. Figure 6 is omitted from the manuscript. |
+| `operational_controls` | Figure 6: operation-informed control maneuvers PNG/PDF; data NPZ | Three evaluation trajectories per retained maneuver type, reconstructed from saved moves. Panel titles omit family letters; legend entries are Trajectory 1–3, not source IDs. |
 | `existing_assets` | Original plant, LSTM architecture, autoregression, and Rolling Forecast graphics | Exact copied source PNGs plus raster PDF wrappers. These are explicitly marked as needing manual revisions. |
 | `operational_forecasts` | Existing 4×4 forecast PNGs and one sectioned PDF | Calls the existing saved-result renderer; original/operational calibration and per-output/joint trajectory views stay separate. |
 | `representative_forecast` | `mace_representative_test_forecast.png/.pdf` | One saved operational test trajectory with simulator truth, ensemble mean, uncalibrated ±2σ, MACE-Horizon, and MACE-Trajectory (or joint-trajectory) bands. Selection by fixed test ID, independent of prediction error. |
 
-`--figures all` builds the standard registered figures except the optional
-`operational_controls` renderer for omitted Figure 6. Request that stable ID
-explicitly when revisiting the control-trajectory illustrations. Pure flowcharts, the MACE event diagram, and manual artwork corrections
-are excluded from automatic scientific rendering. Figure 6 is no longer included
-in the Methodology. Its archived optional control plot remains accessible via
-`operational_controls`. The runner does not present uncorrected source graphics
-as final manuscript figures.
+The `--figures all` command preserves the historical Methodology/report defaults.
+Use `--figures results` to generate the manuscript Results Figures 6–10,
+**including** the reinstated Figure 6 operational control maneuvers.
+Pure flowcharts, the MACE event diagram, and manual artwork corrections
+are excluded from automatic scientific rendering.
 
 The operational forecast report retains the earlier output rule: individual PNGs
 and **one consolidated PDF**, not a separate PDF per 4×4 grid. Main manuscript
@@ -185,51 +183,71 @@ calibration to obtain a more favorable figure.
 
 ## Results figures and copy-paste LaTeX tables
 
-Wait for the completed corrected stochastic forecasts, floor calibration and
-profile validation. These renderers are read-only and do not simulate, infer,
-recalibrate or resample the original experimental outputs.
+Wait for the completed corrected stochastic forecasts, floor calibration,
+and profile validation. The figure renderers read archived results, and do
+not train, run new simulations or reestimate calibration quantiles.
 
-By default, representative rendering produces **10 separate Figure 6 stochastic
-4x4 plots** and **10 separate Figure 8 operational 2x2 composites**, each
-operational composite containing one selected test trajectory from each B/C/D/F
-maneuver family.
+Generate every Results figure and the Overleaf-ready numerical tables:
 
-PowerShell commands:
+```powershell
+python scripts/generate_mace_paper_figures.py --figures results --representative-count 10 --overwrite
+python scripts/generate_mace_results_tables.py --config scripts/mace_paper_figures_config.json
+```
 
-    python scripts/generate_mace_paper_figures.py --figures stochastic_representative operational_representatives --representative-count 10
-    python scripts/generate_mace_paper_figures.py --figures results --representative-count 20 --representative-seed 20261016 --overwrite
-    python scripts/generate_mace_results_tables.py --config scripts/mace_paper_figures_config.json
+The Results figure ordering is:
 
-The positive integer CLI argument --representative-count changes the number of
-saved figures (default: 10). The optional --representative-seed controls
-reproducible, uniform sampling without replacement (default: 20261016).
-These settings also reside in the results configuration block.
+| Figure | Stable renderer ID | Saved output |
+|---|---|---|
+| 6: Operation-informed control trajectories | `operational_controls` | `fig06_operational_controls.pdf` |
+| 7: Stochastic representative forecasts | `stochastic_representative` | `fig07_stochastic_representative_01.pdf` … `_10.pdf` |
+| 8: Stochastic UQ performance | `stochastic_uq_performance` | `fig08_stochastic_uq_performance.pdf` |
+| 9: Operational representatives | `operational_representatives` | `fig09_operational_representatives_01.pdf` … `_10.pdf` |
+| 10: Spread vs. error and width | `spread_error_relationship` | `fig10_spread_error_relationship.pdf` |
 
-**Selection criterion:** The native simulator-reference x_steam_out must be
-strictly below one at *any* saved time point. No minimum time fraction/duration
-is required. The fraction is retained in figure metadata. Profile selection
-never uses forecast errors, interval width, or coverage. Select once from
-stochastic test and independently from each B/C/D/F operational test group.
-If a population has fewer eligible profiles than requested, rendering stops
-with its eligible count, rather than silently repeating a trajectory.
+Individual CLI figure IDs remain stable; only manuscript figure numbers and
+filenames change. Figure 6 titles are (a)–(d) and describe each maneuver
+without letters B/C/D/F. Legends use 'Trajectory 1', 'Trajectory 2', and
+'Trajectory 3'; original profile IDs and angle extrema stay in metadata.
+The Figure 10 spread binning and line plots are unchanged from the
+formerly numbered Figure 9.
 
-Each Figure 6/8 result is saved as a numbered PDF and PNG, for example
-fig06_stochastic_representative_01.png through _10.png, and a corresponding
-numbered .caption.md sidecar. Common figure_metadata.json lists every selected
-ID, steam-quality fraction, group eligibility count, RNG seed and input/output
-hashes.
+Figure 7 remains a 4×4 simulator/ensemble-mean/four calibrated UQ-method
+comparison, with the previous shading and slimmer envelope edges and
+gray ensemble-mean line. Crucially, **every** chosen profile is audited at
+every forecast time and for every output and conformal method. Plotted
+endpoints are reconstructed in float64 from the exact archived fitted
+quantiles and spreads to avoid float32 endpoint rounding; independent
+analytic physical-unit widths are compared against those actually plotted.
+The older float32 pathway's zero-width rate and >5% relative loss rate
+are also reported. Inspect the saved
+`fig07_representative_interval_width_audit.csv`
+in the `stochastic_representative` figure directory. It contains
+per-profile, per-output, per-method width summaries in physical units,
+alongside saved original quantile ranges. Recalibration, prediction,
+ensemble mean/spread, or interval scoring are NOT redone.
 
-Figure 6 reuses the 4x4 Figure 5 variable ordering. It shows simulator,
-ensemble mean and four calibrated (MACE/absolute CP x Horizon/Trajectory)
-uncertainty methods, but no raw ensemble band. Figure 8 colors represent
-trajectory groups, with solid simulator curves, dashed ensemble means,
-and operationally calibrated MACE-Horizon intervals only.
+Figure 8 coverage panels (a) and (b) use y limits 0.9–1.0.
+Panel (b) uses the actual 15 symbolic variable names on the x-axis with
+tilted labels. Panels (c)–(d) place each bar's exact value rounded to three
+decimal places above the bar.
 
-Figure 7 and Figure 9 remain unchanged and continue to generate single plots.
-Use --figures results to request Figures 6-9 together. The original --figures
-all remains the legacy set. Use --overwrite after inspecting previous figures.
+Figure 9 still overlays the four operational test groups with group colors,
+using only operational-calibrated MACE-Horizon uncertainty. For the selected
+test profiles in families B, C and D, reference x_steam_out must be below
+unity at least once. Group F is sampled from ALL its saved evaluation profiles
+without this requirement (because the retained family-F profiles may not
+reach x_steam_out<1). The distinct rule is recorded in both metadata and
+caption, alongside profile IDs and actual unsaturated fractions.
 
-The two Overleaf-ready tables are written by the independent table command
-into outputs/paper/mace_results_tables_v1 as
-table05_forecast_accuracy.tex and table06_operational_uq.tex. Version the
-table output directory in config to avoid overwriting an existing version.
+Set the number of selected stochastic and operational plots via
+`--representative-count N` (default N=10) and the
+seed via `--representative-seed 20261016`. Selection is
+uniform without replacement among qualifying trajectories. If any group
+has fewer than N eligible test profiles, the corresponding renderer fails
+with an eligibility count, without changing its selection criteria.
+
+The table generator continues to save two complete Overleaf-ready
+LaTeX documents independently:
+`outputs/paper/mace_results_tables_v1/table05_forecast_accuracy.tex`
+and
+`outputs/paper/mace_results_tables_v1/table06_operational_uq.tex`.

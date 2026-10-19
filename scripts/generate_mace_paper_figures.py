@@ -17,27 +17,27 @@ sys.path.insert(0, str(ROOT/'src'))
 REGISTRY = {
     'sampling': ('sampling_figure', 'Figure 1: velocity correlation and integrated control trajectories'),
     'dataset': ('dataset_figure', 'Figure 5: existing or regenerated 4×4 simulation dataset'),
-    'operational_controls': ('operational_controls', 'Optional saved operation-informed control maneuvers (omitted Figure 6)'),
+    'operational_controls': ('operational_controls', 'Figure 6: representative operation-informed control maneuvers'),
     'existing_assets': ('existing_assets', 'Preserve supplied graphics; manual corrections stay manual'),
     'operational_forecasts': ('operational_forecasts', 'Saved 4×4 forecasts: PNGs + one consolidated PDF'),
     'representative_forecast': ('representative_forecast', 'Single saved operational test forecast: 4×4 MACE UQ comparison'),
-    'stochastic_representative': ('stochastic_representative', 'Figure 6: four calibrated methods on a stochastic test profile'),
-    'stochastic_uq_performance': ('stochastic_uq_performance', 'Figure 7: matched stochastic Horizon/Trajectory comparisons'),
-    'operational_representatives': ('operational_representatives', 'Figure 8: four operational trajectory groups'),
-    'spread_error_relationship': ('spread_error_relationship', 'Figure 9: ensemble spread versus error and interval width'),
+    'stochastic_representative': ('stochastic_representative', 'Figure 7: four calibrated methods on stochastic test profiles'),
+    'stochastic_uq_performance': ('stochastic_uq_performance', 'Figure 8: matched stochastic Horizon/Trajectory comparisons'),
+    'operational_representatives': ('operational_representatives', 'Figure 9: four operational trajectory groups'),
+    'spread_error_relationship': ('spread_error_relationship', 'Figure 10: ensemble spread versus error and interval width'),
 }
 
 
-RESULT_FIGURES = ('stochastic_representative', 'stochastic_uq_performance',
-                  'operational_representatives', 'spread_error_relationship')
+RESULT_FIGURES = ('operational_controls', 'stochastic_representative',
+                  'stochastic_uq_performance', 'operational_representatives',
+                  'spread_error_relationship')
 
 
 def selected_figures(value):
     requested = [part for item in value for part in item.split(',') if part]
     if requested == ['all']:
-        # Preserve the historical default 'all' set: added Results figures are opt-in.
-        return [name for name in REGISTRY if name != 'operational_controls'
-                and name not in RESULT_FIGURES]
+        # Keep the historical Methodology/report default; Results figures are opt-in.
+        return [name for name in REGISTRY if name not in RESULT_FIGURES]
     if requested == ['results']:
         return list(RESULT_FIGURES)
     if (not requested or 'all' in requested or 'results' in requested
@@ -109,10 +109,13 @@ def run(config_file, *, figures=('all',), output_dir=None, overwrite=False,
                         raise ValueError(f"Input changed while rendering: {record['path']}")
                 (stage/'caption.md').write_text(result['caption']+'\n', encoding='utf-8')
                 result['files'].append('caption.md')
+                source_files = [Path(__file__), Path(renderers.__file__)]
+                if key in RESULT_FIGURES and key != 'operational_controls':
+                    import _mace_results_figures
+                    source_files.append(Path(_mace_results_figures.__file__))
                 result.update(completed=True, figure_id=key, options=options,
                               effective_config=config, configuration_sha256=renderers.fingerprint(cfg_path)['sha256'],
-                              source_sha256={p.name:renderers.fingerprint(p)['sha256'] for p in
-                                             [Path(__file__), Path(renderers.__file__)]},
+                              source_sha256={p.name:renderers.fingerprint(p)['sha256'] for p in source_files},
                               inputs_unchanged=True)
                 result['output_hashes'] = [dict(file=f, sha256=renderers.fingerprint(stage/f)['sha256'])
                                            for f in result['files']]

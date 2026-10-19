@@ -14,7 +14,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from _mace_results_figures import choose_profiles, unsaturated_fraction, stochastic_representative, operational_representatives
+from _mace_results_figures import (choose_profiles, unsaturated_fraction,
+    stochastic_representative, operational_representatives, verify_representative_widths)
 from generate_mace_results_tables import _latex_table, make_tables
 from generate_mace_paper_figures import selected_figures
 
@@ -41,10 +42,33 @@ class ResultsSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"Invalid"):
             unsaturated_fraction(a,4)
 
+    def test_absolute_band_widths_are_not_suppressed_by_float32_rendering(self):
+        names = [f"variable_{j}" for j in range(15)]
+        mean = np.full((501,15), .5, dtype=np.float32)
+        spread = np.full((501,15), .01, dtype=np.float32)
+        tiny = np.float32(1e-8)
+        quantiles = {(m,mode):(np.full((501,15),tiny,dtype=np.float32)
+                    if mode == "horizon" else np.full(15,tiny,dtype=np.float32))
+                    for m in ("mace","absolute") for mode in ("horizon","trajectory")}
+        stats = {"y":{"span":np.ones(15),"min":np.zeros(15)}}
+        bands, diagnostics = verify_representative_widths(
+            mean, spread, quantiles, stats, names)
+        low, high = bands[("absolute","horizon")]
+        np.testing.assert_allclose(high-low, 2*float(tiny), atol=1e-15, rtol=1e-7)
+        row = next(row for row in diagnostics if row["method"]=="absolute"
+                   and row["calibration"]=="horizon"
+                   and row["target"]=="variable_0")
+        self.assertAlmostEqual(row["expected_width_physical_mean"], 2*float(tiny))
+        self.assertGreater(row["old_float32_zero_fraction_positive"], 0.9)
+        self.assertEqual(len(diagnostics), 4*15)
+        self.assertAlmostEqual(row["expected_width_display_mean"],
+                               2*float(tiny))
+
     def test_results_registry_does_not_break_legacy_all(self):
         ids = selected_figures(["results"])
-        self.assertEqual(len(ids), 4)
+        self.assertEqual(len(ids), 5)
         self.assertIn("stochastic_representative", ids)
+        self.assertEqual(ids[0], "operational_controls")
         self.assertTrue(set(ids).isdisjoint(selected_figures(["all"])))
 
     def test_latex_complete_standard_environment(self):
@@ -88,8 +112,8 @@ class ResultsSelectionTests(unittest.TestCase):
                                                     {"formats": ["png"], "dpi": 72})
             self.assertEqual(result["generated_count"], 2)
             self.assertEqual(result["eligible_profiles"], 2)
-            self.assertEqual(len(list(root.glob("fig06_*.png"))), 2)
-            self.assertEqual(len(list(root.glob("fig06_*.caption.md"))), 2)
+            self.assertEqual(len(list(root.glob("fig07_*.png"))), 2)
+            self.assertEqual(len(list(root.glob("fig07_*.caption.md"))), 2)
 
 
     def test_two_operational_2x2_composites_using_all_four_groups(self):
@@ -109,7 +133,8 @@ class ResultsSelectionTests(unittest.TestCase):
                     g = f.create_group(pid)
                     g.attrs["family"], g.attrs["split"] = fam, "test"
                     truth = np.ones((501, 15), dtype=np.float32)
-                    truth[23+int(i), names.index("x_steam_out")] = .98
+                    if fam != "F":
+                        truth[23+int(i), names.index("x_steam_out")] = .98
                     g["truth_physical"] = truth
                     g["truth"] = np.zeros((501, 15), dtype=np.float32)
                     g["mean"] = np.zeros((501, 15), dtype=np.float32)
@@ -131,9 +156,11 @@ class ResultsSelectionTests(unittest.TestCase):
             self.assertEqual(result["generated_count"],2)
             self.assertEqual(result["eligible_profile_counts"],
                              {fam:2 for fam in "BCDF"})
-            self.assertEqual(len(list(root.glob("fig08_*.png"))),2)
+            self.assertEqual(len(list(root.glob("fig09_*.png"))),2)
             for record in result["selected_sets"]:
                 self.assertEqual(set(record["profiles"]),set("BCDF"))
+                self.assertEqual(record["profiles"]["F"]["unsaturated_fraction"], 0.)
+                self.assertFalse(record["selection_require_unsaturated_by_family"]["F"])
 
 
 class SyntheticResultsTablesTests(unittest.TestCase):

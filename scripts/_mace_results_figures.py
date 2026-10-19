@@ -136,7 +136,7 @@ def unsaturated_fraction(truth, quality_column):
     return float(np.mean(a[:, quality_column] < 1.0))
 
 
-def choose_profiles(candidates, count=10, seed=20261016):
+def choose_profiles(candidates, count=10, seed=20261016, *, require_unsaturated=True):
     """Uniformly sample qualifying reference profiles without replacement.
 
     A profile qualifies if the simulator has x_steam,out < 1 at *any* time.
@@ -152,12 +152,17 @@ def choose_profiles(candidates, count=10, seed=20261016):
         raise ValueError("Duplicate representative profile IDs")
     if any(not np.isfinite(frac) or not 0 <= frac <= 1 for _, frac in candidates):
         raise ValueError("Invalid reference steam-quality fraction")
-    eligible = sorted(((name, frac) for name, frac in candidates if frac > 0),
+    if not isinstance(require_unsaturated, bool):
+        raise ValueError("require_unsaturated must be boolean")
+    eligible = sorted(((name, frac) for name, frac in candidates
+                       if frac > 0 or not require_unsaturated),
                       key=lambda item: item[0])
     if len(eligible) < count:
         raise ValueError(
-            f"Requested {count} representative profiles with reference "
-            f"x_steam,out < 1 at least once, but only {len(eligible)} qualify. "
+            f"Requested {count} representative profiles "
+            + ("with reference x_steam,out < 1 at least once, " if require_unsaturated
+               else "from the full saved group, ")
+            + f"but only {len(eligible)} qualify. "
             "Choose a smaller --representative-count.")
     selected_indices = np.sort(np.random.default_rng(seed).choice(
         len(eligible), size=count, replace=False))
@@ -196,6 +201,96 @@ def _unique(rows, **where):
     return matched[0]
 
 
+def verify_representative_widths(mean, spread, quantiles, stats, names):
+    """Numerically audit EVERY plotted conformal band in all 501 x 15 cells.
+
+    Calibrated quantiles are fixed. Compute mathematical endpoints in float64
+    to prevent accidental loss of very thin intervals from float32 endpoint
+    subtraction; compare rendered widths to the independent analytic 2*q*scale
+    in physical units. Also diagnose the native float32 endpoint quantization
+    without changing saved scientific evaluation arrays.
+    """
+    mean32, spread32 = np.asarray(mean), np.asarray(spread)
+    if mean32.shape != (501, len(names)) or spread32.shape != mean32.shape:
+        raise ValueError("Unexpected stochastic forecast coordinates in interval audit")
+    if not (np.isfinite(mean32).all() and np.isfinite(spread32).all()
+            and np.all(spread32 >= 0)):
+        raise ValueError("Invalid ensemble mean/spread in interval audit")
+    yspan = np.asarray(stats["y"]["span"], dtype=np.float64)
+    ymin = np.asarray(stats["y"]["min"], dtype=np.float64)
+    if (yspan.shape != (len(names),) or ymin.shape != yspan.shape
+            or not np.all(np.isfinite(yspan)) or np.any(yspan <= 0)
+            or not np.all(np.isfinite(ymin))):
+        raise ValueError("Invalid output scaler in interval audit")
+    mean64, spread64 = mean32.astype(np.float64), spread32.astype(np.float64)
+    center = mean64*yspan + ymin
+    bands, rows = {}, []
+    for method, mode in METHODS:
+        q = np.asarray(quantiles[(method, mode)], dtype=np.float64)
+        expected_shape = (501, len(names)) if mode == "horizon" else (len(names),)
+        if q.shape != expected_shape or not np.isfinite(q).all() or np.any(q < 0):
+            raise ValueError(f"Invalid {method}/{mode} calibrated quantiles: {q.shape}")
+        scale = spread64 + FLOOR if method == "mace" else np.ones_like(spread64)
+        half_scaled = q*scale
+        half_physical = half_scaled*yspan
+        lower, upper = center-half_physical, center+half_physical
+        expected_full = 2*half_physical
+        shown_full = upper-lower
+        if (not np.isfinite(lower).all() or not np.isfinite(upper).all()
+                or np.any(shown_full < 0)):
+            raise ValueError(f"Nonfinite or inverted plotted bounds: {method}/{mode}")
+        # Physical-unit cancellation should be much smaller than a meaningful
+        # manuscript band. Reject it explicitly rather than rendering a zero.
+        allowed = np.maximum(2e-11*np.maximum(1, np.abs(center)), 1e-5*expected_full)
+        if np.any(np.abs(shown_full-expected_full) > allowed):
+            raise ValueError(f"Plotted endpoints suppress calibrated interval width: {method}/{mode}")
+        # The earlier float32 endpoint pathway is audited separately. If that
+        # route loses width, the float64 plotted bands remain mathematically
+        # faithful to the SAME saved conformal quantiles.
+        old_lo, old_hi = bounds({"mean": mean32, "spread": spread32},
+                                quantiles[(method, mode)],
+                                None if method == "absolute" else FLOOR)
+        old_full = (old_hi.astype(np.float64)-old_lo.astype(np.float64))*yspan
+        positive = expected_full > 0
+        for j, name in enumerate(names):
+            mask = positive[:,j]
+            reference = expected_full[:,j]
+            observed = old_full[:,j]
+            # Tiny expected bands at floating-point resolution are explicitly
+            # tracked instead of silently being assumed zero.
+            frac_zero = float(np.mean((observed[mask] == 0))) if np.any(mask) else 0.
+            frac_loss = float(np.mean((observed[mask] < .95*reference[mask]))) if np.any(mask) else 0.
+            display_factor = 6.0 if name == "n" else 1.0
+            expected_display = reference*display_factor
+            actual_display = upper[:,j]*display_factor - lower[:,j]*display_factor
+            if np.any(np.abs(actual_display-expected_display) > allowed[:,j]*display_factor):
+                raise ValueError(f"Plot-unit conversion suppressed width: {method}/{mode}/{name}")
+            rows.append(dict(method=method, calibration=mode, target=name,
+                             display_factor=display_factor,
+                             expected_width_display_mean=float(np.mean(expected_display)),
+                             plotted_width_display_mean=float(np.mean(actual_display)),
+                             q_min=float(np.min(q[:,j] if q.ndim==2 else q[j])),
+                             q_max=float(np.max(q[:,j] if q.ndim==2 else q[j])),
+                             expected_width_physical_mean=float(np.mean(reference)),
+                             expected_width_physical_min=float(np.min(reference)),
+                             expected_width_physical_max=float(np.max(reference)),
+                             plotted_width_physical_mean=float(np.mean(shown_full[:,j])),
+                             old_float32_width_physical_mean=float(np.mean(observed)),
+                             old_float32_zero_fraction_positive=frac_zero,
+                             old_float32_loss_over_5pct_fraction=frac_loss))
+        bands[(method, mode)] = (lower, upper)
+    return bands, rows
+
+
+def save_representative_width_audit(path, rows):
+    if not rows:
+        raise ValueError("No representative conformal-width audit rows")
+    with Path(path).open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def stochastic_representative(config, out, path, options):
     """Figure 6: one publication-style 4x4 plot per selected stochastic profile.
 
@@ -206,7 +301,7 @@ def stochastic_representative(config, out, path, options):
     names, ids, stats = d["names"], d["ids"], d["stats"]
     quality = names.index("x_steam_out")
     count, seed = d["representative_count"], d["representative_seed"]
-    files, details = [], []
+    files, details, audit_rows = [], [], []
     display, labels = _display()
     colors = ("#009E73", "#CC79A7", "#0072B2", "#D55E00")
 
@@ -234,14 +329,9 @@ def stochastic_representative(config, out, path, options):
             if (mean.shape != (501, 15) or spread.shape != mean.shape
                     or truth.shape != mean.shape or control.shape != (501,)):
                 raise ValueError(f"Stochastic representative dimensions differ: {pid}")
-            bands = {}
-            for method, mode in METHODS:
-                lo, hi = bounds({"mean": mean, "spread": spread},
-                                quantiles[(method, mode)],
-                                None if method == "absolute" else FLOOR)
-                bands[(method, mode)] = (
-                    lo.astype(float)*stats["y"]["span"]+stats["y"]["min"],
-                    hi.astype(float)*stats["y"]["span"]+stats["y"]["min"])
+            bands, width_rows = verify_representative_widths(
+                mean, spread, quantiles, stats, names)
+            audit_rows.extend({"profile_id": pid, **row} for row in width_rows)
 
             with plt.rc_context(_style()):
                 fig, axes = plt.subplots(4, 4, figsize=(190/25.4, 168/25.4),
@@ -256,13 +346,13 @@ def stochastic_representative(config, out, path, options):
                             lo, hi = bands[(method, mode)]
                             ax.fill_between(TIME, lo[:, j]*factor, hi[:, j]*factor,
                                             color=c, alpha=.055, linewidth=0)
-                            ax.plot(TIME, lo[:, j]*factor, color=c, alpha=.75, linewidth=.55)
+                            ax.plot(TIME, lo[:, j]*factor, color=c, alpha=.75, linewidth=.36)
                             ax.plot(TIME, hi[:, j]*factor, color=c, alpha=.75, linewidth=.55)
                         ax.plot(TIME, truth[:, j]*factor, color="black", lw=1.05, zorder=5)
                         physical_mean = (mean[:, j].astype(float)*stats["y"]["span"][j]
                                          + stats["y"]["min"][j])
                         ax.plot(TIME, physical_mean*factor, color="#555555",
-                                lw=1.0, ls="--", zorder=6)
+                                lw=.62, ls="--", zorder=6)
                     ax.set_xlim(0, 200)
                     ax.set_xticks([0, 100, 200])
                     ax.tick_params(labelsize=6)
@@ -277,7 +367,7 @@ def stochastic_representative(config, out, path, options):
                 fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(.5,.99),
                            ncol=3, fontsize=7, frameon=False)
                 fig.supxlabel("Time (s)", y=.025, fontsize=8)
-                stem = f"fig06_stochastic_representative_{figure_number:02d}"
+                stem = f"fig07_stochastic_representative_{figure_number:02d}"
                 generated = _save(fig, out, stem, options)
             files.extend(generated)
             caption = (
@@ -297,10 +387,19 @@ def stochastic_representative(config, out, path, options):
                             "caption_file": caption_filename})
             print(f"Stochastic representative {figure_number}/{count}: {pid} "
                   f"(reference x_steam,out<1: {fraction:.2%})", flush=True)
+    audit_file = "fig07_representative_interval_width_audit.csv"
+    save_representative_width_audit(out/audit_file, audit_rows)
+    files.append(audit_file)
     return {
         "files": files, "inputs": d["inputs"], "requested_count": count,
         "generated_count": len(details), "representative_seed": seed,
         "eligible_profiles": eligible, "selected_profiles": details,
+        "width_audit_file": audit_file,
+        "width_audit_note": ("Independent analytic physical-unit checks for every "
+                             "conformal method, selected profile, output and horizon; "
+                             "float32 endpoint quantization is reported separately. "
+                             "Displayed bands retain unchanged conformal quantiles "
+                             "and are constructed in float64 for plotting."),
         "selection_rule": "Uniform seeded no-replacement sample among stochastic test profiles "
                           "with simulator-reference x_steam,out<1 at one or more saved time points; "
                           "no ranking by prediction residuals or coverage",
@@ -312,7 +411,7 @@ def stochastic_representative(config, out, path, options):
     }
 
 def stochastic_uq_performance(config, out, path, options):
-    """Figure 7: nominal coverage by calibration objective plus width and score."""
+    """Figure 8: nominal coverage by calibration objective plus width and score."""
     d = _stochastic(config, path)
     study = d["paths"]["stochastic_floor_dir"]
     metric_files = [study/k for k in ("aggregate_metrics.csv", "target_metrics.csv",
@@ -346,13 +445,13 @@ def stochastic_uq_performance(config, out, path, options):
     def agg(method, mode, col):
         return float(_unique(selected(aggregate, method, mode), method=method, mode=mode)[col])
     with plt.rc_context(_style()):
-        fig, axes = plt.subplots(2, 2, figsize=(178/25.4, 135/25.4), layout="constrained")
+        fig, axes = plt.subplots(2, 2, figsize=(178/25.4, 150/25.4), layout="constrained")
         ax = axes[0,0]
         for meth, c in (("absolute", PALETTE[0]), ("mace", PALETTE[2])):
             ax.plot(TIME, curve[meth], color=c, lw=1.3,
                     label="Absolute CP-Horizon" if meth == "absolute" else "MACE-Horizon")
         ax.axhline(.95, color="gray", ls=":", lw=.9)
-        ax.set(title="(a) Horizon coverage", xlabel="Forecast time (s)", ylabel="Mean pointwise coverage", ylim=(0,1.02))
+        ax.set(title="(a) Horizon coverage", xlabel="Forecast time (s)", ylabel="Mean pointwise coverage", ylim=(.9,1.0))
         ax.legend(frameon=False, fontsize=6)
         ax = axes[0,1]
         x = np.arange(15)
@@ -361,19 +460,36 @@ def stochastic_uq_performance(config, out, path, options):
         ax.plot(x, trajectory["mace"], "s", color=PALETTE[2], ms=3,
                 label="MACE-Trajectory")
         ax.axhline(.95, color="gray", ls=":", lw=.9)
-        ax.set(title="(b) Per-output trajectory coverage", xlabel="Output variable index",
-               ylabel="Whole-trajectory coverage", ylim=(0,1.02), xticks=x,
-               xticklabels=[str(i) for i in range(1,16)])
+        symbols = {
+            "TN2": r"$T_{N_2}$", "Tm": r"$T_m$", "Thp": r"$T_{hp}$",
+            "Tf": r"$T_f$", "Tsg": r"$T_{sg}$",
+            "T_steam_out": r"$T_{\mathrm{steam,out}}$",
+            "x_steam_out": r"$x_{\mathrm{steam,out}}$",
+            "n": r"$P$", "rho_dollars": r"$\rho_{\$}$",
+            **{f"c[{i}]": rf"$c_{i}$" for i in range(1,7)},
+        }
+        if any(n not in symbols for n in d["names"]):
+            raise ValueError("Missing output-variable symbol in coverage panel")
+        ax.set(title="(b) Per-output trajectory coverage", xlabel="Output variable",
+               ylabel="Whole-trajectory coverage", ylim=(.9,1.0), xticks=x)
+        ax.set_xticklabels([symbols[n] for n in d["names"]], rotation=55,
+                           ha="right", rotation_mode="anchor", fontsize=6)
         ax.legend(frameon=False, fontsize=6)
         labels = ["Abs-H", "MACE-H", "Abs-T", "MACE-T"]
         for ax, key, title, ylabel in (
                 (axes[1,0], "mean_scaled_full_width", "(c) Mean full interval width", "Normalized width"),
                 (axes[1,1], "mean_scaled_interval_score", "(d) Mean interval score", "Normalized interval score")):
-            ax.bar(np.arange(4), [agg(m,t,key) for m,t in order],
-                   color=[PALETTE[0],PALETTE[2],PALETTE[0],PALETTE[2]], alpha=.84)
+            values = [agg(m,t,key) for m,t in order]
+            bars = ax.bar(np.arange(4), values,
+                          color=[PALETTE[0],PALETTE[2],PALETTE[0],PALETTE[2]], alpha=.84)
+            for bar, val in zip(bars, values):
+                ax.annotate(f"{val:.3f}", (bar.get_x()+bar.get_width()/2, val),
+                            xytext=(0,3), textcoords="offset points",
+                            ha="center", va="bottom", fontsize=6)
+            ax.set_ylim(0, max(values)*1.18)
             ax.set(title=title, ylabel=ylabel, xticks=np.arange(4), xticklabels=labels)
         for ax in axes.flat: ax.grid(alpha=.14, axis="y")
-        files = _save(fig, out, "fig07_stochastic_uq_performance", options)
+        files = _save(fig, out, "fig08_stochastic_uq_performance", options)
     return {"files": files, "inputs": inputs,
             "caption": "Corrected stochastic evaluation at nominal 95% coverage. "
                        "(a) Mean per-coordinate Horizon coverage over output variables at each time; "
@@ -384,7 +500,7 @@ def stochastic_uq_performance(config, out, path, options):
 
 
 def operational_representatives(config, out, path, options):
-    """Figure 8: one composite four-group 2x2 plot per selected set.
+    """Figure 9: one composite four-group 2x2 plot per selected set.
 
     Each subplot is color-coded by the operational maneuver family (B/C/D/F),
     not by output variable. Saved operational MACE-Horizon intervals only.
@@ -410,7 +526,8 @@ def operational_representatives(config, out, path, options):
     for i, family in enumerate(FAMILIES):
         try:
             selected[family], eligible[family] = choose_profiles(
-                candidates.get(family, []), count=count, seed=seed+i)
+                candidates.get(family, []), count=count, seed=seed+i,
+                require_unsaturated=(family != "F"))
         except ValueError as exc:
             raise ValueError(f"Operational family {family}: {exc}") from exc
 
@@ -489,7 +606,7 @@ def operational_representatives(config, out, path, options):
                 fig.legend(handles=legend, loc="upper center", ncol=2,
                            frameon=False, bbox_to_anchor=(.5,.995), fontsize=6.5)
                 fig.supxlabel("Time (s)", y=.025)
-                stem = f"fig08_operational_representatives_{figure_number:02d}"
+                stem = f"fig09_operational_representatives_{figure_number:02d}"
                 generated = _save(fig, out, stem, options)
             files.extend(generated)
             caption = (
@@ -500,11 +617,14 @@ def operational_representatives(config, out, path, options):
                 "truth is solid, ensemble mean is dashed, and shaded bands are "
                 "only MACE-Horizon 95% nominal intervals calibrated using the "
                 "independent operation-informed calibration set. P = 6n MW. "
-                "Every selected reference profile has x_steam,out<1 at least once.")
+                "Reference profiles in B/C/D have x_steam,out<1 at least once; "
+                "F profiles are selected without that requirement.")
             caption_filename = f"{stem}.caption.md"
             (out/caption_filename).write_text(caption+"\n", encoding="utf-8")
             files.append(caption_filename)
             details.append({"number": figure_number, "profiles": identities,
+                            "selection_require_unsaturated_by_family":
+                                {f: f != "F" for f in FAMILIES},
                             "figure_stem": stem, "caption_file": caption_filename})
             print(f"Operational representative set {figure_number}/{count}: "
                   + ", ".join(f"{k}={identities[k]['profile_id']}" for k in FAMILIES),
@@ -513,19 +633,23 @@ def operational_representatives(config, out, path, options):
         "files": files, "inputs": d["inputs"], "requested_count": count,
         "generated_count": len(details), "representative_seed": seed,
         "eligible_profile_counts": eligible, "selected_sets": details,
-        "selection_rule": "For each operational test family independently, seeded no-replacement "
-                          "sample among profiles with simulator-reference x_steam,out<1 "
-                          "at one or more forecast times; seeds differ by family index",
+        "selection_rule": "Seeded no-replacement samples for B/C/D require simulator "
+                          "reference x_steam,out<1 at least once; F samples from all its "
+                          "test profiles because its saved population may never reach "
+                          "unsaturated outlet conditions. Seeds differ by family index.",
+        "selection_require_unsaturated_by_family": {f: (f != "F") for f in FAMILIES},
         "caption": (f"Series of {len(details)} 2-by-2 operational comparisons, each "
                     "containing one distinct representative from each maneuver family. "
                     "Color distinguishes the group rather than the variable, "
                     "and only operationally calibrated MACE-Horizon prediction "
-                    "intervals are shown. Individual IDs and captions are saved "
-                    "in metadata and numbered caption files.")
+                    "intervals are shown. Families B/C/D require at least one "
+                    "simulator reference x_steam,out<1 point; F is sampled from "
+                    "all saved F test profiles. Individual IDs and captions "
+                    "are saved in metadata and numbered caption files.")
     }
 
 def spread_error_relationship(config, out, path, options):
-    """Figure 9: bin by saved stochastic ensemble spread, never fit on test errors."""
+    """Figure 10: bin by saved stochastic ensemble spread, never fit on test errors."""
     d = _stochastic(config, path)
     ids = d["ids"]
     spread_path = d["files"]["test"]
@@ -582,7 +706,7 @@ def spread_error_relationship(config, out, path, options):
                    xlabel="Mean ensemble spread (scaled)", ylabel="Mean full interval width (scaled)")
         axs[1].legend(frameon=False)
         for ax in axs: ax.grid(alpha=.2)
-        files = _save(fig,out,"fig09_spread_error_relationship",options)
+        files = _save(fig,out,"fig10_spread_error_relationship",options)
     # Save the numerical points for independent review.
     out_file = out/"spread_error_bins.csv"
     with out_file.open("w",newline="",encoding="utf-8") as fd:

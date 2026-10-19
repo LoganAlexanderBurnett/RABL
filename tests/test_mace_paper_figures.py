@@ -81,6 +81,9 @@ class PaperFigureTests(unittest.TestCase):
             self.assertEqual(sm['selected_ids'],[f'drum_profile_{i:05d}' for i in range(3)])
             cm=json.loads((root/'plots'/'operational_controls'/'figure_metadata.json').read_text())
             self.assertEqual(cm['selected_ids'],['B_1','C_1','D_1','F_1'])
+            self.assertTrue((root/'plots'/'operational_controls'/'fig06_operational_controls.png').exists())
+            self.assertEqual([entry['label'] for entry in cm['trajectory_labels_and_extrema']],
+                             ['Trajectory 1']*4)
             dm=json.loads((root/'plots'/'dataset'/'figure_metadata.json').read_text())
             self.assertEqual(dm['display_order'],list(DISPLAY))
             self.assertEqual(dm['profile_count'],3)
