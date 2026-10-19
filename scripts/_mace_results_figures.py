@@ -458,8 +458,8 @@ def stochastic_uq_performance(config, out, path, options):
             ax.plot(TIME, curve[meth], color=c, lw=1.3,
                     label="Absolute CP-Horizon" if meth == "absolute" else "MACE-Horizon")
         ax.axhline(.95, color="gray", ls=":", lw=.9)
-        ax.set(title="(a) Horizon coverage", xlabel="Forecast time (s)", ylabel="Mean pointwise coverage", ylim=(.9,1.0))
-        ax.legend(frameon=False, fontsize=6)
+        ax.set(title="(a) Horizon coverage", xlabel="Forecast time (s)", ylabel="Mean pointwise coverage", ylim=(.93,1.0))
+        ax.legend(frameon=False, fontsize=8.5)
         ax = axes[0,1]
         x = np.arange(15)
         ax.plot(x, trajectory["absolute"], "o", color=PALETTE[0], ms=3,
@@ -478,10 +478,10 @@ def stochastic_uq_performance(config, out, path, options):
         if any(n not in symbols for n in d["names"]):
             raise ValueError("Missing output-variable symbol in coverage panel")
         ax.set(title="(b) Per-output trajectory coverage", xlabel="",
-               ylabel="Whole-trajectory coverage", ylim=(.9,1.0), xticks=x)
+               ylabel="Whole-trajectory coverage", ylim=(.92,.98), xticks=x)
         ax.set_xticklabels([symbols[n] for n in d["names"]], rotation=55,
                            ha="right", rotation_mode="anchor", fontsize=8.5)
-        ax.legend(frameon=False, fontsize=6)
+        ax.legend(frameon=False, fontsize=8.5)
         labels = ["Abs-H", "MACE-H", "Abs-T", "MACE-T"]
         for ax, key, title, ylabel in (
                 (axes[1,0], "mean_scaled_full_width", "(c) Mean full interval width", "Normalized width"),
@@ -492,7 +492,7 @@ def stochastic_uq_performance(config, out, path, options):
             for bar, val in zip(bars, values):
                 ax.annotate(f"{val:.3f}", (bar.get_x()+bar.get_width()/2, val),
                             xytext=(0,3), textcoords="offset points",
-                            ha="center", va="bottom", fontsize=6)
+                            ha="center", va="bottom", fontsize=8)
             ax.set_ylim(0, max(values)*1.18)
             ax.set(title=title, ylabel=ylabel, xticks=np.arange(4), xticklabels=labels)
         for ax in axes.flat: ax.grid(alpha=.14, axis="y")

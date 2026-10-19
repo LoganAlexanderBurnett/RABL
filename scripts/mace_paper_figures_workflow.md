@@ -329,3 +329,12 @@ Use the normal Results command to regenerate both variants:
 Or regenerate Figure 10 alone:
 
     python scripts/generate_mace_paper_figures.py --figures spread_error_relationship --overwrite
+
+### Figure 8 legibility update
+
+The Horizon coverage subplot (a) now uses the vertical range 0.93–1.00,
+while the per-output trajectory coverage subplot (b) uses 0.92–0.98.
+Both internal legends use 8.5-point text, and the numerical labels above
+panels (c) and (d) use 8-point text with three decimal places. These
+are plotting-only settings: the nominal 95% reference, saved coverage,
+widths, interval scores, and method comparisons are unchanged.

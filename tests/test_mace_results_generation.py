@@ -204,6 +204,66 @@ class ResultsSelectionTests(unittest.TestCase):
                 self.assertFalse(record["selection_require_unsaturated_by_family"]["F"])
 
 
+    def test_stochastic_uq_coverage_limits_and_text_are_readable(self):
+        from _mace_results_figures import stochastic_uq_performance
+        import matplotlib.pyplot as plt
+
+        names = [f"c[{i}]" for i in range(1, 7)] + [
+            "TN2", "Tm", "Thp", "Tf", "Tsg", "T_steam_out",
+            "x_steam_out", "n", "rho_dollars"]
+        def metric_row(method, mode, **fields):
+            return {"method": method, "mode": mode,
+                    "floor": "0.001" if method == "mace" else "None", **fields}
+        aggregate = [
+            metric_row(method, mode,
+                       mean_scaled_full_width=str(.01 + .002*k),
+                       mean_scaled_interval_score=str(.02 + .003*k))
+            for k, (method, mode) in enumerate(
+                (("mace", "horizon"), ("mace", "trajectory"),
+                 ("absolute", "horizon"), ("absolute", "trajectory")))
+        ]
+        target = [
+            metric_row(method, "trajectory", target=name,
+                       objective_coverage=str(.945 + .001*(j % 5)))
+            for method in ("mace", "absolute") for j, name in enumerate(names)
+        ]
+        horizon = [
+            metric_row(method, "horizon", target=name,
+                       horizon_index=str(t), coverage="0.950")
+            for method in ("mace", "absolute") for name in names
+            for t in range(501)
+        ]
+        d = {"paths": {"stochastic_floor_dir": Path(".")},
+             "names": names, "inputs": []}
+        fig_out = []
+        def inspect(fig, _out, _stem, _opts):
+            fig_out.append(fig)
+            return ["mock_figure.png"]
+        with mock.patch("_mace_results_figures._stochastic", return_value=d), \
+             mock.patch("_mace_results_figures._verified", return_value={}), \
+             mock.patch("_mace_results_figures._read_rows",
+                        side_effect=[aggregate, target, horizon]), \
+             mock.patch("_mace_results_figures._save", side_effect=inspect):
+            result = stochastic_uq_performance({}, Path("."), lambda x: x, {})
+        self.assertEqual(result["files"], ["mock_figure.png"])
+        self.assertEqual(len(fig_out), 1)
+        fig = fig_out[0]
+        try:
+            panel_a, panel_b, panel_c, panel_d = fig.axes
+            np.testing.assert_allclose(panel_a.get_ylim(), (.93, 1.0))
+            np.testing.assert_allclose(panel_b.get_ylim(), (.92, .98))
+            for ax in (panel_a, panel_b):
+                self.assertTrue(all(t.get_fontsize() >= 8.5
+                                    for t in ax.get_legend().get_texts()))
+            for ax in (panel_c, panel_d):
+                labels = [item for item in ax.texts if item.get_text()]
+                self.assertEqual(len(labels), 4)
+                self.assertTrue(all(t.get_fontsize() >= 8 for t in labels))
+                self.assertTrue(all(len(t.get_text().split(".")[-1]) == 3
+                                    for t in labels))
+        finally:
+            plt.close(fig)
+
     def test_spread_error_has_original_and_three_panel_backup(self):
         with tempfile.TemporaryDirectory() as t:
             out = Path(t)
