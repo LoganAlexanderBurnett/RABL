@@ -43,7 +43,7 @@
     "stochastic_validation_dir": "outputs/ml_results/mace_profile_validation_corrected_v1",
     "operational_dir": "outputs/ml_results/mace_operational_validation_v1",
     "scaler_file": "outputs/datasets/scaled_split/lstm_merged_batches_0001-0002-0003_k12_minmax_train5000profiles_val1000profiles_cal1000profiles_test2000profiles.h5",
-    "results_tables_output_dir": "outputs/paper/mace_results_tables_v1",
+    "results_tables_output_dir": "outputs/paper/mace_results_tables_v2",
     "representative_count": 10,
     "representative_seed": 20261016
   }

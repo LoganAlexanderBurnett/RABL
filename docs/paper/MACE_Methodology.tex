@@ -363,18 +363,16 @@ The operation-informed calibration set contains 1{,}000 trajectories and the eva
 
 Calibration using the original stochastic trajectories provides a test of transfer to the new evaluation distribution. It does not have the standard split-conformal guarantee because the two sets are no longer exchangeable. Calibration and evaluation on independently generated operation-informed trajectories provide the usual pooled marginal coverage interpretation. However, this guarantee does not imply equal coverage for each individual maneuver type. Absolute-error conformal intervals are constructed using both calibration sources for comparison.
 
-Performance is also examined during different portions of each control trajectory. Motion includes each interval of prescribed drum movement. Early settling consists of the following 20~s provided that another movement has not started. Initial hold precedes the first maneuver and late hold covers the remaining stationary periods. The same calibration thresholds are used across each time period. 
+Evaluation metrics are pooled across the independent operation-informed test trajectories and reported separately for each output variable. This retains the common test distribution for comparing calibration sources without making separate maneuver-phase coverage claims.
 
-% Figure~\ref{fig:mace:design} summarizes the comparison and illustrates the four forms of control motion.
+Figure~\ref{fig:mace:controls} illustrates three example control trajectories from each of the four prescribed maneuver types. The examples depict the generated input structure and are not selected according to forecast errors or uncertainty performance.
 
-% \begin{figure*}[t]
-% \centering
-% \input{docs/paper/figures/fig06_calibration_design.tikz.tex}
-% \par\vspace{2mm}
-% \includegraphics[width=0.96\textwidth]{outputs/paper/mace_figures/operational_controls/fig06_bcde_operational_controls.pdf}
-% \caption{Comparison of calibration distributions and representative operation-informed control trajectories. (a) The same evaluation forecasts are combined with conformal thresholds from the original stochastic calibration set or the operation-informed calibration set. (b) Single maneuver with hold. (c) Successive maneuvers with holds. (d) Maneuver with return. (e) Bidirectional maneuvers. Three example trajectories are shown for each maneuver type using a selection independent of forecasting error.}
-% \label{fig:mace:design}
-% \end{figure*}
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig06_operational_controls.pdf}
+\caption{Representative operation-informed control trajectories for the four prescribed maneuver types: (a) single maneuver and hold, (b) successive maneuvers and holds, (c) maneuver and return, and (d) bidirectional maneuvers. Three prescribed drum-angle trajectories are shown for each type. Each panel uses its own vertical limits to resolve the characteristic control motion; these curves are inputs to the reference simulator, not model predictions.}
+\label{fig:mace:controls}
+\end{figure*}
 
 \begin{table}[h!]
 \centering\small
@@ -427,7 +425,7 @@ The product equals one only when all $H$ intervals cover the reference response.
  \label{eq:mace:jointcoverage}
 \end{equation}
 
-Coverage at an individual forecast horizon is calculated by averaging the corresponding coverage variables across evaluation trajectories. Requiring simultaneous coverage of all outputs at that horizon instead uses the product over $j$. These measures are reported separately because coverage of individual predictions does not imply simultaneous coverage across time or output variables. We also evaluate coverage during control motion and subsequent settling. These phase-specific results characterize predictive performance under different operating conditions but do not carry independent conformal coverage guarantees.
+Coverage at an individual forecast horizon is calculated by averaging the corresponding coverage variables across evaluation trajectories. Requiring simultaneous coverage of all outputs at that horizon instead uses the product over $j$. These measures are reported separately because coverage of individual predictions does not imply simultaneous coverage across time or output variables. In the Results, matched-distribution coverage is reported both per output and, for joint trajectory calibration, for the complete multivariate response.
 
 In addition to coverage, we evaluate the efficiency of the prediction intervals through their full width, $W=U-L$. Output-specific widths are expressed in physical units, while aggregate widths are evaluated in normalized coordinates to give equal weight to each output. The relative reduction in mean interval width compared with the corresponding absolute-error conformal prediction baseline is
 
@@ -452,7 +450,7 @@ Because narrower intervals are not necessarily more reliable, we additionally ev
 
 Here, $y$ is the reference response, $L$ and $U$ are the corresponding interval bounds, and $\alpha$ is the nominal miscoverage probability. The max operator ensures that the penalty terms are nonzero only when the reference response falls outside the interval. The interval score combines interval width with penalties for reference responses falling outside the predicted bounds. The first term measures interval width, while the second and third terms penalize observations below the lower bound and above the upper bound, respectively. Lower scores indicate better performance. For trajectory-based methods, the interval score evaluates individual prediction intervals, while simultaneous trajectory coverage is assessed separately.
 
-Forecast accuracy and interval width are averaged over the evaluated time steps, whereas trajectory coverage is calculated by treating each complete trajectory as a single successful or unsuccessful coverage event. This distinction is maintained when evaluating different phases of the transients. In addition to aggregate performance, results are reported separately for the four control-maneuver types and for periods of control motion and subsequent settling or holding.
+Forecast accuracy and interval width are averaged over the evaluated time steps, whereas trajectory coverage is calculated by treating each complete trajectory as a single successful or unsuccessful coverage event. This distinction is maintained when reporting pooled and per-output results for the stochastic and operation-informed test distributions. The operation-informed comparison uses the same evaluation trajectories for both calibration sources.
 
 To quantify uncertainty in the reported performance metrics, we employ bootstrap resampling of the evaluation dataset. 10,000 bootstrap samples are generated by randomly selecting complete evaluation trajectories with replacement. Each sample contains the same number of trajectories as the original evaluation dataset, and identical samples are used when comparing uncertainty quantification methods and calibration approaches. The 2.5th and 97.5th percentiles of the resulting metric distributions define the 95\% confidence intervals. This procedure accounts for variability arising from the finite evaluation dataset while holding the trained ensemble and calibration datasets fixed.
 

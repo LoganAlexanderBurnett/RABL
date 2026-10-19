@@ -84,3 +84,14 @@ performance results.
   and the normalized precursor labeling used in the figure before submission.
 - Regenerate Figure 5 from original batch arrays if precise population counts
   or readable labels are required; do not infer a count from the existing raster.
+
+## Operation-informed control figure
+
+The Methodology now includes Figure 6 immediately after introducing the
+operation-informed maneuver types, with the exact Overleaf-relative asset
+path `figures/fig06_operational_controls.pdf`. Copy the existing generated
+figure to that Overleaf location; the manuscript intentionally does not
+link to a local `outputs/` figure path. Results Figure 8 remains unchanged;
+joint complete-multivariate trajectory coverage is instead summarized in
+Results Table 5. The manuscript does not promise a maneuver-phase UQ
+breakdown or claim per-maneuver conformal guarantees.

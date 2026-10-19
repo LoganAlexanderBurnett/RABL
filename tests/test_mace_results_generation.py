@@ -309,58 +309,143 @@ class ResultsSelectionTests(unittest.TestCase):
 class SyntheticResultsTablesTests(unittest.TestCase):
     def test_saved_data_consumed_without_inference(self):
         with tempfile.TemporaryDirectory() as folder:
-            root=Path(folder)
-            testfile=root/"test.h5"
-            ids=["profile_a","profile_b"]
-            with h5py.File(testfile,"w") as f:
-                for index,pid in enumerate(ids):
-                    g=f.create_group(pid)
-                    truth=np.zeros((501,15),dtype="f4")
-                    mean=np.full_like(truth,.1+index*.1)
-                    g.create_dataset("ensemble_mean_physical",data=mean)
-                    g.create_dataset("y_true_physical",data=truth)
-            op=root/"operational"/"evaluation"
+            root = Path(folder)
+            names = ["TN2", "Tm", "Thp", "Tf", "Tsg",
+                     "T_steam_out", "x_steam_out",
+                     *[f"c[{j}]" for j in range(1, 7)], "n", "rho_dollars"]
+            span = np.arange(1, 16, dtype=np.float64)
+            testfile = root/"test.h5"
+            ids = ["profile_a", "profile_b"]
+            with h5py.File(testfile, "w") as f:
+                for index, pid in enumerate(ids):
+                    group = f.create_group(pid)
+                    truth = np.zeros((501, 15), dtype=np.float64)
+                    mean = np.broadcast_to((.1 + index*.1)*span, truth.shape)
+                    group["ensemble_mean_physical"] = mean
+                    group["y_true_physical"] = truth
+            op = root/"operational"/"evaluation"
             op.mkdir(parents=True)
-            def csv_file(name,rows):
-                with (op/name).open("w",newline="",encoding="utf-8") as f:
-                    writer=csv.DictWriter(f,fieldnames=rows[0].keys())
-                    writer.writeheader();writer.writerows(rows)
-            common={"phase":"all","family":"pooled","scope":"aggregate"}
-            csv_file("accuracy_metrics.csv",[
-                dict(common,metric="mae",estimate=".123",ci_lower=".11",ci_upper=".14"),
-                dict(common,metric="rmse",estimate=".234",ci_lower=".21",ci_upper=".25"),
+            stochastic = root/"stochastic"
+            validation = root/"validation"
+            stochastic.mkdir()
+            validation.mkdir()
+            def save_csv(dest, rows):
+                if not rows:
+                    raise ValueError("Empty synthetic table archive")
+                with dest.open("w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                    writer.writeheader()
+                    writer.writerows(rows)
+            common = {"phase": "all", "family": "pooled"}
+            acc_rows = [
+                dict(common, scope="aggregate", metric=metric,
+                     estimate=val, ci_lower=val-.01, ci_upper=val+.01)
+                for metric, val in (("mae",.123), ("rmse",.234))
+            ]
+            for j, name in enumerate(names):
+                for metric, val in (("mae",.123), ("rmse",.234)):
+                    acc_rows.append(dict(common, scope=name, metric=metric,
+                        estimate=val*span[j],
+                        ci_lower=(val-.01)*span[j],
+                        ci_upper=(val+.01)*span[j]))
+            save_csv(op/"accuracy_metrics.csv", acc_rows)
+
+            op_rows = []
+            target_rows = []
+            aggregate_rows = []
+            for mode, operational_mode in (("horizon","horizon"),
+                                            ("trajectory","target_trajectory")):
+                for kind in ("mace", "absolute"):
+                    stoch_cover = .947 if mode == "horizon" else .951
+                    scaled_width = .1 if kind == "mace" else .15
+                    scaled_score = .2 if kind == "mace" else .25
+                    floor = "0.001" if kind == "mace" else "None"
+                    aggregate_rows.append(dict(method=kind,mode=mode,floor=floor,
+                        objective_coverage=stoch_cover,
+                        mean_scaled_full_width=scaled_width,
+                        mean_scaled_interval_score=scaled_score))
+                    for j,name in enumerate(names):
+                        target_rows.append(dict(
+                            method=kind,mode=mode,floor=floor,target=name,
+                            objective_coverage=stoch_cover,
+                            mean_physical_full_width=scaled_width*span[j],
+                            mean_physical_interval_score=scaled_score*span[j]))
+                    for source in ("original", "operational"):
+                        coverage = .94 if source == "original" else .96
+                        for scope in ["aggregate"] + names:
+                            index=names.index(scope) if scope != "aggregate" else None
+                            factor=1.0 if index is None else span[index]
+                            for metric,val in (
+                                ("objective_coverage",coverage),
+                                ("mean_full_width",scaled_width*factor),
+                                ("mean_interval_score",scaled_score*factor)):
+                                op_rows.append(dict(common,scope=scope,
+                                    mode=operational_mode,
+                                    calibration=source,method=kind,metric=metric,
+                                    estimate=val,ci_lower=val-.01*factor,
+                                    ci_upper=val+.01*factor))
+            save_csv(op/"uq_method_metrics.csv",op_rows)
+            save_csv(op/"paired_comparisons.csv", [
+                dict(common,mode="horizon",scope="aggregate",
+                     comparison="mace:operational_minus_original",
+                     metric="objective_coverage_difference",
+                     estimate=.02,ci_lower=.01,ci_upper=.03)
             ])
-            rows=[]
-            for source in ("original","operational"):
-                for method in ("mace","absolute"):
-                    for metric,val in (("objective_coverage",.91 if source=="original" else .95),
-                                       ("mean_full_width",.45 if source=="original" else .55),
-                                       ("mean_interval_score",.60 if source=="original" else .57)):
-                        rows.append(dict(common,mode="horizon",calibration=source,method=method,
-                                         metric=metric,estimate=val if method=="mace" else val*1.2,
-                                         ci_lower=val-.01,ci_upper=val+.01))
-            csv_file("uq_method_metrics.csv",rows)
-            differences={"objective_coverage_difference":.04,
-                         "mean_full_width_difference":.10,
-                         "mean_interval_score_difference":-.03}
-            csv_file("paired_comparisons.csv",[
-                dict(common,mode="horizon",comparison="mace:operational_minus_original",
-                     metric=m,estimate=v,ci_lower=v-.01,ci_upper=v+.01)
-                for m,v in differences.items()
-            ])
-            dummy={"paths":{"operational_dir":root/"operational"},"ids":ids,"inputs":[]}
-            sto={"ids":ids,"files":{"test":testfile},"stats":{"y":{"span":np.ones(15)}},
-                 "inputs":[]}
+            save_csv(stochastic/"target_metrics.csv",target_rows)
+            save_csv(stochastic/"aggregate_metrics.csv",aggregate_rows)
+            joint_rows = [
+                dict(mode="joint",method=kind,scope="aggregate",metric=metric,
+                     estimate=val,ci_lower=val-.005,ci_upper=val+.005)
+                for kind in ("mace", "absolute")
+                for metric,val in (("objective_coverage",.95),
+                                   ("mean_full_width",.5),
+                                   ("mean_interval_score",.6))
+            ]
+            save_csv(validation/"bootstrap_method_metrics.csv",joint_rows)
+            sto = dict(ids=ids,names=names,files={"test":testfile},
+                       stats={"y":{"span":span}},inputs=[],
+                       paths={"stochastic_floor_dir":stochastic,
+                              "stochastic_validation_dir":validation})
+            operational = dict(ids=ids,names=names,inputs=[],
+                               paths={"operational_dir":root/"operational"})
             with mock.patch("generate_mace_results_tables._stochastic",return_value=sto), \
-                 mock.patch("generate_mace_results_tables._operational",return_value=dummy):
-                contents,inputs,summary=make_tables({})
-            self.assertEqual(len(contents),2)
-            self.assertIn("Stochastic & 2 & 0.1500",contents["table05_forecast_accuracy.tex"])
-            self.assertIn("Operation-informed & 2 & 0.1230",contents["table05_forecast_accuracy.tex"])
-            self.assertIn("0.9500",contents["table06_operational_uq.tex"])
-            self.assertIn("Difference (operational",contents["table06_operational_uq.tex"])
+                 mock.patch("generate_mace_results_tables._operational",return_value=operational):
+                contents, inputs, summary = make_tables({})
+            self.assertEqual(set(contents),{
+                "table05_forecast_accuracy.tex","table06_operational_uq.tex",
+                "table_metrics_detail.csv"})
+            table5=contents["table05_forecast_accuracy.tex"]
+            table6=contents["table06_operational_uq.tex"]
+            self.assertIn("Stoch.",table5)
+            self.assertIn("0.1500",table5)
+            self.assertIn("0.1230",table5)
+            self.assertIn("0.9470/0.1000/0.2000",table5)
+            self.assertIn("MACE-Joint",table5)
+            self.assertIn("Abs-Joint",table5)
+            self.assertIn("0.9500",table5)
+            self.assertIn("Stochastic calibration",table6)
+            self.assertIn("Independent operation-informed calibration",table6)
+            self.assertIn("0.9400/0.1000/0.2000",table6)
+            self.assertIn("0.9600/0.1000/0.2000",table6)
+            self.assertEqual(table5.count(r"\begin{tabular}"), 3)
+            self.assertEqual(table6.count(r"\begin{tabular}"), 2)
+            self.assertNotIn("phase breakdown",table6)
+            detail=list(csv.DictReader(contents["table_metrics_detail.csv"].splitlines()))
+            per_target=[r for r in detail
+                        if r["dataset"]=="operational" and
+                           r["calibration"]=="operation-informed" and
+                           r["output"]=="T_steam_out" and
+                           r["method"]=="mace" and
+                           r["mode"]=="trajectory" and
+                           r["metric"]=="mean_full_width"]
+            self.assertEqual(len(per_target),3)
+            self.assertAlmostEqual(float(next(x["value"] for x in per_target
+                              if x["bound"]=="estimate")),.1)
+            self.assertEqual(summary["per_output_count"],15)
             self.assertAlmostEqual(summary["stochastic_mae"],.15)
-            self.assertAlmostEqual(summary["stochastic_rmse"],np.sqrt((.1**2+.2**2)/2))
+            self.assertAlmostEqual(summary["stochastic_rmse"],
+                                   np.sqrt((.1**2+.2**2)/2))
+            self.assertAlmostEqual(summary["operational_mae"],.123)
 
 
 if __name__ == "__main__":
