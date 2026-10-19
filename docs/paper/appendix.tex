@@ -1,0 +1,221 @@
+\section{Reactor Plant Physics and Modeling Details}
+\label{ap:plantmodel}
+
+This appendix documents the reactor plant model used in the present study.  The implemented Modelica system is a point-kinetics reactor model coupled to a four-node lumped thermal network representing the fuel, moderator/graphite, heat-pipe, and nitrogen-loop temperatures.  In the current implementation, the secondary side is not modeled as an additional dynamic thermal node; instead, steam-side heat removal is represented through an algebraic heat-transfer relation at a prescribed steam outlet temperature.  The control input is a common drum-angle signal applied uniformly to all drums.
+
+\subsection{Governing equations}
+
+The model state consists of normalized reactor power $n$, six delayed-neutron precursor concentrations $c_i$, and four thermal states $T_f$, $T_m$, $T_{hp}$, and $T_{N}$.  Thermal power is obtained from normalized power through
+\begin{equation}
+    P(t) = n(t)\,P_r,
+    \qquad
+    P_{\mathrm{MW}}(t) = \frac{P(t)}{10^6}.
+\end{equation}
+The total reactivity is decomposed into drum, fuel-temperature, and moderator-temperature contributions:
+\begin{align}
+    \rho_{\mathrm{drums}}(t)
+    &=
+    n_d \rho_{\max}^{(1)}
+    \frac{1-\cos\!\left(\frac{\pi}{180}\theta_{\mathrm{drum}}(t)\right)}{2}
+    - \rho_{\mathrm{ss,tot}},
+    \\
+    \rho_f(t)
+    &= \alpha_f \bigl(T_f(t)-T_{f0}\bigr),
+    \\
+    \rho_m(t)
+    &= \alpha_m \bigl(T_m(t)-T_{m0}\bigr),
+    \\
+    \rho(t)
+    &= \rho_{\mathrm{drums}}(t) + \rho_f(t) + \rho_m(t).
+\end{align}
+Reactivity in dollars is defined as
+\begin{equation}
+    \rho_{\$}(t) = \frac{\rho(t)}{\beta}.
+\end{equation}
+
+The neutronics are governed by the standard six-group point-kinetics equations,
+\begin{align}
+    \frac{dn}{dt}
+    &=
+    \left(\frac{\rho(t)-\beta}{\Lambda}\right)n(t)
+    +
+    \sum_{i=1}^{6} \lambda_i c_i(t),
+    \\
+    \frac{dc_i}{dt}
+    &=
+    \frac{\beta_i}{\Lambda}n(t) - \lambda_i c_i(t),
+    \qquad i=1,\dots,6.
+\end{align}
+
+The thermal network is written as a set of lumped energy balances.  Fuel temperature evolves according to
+\begin{equation}
+    \frac{dT_f}{dt}
+    =
+    \frac{f_h\,P(t)}{M_f c_{p,f}}
+    +
+    \frac{T_m(t)-T_f(t)}{\tau_{f\to g}},
+\end{equation}
+while the moderator/graphite node satisfies
+\begin{equation}
+    \frac{dT_m}{dt}
+    =
+    \frac{(1-f_h)\,P(t)}{M_g c_{p,g}}
+    +
+    \frac{T_f(t)-T_m(t)}{\tau_{g\to f}}
+    +
+    \frac{T_{hp}(t)-T_m(t)}{\tau_{g\to hp}}.
+\end{equation}
+The heat-pipe node evolves as
+\begin{equation}
+    \frac{dT_{hp}}{dt}
+    =
+    \frac{T_m(t)-T_{hp}(t)}{\tau_{hp\to g}}
+    +
+    \frac{T_{N}(t)-T_{hp}(t)}{\tau_{hp\to N}}.
+\end{equation}
+Heat rejected to the steam side is modeled algebraically by
+\begin{align}
+    Q_{\mathrm{to\,steam}}(t)
+    &= G_{N\text{-}sg}\bigl(T_{N}(t)-T_{\mathrm{steam,out}}\bigr),
+    \\
+    \dot{m}_{\mathrm{steam}}(t)
+    &= \frac{Q_{\mathrm{to\,steam}}(t)}{\Delta h},
+\end{align}
+and the nitrogen-loop temperature obeys
+\begin{equation}
+    \frac{dT_{N}}{dt}
+    =
+    \frac{T_{hp}(t)-T_{N}(t)}{\tau_{N\to hp}}
+    -
+    \frac{Q_{\mathrm{to\,steam}}(t)}{M_{N}c_{p,N}}.
+\end{equation}
+
+The initial conditions are chosen as the nominal steady-state operating point,
+\begin{equation}
+    n(0)=1,
+    \qquad
+    c_i(0)=\frac{\beta_i}{\Lambda\lambda_i},
+    \qquad
+    T_f(0)=T_{f0},
+    \qquad
+    T_m(0)=T_{m0},
+    \qquad
+    T_{hp}(0)=T_{hp0},
+    \qquad
+    T_{N}(0)=T_{N2,0}.
+\end{equation}
+
+\subsection{Neutronics and control parameters}
+
+\begin{table}[htbp]
+\centering
+\caption{Neutronics and control parameters used in \texttt{HPMicroPK}.}
+\label{tab:plant-neutronics}
+\begin{tabular}{llll}
+\toprule
+Group & Symbol & Value & Unit \\
+\midrule
+Prompt generation & $\Lambda$ & $1.95734\times 10^{-4}$ & s \\
+Delayed groups & $N_g$ & $6$ & -- \\
+Delayed decay constants &
+$\lambda_i$ &
+$\{0.01334,\;0.03274,\;0.1208,\;0.3028,\;0.8495,\;2.853\}$ &
+s$^{-1}$ \\
+Delayed fractions &
+$\beta_i$ &
+$\{2.90591,\;11.2869,\;11.6402,\;26.9454,\;9.20043,\;4.41185\}\times 10^{-4}$ &
+-- \\
+Total delayed fraction & $\beta$ & $6.639069\times 10^{-3}$ & -- \\
+Steady precursor concentrations &
+$C_{i,\mathrm{ss}}$ &
+$\{111.2910,\;176.1285,\;49.2297,\;45.4635,\;5.53323,\;0.790047\}$ &
+-- \\
+Rated thermal power & $P_r$ & $6.0\times 10^{6}$ & W \\
+Fuel power fraction & $f_h$ & $0.90$ & -- \\
+Fuel feedback & $\alpha_f$ & $-4.59\times 10^{-5}$ & $\Delta k/k$/K \\
+Moderator feedback & $\alpha_m$ & $-2.21\times 10^{-5}$ & $\Delta k/k$/K \\
+Number of drums & $n_d$ & $12$ & -- \\
+Total drum worth & $\rho_{\max,\mathrm{tot}}$ & $-13174$ & pcm \\
+Per-drum worth & $\rho_{\max}^{(1)}$ & $-1.0978333\times 10^{-2}$ & $\Delta k/k$ \\
+Reference drum angle & $u_0$ & $45.0$ & deg \\
+Single-drum steady reactivity & $\rho_{\mathrm{ss}}^{(1)}$ & $-1.6077397\times 10^{-3}$ & $\Delta k/k$ \\
+Total steady drum reactivity & $\rho_{\mathrm{ss,tot}}$ & $-1.9292876\times 10^{-2}$ & $\Delta k/k$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Thermal and physical parameters}
+
+\begin{longtable}{llll}
+\caption{Thermal design values, lumped properties, and derived parameters used in the four-node thermal network.}
+\label{tab:plant-thermal}
+\\
+\toprule
+Group & Symbol & Value & Unit \\
+\midrule
+\endfirsthead
+
+\toprule
+Group & Symbol & Value & Unit \\
+\midrule
+\endhead
+
+\bottomrule
+\endfoot
+
+\multicolumn{4}{l}{\textbf{Reference temperatures}} \\
+Fuel & $T_{f,0}$ & $1173.15$ & K \\
+Moderator/graphite & $T_{m,0}$ & $1150.15$ & K \\
+Heat pipe & $T_{hp,0}$ & $1073.15$ & K \\
+Nitrogen inlet & $T_{N,\mathrm{in}}$ & $683.15$ & K \\
+Nitrogen outlet & $T_{N,\mathrm{out}}$ & $1073.15$ & K \\
+Nitrogen reference average & $T_{N,0}$ & $878.15$ & K \\
+Steam-generator boundary & $T_{sg,0}$ & $505.15$ & K \\
+Feedwater inlet & $T_{fw,\mathrm{in}}$ & $471.45$ & K \\
+Steam outlet boundary & $T_{\mathrm{steam,out}}$ & $505.15$ & K \\
+
+\addlinespace
+\multicolumn{4}{l}{\textbf{Fuel lump}} \\
+Fuel mass & $M_f$ & $4355.259$ & kg \\
+Fuel specific heat & $c_{p,f}$ & $748.72$ & J/(kg$\cdot$K) \\
+Fuel inverse heat capacity & $(M_f c_{p,f})^{-1}$ & $3.06768\times 10^{-7}$ & K/J \\
+
+\addlinespace
+\multicolumn{4}{l}{\textbf{Moderator/graphite lump}} \\
+Moderator mass & $M_g$ & $673.921$ & kg \\
+Moderator specific heat & $c_{p,g}$ & $1850.0$ & J/(kg$\cdot$K) \\
+
+\addlinespace
+\multicolumn{4}{l}{\textbf{Heat-pipe lump}} \\
+Heat-pipe mass & $M_{hp}$ & $119.678$ & kg \\
+Heat-pipe specific heat & $c_{p,hp}$ & $771.3$ & J/(kg$\cdot$K) \\
+
+\addlinespace
+\multicolumn{4}{l}{\textbf{Nitrogen-loop lump}} \\
+Nitrogen specific heat & $c_{p,N}$ & $1182.0$ & J/(kg$\cdot$K) \\
+Nitrogen residence time & $\tau_N$ & $5.0$ & s \\
+Nitrogen mass flow & $\dot{m}_N$ & $13.015749$ & kg/s \\
+Nitrogen lumped mass & $M_{N}$ & $65.078745$ & kg \\
+
+\addlinespace
+\multicolumn{4}{l}{\textbf{Steam-side effective quantity}} \\
+Effective enthalpy rise & $\Delta h$ & $2.03587\times 10^{6}$ & J/kg \\
+
+\addlinespace
+\multicolumn{4}{l}{\textbf{Derived conductances}} \\
+Fuel--moderator & $G_{f\text{-}g}$ & $2.3478261\times 10^{5}$ & W/K \\
+Moderator--heat pipe & $G_{g\text{-}hp}$ & $7.7922078\times 10^{4}$ & W/K \\
+Heat pipe--nitrogen & $G_{hp\text{-}N}$ & $3.0769231\times 10^{4}$ & W/K \\
+Nitrogen--steam boundary & $G_{N\text{-}sg}$ & $1.6085791\times 10^{4}$ & W/K \\
+
+\addlinespace
+\multicolumn{4}{l}{\textbf{Model time constants}} \\
+Fuel response to moderator & $\tau_{f\to g}$ & $13.888889$ & s \\
+Moderator response to fuel & $\tau_{g\to f}$ & $5.310248$ & s \\
+Moderator response to heat pipe & $\tau_{g\to hp}$ & $16.000008$ & s \\
+Heat-pipe response to moderator & $\tau_{hp\to g}$ & $1.184615$ & s \\
+Heat-pipe response to nitrogen & $\tau_{hp\to N}$ & $2.999998$ & s \\
+Nitrogen response to heat pipe & $\tau_{N\to hp}$ & $2.500000$ & s \\
+Nitrogen response to steam boundary & $\tau_{N\to sg}$ & $4.782051$ & s \\
+
+\end{longtable}
