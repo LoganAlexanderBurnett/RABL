@@ -1,0 +1,222 @@
+% MACE Results section. Insert after Methodology in the Overleaf manuscript.
+% All figure references use the exact filenames in the user's figures/ folder.
+% Tables 5 and 6 are embedded from the supplied frozen result archives so
+% no separate table input paths are required when this file is included.
+\section{Results}
+\label{sec:results}
+
+The proposed forecasting and uncertainty-quantification framework was evaluated using independently generated stochastic and operation-informed control trajectories. The stochastic test set provides a matched-distribution assessment of recursive forecasting and conformal calibration, while the operation-informed set examines the same trained ensemble under prescribed maneuvers with different temporal characteristics. Both test sets contain 2{,}000 complete trajectories, and the conformal comparisons use forecasts generated without intermediate simulator observations. Forecast accuracy is considered separately from the empirical coverage and efficiency of the prediction intervals. The latter are first evaluated using calibration and test trajectories from the original stochastic distribution and then using alternative calibration distributions for the same operation-informed evaluation trajectories.
+
+\subsection{Autoregressive forecasting performance}
+\label{sec:results:forecasting}
+
+The ensemble reproduced the simulated multivariate responses with small aggregate errors over the 200~s forecast horizon. Table~\ref{tab:mace_forecast_accuracy}(a) reports normalized mean absolute error (MAE) and root mean square error (RMSE) for the stochastic and operation-informed test populations. For the stochastic trajectories, the pooled MAE and RMSE were 0.00154 and 0.00359, respectively; the corresponding errors for the operation-informed trajectories were 0.00141 and 0.00256. These metrics include all 501 time points and 15 output variables, with errors normalized by the original training-set ranges before aggregation. The comparable accuracy on the two evaluation distributions is notable because each ensemble member advances recursively using its own previously predicted responses, rather than receiving the simulator response at subsequent forecast steps. The operation-informed errors are somewhat smaller for this particular evaluation population, although this comparison does not imply that arbitrary structured control trajectories are easier to predict.
+
+The output-specific errors reveal differences that are obscured by the pooled averages. On the stochastic test set, normalized MAE for the five reactor and thermal-system temperatures ranged from approximately 0.0007 to 0.0009, while the delayed precursor variables generally had values between 0.0014 and 0.0024. Reactor power and reactivity each had an MAE of approximately 0.0024. A similar ordering was observed for many of the operation-informed outputs, although the relative errors differed between the two trajectory populations. The reactor power errors are reported using the normalized neutron-population prediction, with the physical power conversion used only for figure presentation. These differences reflect the coupled response quantities being forecast and motivate considering the full output vector rather than judging recursive prediction solely from the behavior of the thermal nodes.
+
+Figure~\ref{fig:mace:stochastic-representative} illustrates a complete forecast for one stochastic test trajectory. The imposed control-drum motion first produces a coupled neutronic and thermal response; the temperature histories evolve more gradually than the prompt changes in reactor power and the delayed precursor quantities. The ensemble mean follows the simulator response through the principal decline and subsequent recovery of the neutronic variables, while reproducing the corresponding slower changes in the thermal nodes. The steam outlet temperature exhibits a plateau associated with the secondary-system response, and the steam outlet quality departs from unity over part of the transient. Although the forecast and reference curves are closely aligned over much of the horizon, visible deviations and interval growth differ among output variables. The selected case is illustrative rather than a performance-based selection, and the population-wide errors are therefore established by Table~\ref{tab:mace_forecast_accuracy}(a), not by this figure alone. The interval boundaries are included in Figure~\ref{fig:mace:stochastic-representative} to show their temporal behavior, while their calibration and efficiency are assessed quantitatively below.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig07_stochastic_representative_10.pdf}
+\caption{Representative stochastic test trajectory over the 200~s forecast horizon. The prescribed control angle is shown with the 15 simulated output variables. Simulator responses, recursive ensemble-mean forecasts, and calibrated MACE-Horizon, MACE-Trajectory, Absolute CP-Horizon, and Absolute CP-Trajectory interval boundaries are compared using the same forecast center. Reactor power is displayed in MW in place of normalized neutron population. The example illustrates the time-dependent interval allocation; aggregate coverage and efficiency are evaluated over the independent test population.}
+\label{fig:mace:stochastic-representative}
+\end{figure*}
+
+These forecasting results establish the accuracy of the central ensemble prediction but do not determine whether the uncertainty intervals contain the simulator responses at their specified nominal rates. The forecasting errors are not uniform across outputs or forecast times, and interval reliability must therefore be assessed under the particular coverage event used for calibration.
+
+\begin{table*}[t]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.04}
+\caption{Forecast accuracy and stochastic-distribution conformal uncertainty for 15 output variables (2,000 test trajectories each). (a) Normalized MAE/RMSE use the original training-set output ranges. (b) Each entry is coverage / mean normalized full width / mean normalized interval score, using the indicated method's objective: individual forecast coordinates for Horizon and complete per-output trajectories for Trajectory. All four methods use the same stochastic calibration and evaluation sets. (c) Joint calibration instead targets simultaneous coverage of all 15 outputs over all 501 forecast steps. Coverage is nominally 95\%; pointwise and trajectory coverage events are not interchangeable.}
+\label{tab:mace_forecast_accuracy}
+\noindent\textbf{(a) Autoregressive forecast accuracy}\par\vspace{2pt}
+\begin{tabular}{@{}lrrrr@{}}
+\hline
+Output & Stoch.\ MAE & Stoch.\ RMSE & Oper.\ MAE & Oper.\ RMSE  \\
+\hline
+$T_{N_2}$ & 0.0008 & 0.0017 & 0.0008 & 0.0011 \\
+$T_m$ & 0.0007 & 0.0015 & 0.0007 & 0.0010 \\
+$T_{hp}$ & 0.0008 & 0.0016 & 0.0007 & 0.0011 \\
+$T_f$ & 0.0007 & 0.0014 & 0.0006 & 0.0010 \\
+$T_{sg}$ & 0.0009 & 0.0017 & 0.0008 & 0.0011 \\
+$c_1$ & 0.0014 & 0.0027 & 0.0013 & 0.0024 \\
+$c_2$ & 0.0021 & 0.0037 & 0.0020 & 0.0033 \\
+$c_3$ & 0.0024 & 0.0044 & 0.0021 & 0.0035 \\
+$c_4$ & 0.0024 & 0.0048 & 0.0020 & 0.0034 \\
+$c_5$ & 0.0023 & 0.0051 & 0.0020 & 0.0033 \\
+$c_6$ & 0.0023 & 0.0052 & 0.0020 & 0.0033 \\
+$P$ & 0.0024 & 0.0053 & 0.0020 & 0.0034 \\
+$\rho_{\$}$ & 0.0024 & 0.0049 & 0.0025 & 0.0037 \\
+$T_{\mathrm{steam,out}}$ & 0.0012 & 0.0021 & 0.0010 & 0.0016 \\
+$x_{\mathrm{steam,out}}$ & 0.0003 & 0.0027 & 0.0005 & 0.0015 \\
+\hline
+\textbf{Pooled} & 0.0015 & 0.0036 & 0.0014 & 0.0026 \\
+\hline
+\end{tabular}
+
+\medskip\noindent\textbf{(b) Stochastic test: per-output conformal uncertainty}\par\vspace{2pt}
+\begin{tabular}{@{}lcccc@{}}
+\hline
+Output & MACE-H & Abs-H & MACE-T & Abs-T  \\
+\hline
+$T_{N_2}$ & 0.9489/0.0039/0.0047 & 0.9464/0.0041/0.0076 & 0.9395/0.0061/0.0063 & 0.9435/0.0100/0.0119 \\
+$T_m$ & 0.9490/0.0035/0.0043 & 0.9465/0.0038/0.0070 & 0.9420/0.0056/0.0057 & 0.9440/0.0094/0.0111 \\
+$T_{hp}$ & 0.9491/0.0037/0.0045 & 0.9467/0.0039/0.0073 & 0.9440/0.0059/0.0060 & 0.9420/0.0097/0.0116 \\
+$T_f$ & 0.9487/0.0031/0.0039 & 0.9462/0.0034/0.0065 & 0.9415/0.0050/0.0051 & 0.9445/0.0089/0.0105 \\
+$T_{sg}$ & 0.9492/0.0041/0.0049 & 0.9463/0.0043/0.0079 & 0.9400/0.0064/0.0066 & 0.9430/0.0104/0.0123 \\
+$c_1$ & 0.9470/0.0072/0.0100 & 0.9468/0.0074/0.0122 & 0.9490/0.0114/0.0121 & 0.9430/0.0171/0.0194 \\
+$c_2$ & 0.9478/0.0105/0.0144 & 0.9470/0.0111/0.0177 & 0.9390/0.0171/0.0180 & 0.9450/0.0267/0.0292 \\
+$c_3$ & 0.9485/0.0117/0.0152 & 0.9479/0.0127/0.0213 & 0.9455/0.0190/0.0194 & 0.9470/0.0342/0.0373 \\
+$c_4$ & 0.9487/0.0115/0.0148 & 0.9479/0.0126/0.0225 & 0.9395/0.0184/0.0187 & 0.9455/0.0348/0.0391 \\
+$c_5$ & 0.9488/0.0115/0.0147 & 0.9477/0.0125/0.0232 & 0.9410/0.0185/0.0188 & 0.9450/0.0350/0.0399 \\
+$c_6$ & 0.9487/0.0115/0.0147 & 0.9477/0.0125/0.0236 & 0.9440/0.0187/0.0190 & 0.9435/0.0350/0.0402 \\
+$P$ & 0.9487/0.0116/0.0148 & 0.9475/0.0126/0.0239 & 0.9430/0.0189/0.0192 & 0.9425/0.0351/0.0405 \\
+$\rho_{\$}$ & 0.9494/0.0117/0.0137 & 0.9464/0.0119/0.0226 & 0.9455/0.0199/0.0200 & 0.9435/0.0302/0.0360 \\
+$T_{\mathrm{steam,out}}$ & 0.9488/0.0053/0.0064 & 0.9463/0.0064/0.0102 & 0.9515/0.0086/0.0087 & 0.9385/0.0141/0.0158 \\
+$x_{\mathrm{steam,out}}$ & 0.9496/0.0010/0.0051 & 0.9506/0.0033/0.0099 & 0.9460/0.0043/0.0046 & 0.9425/0.0175/0.0213 \\
+\hline
+\textbf{Pooled} & 0.9487/0.0074/0.0097 & 0.9472/0.0082/0.0149 & 0.9434/0.0123/0.0125 & 0.9435/0.0219/0.0251 \\
+\hline
+\end{tabular}
+
+\medskip\noindent\textbf{(c) Joint complete-multivariate trajectory calibration}\par\vspace{2pt}
+\begin{tabular}{@{}lccc@{}}
+\hline
+Method & Joint coverage & Mean width & Interval score  \\
+\hline
+MACE-Joint & 0.9525 & 0.0169 & 0.0170 \\
+Abs-Joint & 0.9445 & 0.0398 & 0.0420 \\
+\hline
+\end{tabular}
+\end{table*}
+
+\subsection{Conformal calibration and uncertainty efficiency}
+\label{sec:results:stochastic-uq}
+
+The original stochastic calibration and test sets permit a comparison of MACE and absolute-error conformal prediction under matched trajectory distributions. Figure~\ref{fig:mace:stochastic-uq}(a) shows the horizon-dependent average pointwise coverage of MACE-Horizon and Absolute CP-Horizon, while panel (b) shows per-output complete-trajectory coverage for the corresponding Trajectory methods. As reported in Table~\ref{tab:mace_forecast_accuracy}(b), the pooled Horizon coverage was 0.9487 for MACE and 0.9472 for Absolute CP. The mean per-output Trajectory coverage was 0.9434 and 0.9435, respectively. These empirical values are close to the nominal 0.95 level under their respective objectives. Horizon coverage applies to an individual output at an individual forecast time, whereas Trajectory coverage requires every recorded time point of a given output trajectory to lie within its bounds. Accordingly, the proximity of the two pooled percentages does not make these events interchangeable. In particular, the pointwise Horizon constructions do not thereby provide complete-trajectory coverage.
+
+The two coverage objectives entail different interval widths. Figure~\ref{fig:mace:stochastic-uq}(c) shows mean normalized full widths of 0.0074 and 0.0082 for MACE-Horizon and Absolute CP-Horizon, respectively, compared with 0.0123 and 0.0219 for MACE-Trajectory and Absolute CP-Trajectory. Relative to the corresponding absolute method, MACE reduced mean width by 8.9\% for Horizon calibration and 43.9\% for Trajectory calibration. Paired whole-trajectory bootstrap intervals for these relative reductions were 5.7--11.8\% and 42.1--45.7\%, respectively. The larger widths of the trajectory-calibrated intervals reflect the more demanding time-simultaneous coverage objective and should not be interpreted as evidence of inferior performance relative to the Horizon methods. Rather, each adaptive construction must be compared with the absolute-error construction calibrated for the same event.
+
+Interval score provides a complementary evaluation because a reduction in width is useful only in relation to missed simulator responses. In Figure~\ref{fig:mace:stochastic-uq}(d), MACE-Horizon obtained a mean normalized interval score of 0.0097, compared with 0.0149 for Absolute CP-Horizon, corresponding to a reduction of 34.6\% (paired bootstrap interval 30.1--38.9\%). The respective Trajectory scores were 0.0125 and 0.0251, a reduction of 50.0\% (48.4--51.7\%). Table~\ref{tab:mace_forecast_accuracy}(b) shows that MACE also attained smaller mean full widths and interval scores for every one of the 15 output variables under both matched comparisons. The consistent direction of these differences is more informative than the pooled metric alone, although their magnitudes differ across the thermal, neutronic, and balance-of-plant quantities. In this matched-distribution evaluation, forecast-dependent ensemble scaling thus improved interval efficiency without a corresponding loss of aggregate empirical coverage for the intended events.
+
+Joint complete-multivariate trajectory calibration imposes a separate, more restrictive requirement: all 15 outputs must be covered simultaneously throughout the 501-point forecast. The concise comparison in Table~\ref{tab:mace_forecast_accuracy}(c) reports empirical joint coverage of 0.9525 for MACE and 0.9445 for Absolute CP, with mean normalized full widths of 0.0169 and 0.0398, respectively. The associated interval scores were 0.0170 and 0.0420. This result is consistent with the efficiency advantage observed for the per-output constructions but applies to a different simultaneous event; it is not represented in Figure~\ref{fig:mace:stochastic-uq}.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig08_stochastic_uq_performance.pdf}
+\caption{Conformal uncertainty performance on the original stochastic evaluation distribution. (a) Mean pointwise coverage as a function of forecast horizon for Horizon calibration. (b) Complete-trajectory coverage by output variable for per-output Trajectory calibration. (c) Mean normalized full interval width and (d) mean normalized interval score for the four methods. The nominal coverage level is 0.95. The Horizon and Trajectory constructions target different coverage events; full multivariate joint-trajectory coverage is reported separately in Table~\ref{tab:mace_forecast_accuracy}(c).}
+\label{fig:mace:stochastic-uq}
+\end{figure*}
+
+The stochastic evaluation demonstrates that ensemble-normalized nonconformity scores can produce more efficient intervals than the corresponding absolute-error scores when calibration and evaluation trajectories are drawn from the same prescribed population. This finding does not establish that the resulting thresholds will remain appropriate for a population of control trajectories with different temporal structure. The operation-informed comparison therefore separates the accuracy of the unchanged ensemble from the performance of conformal thresholds transferred from, or recalibrated for, the new evaluation distribution.
+
+\subsection{Operation-informed forecasting and recalibration}
+\label{sec:results:operational}
+
+The operation-informed trajectories introduce four prescribed forms of control motion: a single maneuver followed by a hold, successive maneuvers with holds, a maneuver followed by return, and bidirectional motion. Their definitions and representative control inputs are provided in Table~\ref{tab:mace:families} and Figure~\ref{fig:mace:controls}. Figure~\ref{fig:mace:operational-representatives} compares the corresponding simulated and forecast responses for a representative member of each type. Changes in drum angle produce distinct reactor-power and reactivity histories, followed by thermal responses that evolve over longer time scales. The ensemble mean closely tracks the reference trajectories across the selected power, reactivity, fuel-temperature, steam-outlet-temperature, and quality responses, including intervals of reversal and subsequent holding. These examples illustrate how control timing and direction affect the coupled response, rather than establishing performance separately for each maneuver class. The aggregate operational forecast errors in Table~\ref{tab:mace_forecast_accuracy}(a) provide the population-level accuracy assessment for the unchanged forecasting model.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig09_operational_representatives_03.pdf}
+\caption{Representative forecasts for the four operation-informed control maneuver types defined in Figure~\ref{fig:mace:controls}. The prescribed drum angles and selected neutronic, thermal, and secondary-system responses are compared with reference simulator trajectories. Solid and dashed curves denote the simulator and recursive ensemble mean, respectively; the shaded bands show MACE-Horizon intervals calibrated using independent operation-informed trajectories. The selected examples illustrate the coupled response to different temporal controls and are not maneuver-specific coverage estimates.}
+\label{fig:mace:operational-representatives}
+\end{figure*}
+
+\begin{table*}[t]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.04}
+\caption{Conformal uncertainty for the same 2,000 operation-informed test trajectories under two alternative calibration distributions. Entries are coverage / mean normalized full interval width / mean normalized interval score, for MACE-Horizon (MACE-H), Absolute CP-Horizon (Abs-H), MACE-Trajectory (MACE-T) and Absolute CP-Trajectory (Abs-T). Horizon coverage is pointwise; Trajectory coverage requires coverage throughout the forecast for each output variable. The ensemble predictions are identical between panels; only calibration thresholds differ. Entries are point estimates; descriptive 95\% whole-trajectory bootstrap intervals for every operational method, variable and metric are retained in the companion detail CSV. The pooled paired effects in panel (c) are operation-informed minus stochastic calibration, with 95\% paired bootstrap intervals; the companion CSV also retains paired effects for each output. Nominal coverage is 95\%.}
+\label{tab:mace_operational_recalibration}
+\medskip\noindent\textbf{(a) Stochastic calibration}\par\vspace{2pt}
+\begin{tabular}{@{}lcccc@{}}
+\hline
+Output & MACE-H & Abs-H & MACE-T & Abs-T  \\
+\hline
+$T_{N_2}$ & 0.9396/0.0036/0.0049 & 0.9449/0.0041/0.0055 & 0.3760/0.0058/0.0059 & 0.9430/0.0100/0.0101 \\
+$T_m$ & 0.9336/0.0033/0.0047 & 0.9379/0.0038/0.0053 & 0.3310/0.0054/0.0055 & 0.9385/0.0094/0.0095 \\
+$T_{hp}$ & 0.9365/0.0034/0.0048 & 0.9417/0.0039/0.0053 & 0.3490/0.0056/0.0057 & 0.9400/0.0097/0.0098 \\
+$T_f$ & 0.9285/0.0030/0.0045 & 0.9292/0.0034/0.0051 & 0.2915/0.0049/0.0051 & 0.9340/0.0089/0.0090 \\
+$T_{sg}$ & 0.9420/0.0038/0.0050 & 0.9468/0.0043/0.0056 & 0.4230/0.0061/0.0062 & 0.9450/0.0104/0.0104 \\
+$c_1$ & 0.9773/0.0076/0.0085 & 0.9445/0.0074/0.0131 & 0.9705/0.0121/0.0121 & 0.8575/0.0171/0.0191 \\
+$c_2$ & 0.9967/0.0111/0.0112 & 0.9593/0.0111/0.0179 & 1.0000/0.0180/0.0180 & 0.8875/0.0267/0.0282 \\
+$c_3$ & 0.9930/0.0118/0.0119 & 0.9635/0.0127/0.0203 & 1.0000/0.0192/0.0192 & 0.9170/0.0342/0.0351 \\
+$c_4$ & 0.9901/0.0113/0.0114 & 0.9645/0.0126/0.0199 & 1.0000/0.0180/0.0180 & 0.9235/0.0348/0.0355 \\
+$c_5$ & 0.9883/0.0111/0.0113 & 0.9635/0.0125/0.0199 & 1.0000/0.0179/0.0179 & 0.9240/0.0350/0.0357 \\
+$c_6$ & 0.9862/0.0110/0.0114 & 0.9624/0.0125/0.0201 & 0.9995/0.0180/0.0180 & 0.9240/0.0350/0.0357 \\
+$P$ & 0.9835/0.0111/0.0116 & 0.9612/0.0126/0.0203 & 0.9870/0.0182/0.0182 & 0.9230/0.0351/0.0358 \\
+$\rho_{\$}$ & 0.9170/0.0115/0.0203 & 0.9056/0.0119/0.0227 & 0.1020/0.0196/0.0218 & 0.7030/0.0302/0.0307 \\
+$T_{\mathrm{steam,out}}$ & 0.9407/0.0049/0.0068 & 0.9459/0.0064/0.0088 & 0.4370/0.0082/0.0083 & 0.8990/0.0141/0.0144 \\
+$x_{\mathrm{steam,out}}$ & 0.7652/0.0009/0.0100 & 0.8075/0.0033/0.0096 & 0.9335/0.0041/0.0042 & 0.9710/0.0175/0.0175 \\
+\hline
+\textbf{Pooled} & 0.9479/0.0073/0.0092 & 0.9386/0.0082/0.0133 & 0.6800/0.0121/0.0123 & 0.9087/0.0219/0.0224 \\
+\hline
+\end{tabular}
+
+\medskip\noindent\textbf{(b) Independent operation-informed calibration}\par\vspace{2pt}
+\begin{tabular}{@{}lcccc@{}}
+\hline
+Output & MACE-H & Abs-H & MACE-T & Abs-T  \\
+\hline
+$T_{N_2}$ & 0.9559/0.0038/0.0045 & 0.9558/0.0039/0.0048 & 0.9670/0.0089/0.0089 & 0.9430/0.0100/0.0101 \\
+$T_m$ & 0.9560/0.0035/0.0043 & 0.9563/0.0037/0.0046 & 0.9655/0.0085/0.0085 & 0.9455/0.0096/0.0097 \\
+$T_{hp}$ & 0.9558/0.0037/0.0044 & 0.9560/0.0038/0.0047 & 0.9675/0.0088/0.0088 & 0.9440/0.0098/0.0099 \\
+$T_f$ & 0.9559/0.0033/0.0040 & 0.9565/0.0035/0.0044 & 0.9605/0.0080/0.0080 & 0.9465/0.0091/0.0092 \\
+$T_{sg}$ & 0.9559/0.0039/0.0046 & 0.9554/0.0040/0.0049 & 0.9640/0.0090/0.0090 & 0.9435/0.0103/0.0103 \\
+$c_1$ & 0.9546/0.0052/0.0064 & 0.9547/0.0069/0.0082 & 0.9510/0.0115/0.0115 & 0.9445/0.0233/0.0236 \\
+$c_2$ & 0.9560/0.0074/0.0088 & 0.9573/0.0102/0.0120 & 0.9400/0.0115/0.0116 & 0.9450/0.0333/0.0337 \\
+$c_3$ & 0.9560/0.0084/0.0096 & 0.9565/0.0108/0.0128 & 0.9435/0.0132/0.0133 & 0.9405/0.0378/0.0384 \\
+$c_4$ & 0.9561/0.0081/0.0093 & 0.9555/0.0104/0.0124 & 0.9405/0.0132/0.0132 & 0.9395/0.0375/0.0380 \\
+$c_5$ & 0.9562/0.0082/0.0094 & 0.9557/0.0105/0.0126 & 0.9450/0.0139/0.0140 & 0.9375/0.0378/0.0382 \\
+$c_6$ & 0.9561/0.0083/0.0096 & 0.9555/0.0106/0.0128 & 0.9450/0.0151/0.0151 & 0.9395/0.0381/0.0385 \\
+$P$ & 0.9558/0.0085/0.0099 & 0.9554/0.0107/0.0131 & 0.9500/0.0169/0.0169 & 0.9400/0.0384/0.0388 \\
+$\rho_{\$}$ & 0.9551/0.0141/0.0179 & 0.9562/0.0143/0.0188 & 0.9610/0.0489/0.0489 & 0.9400/0.0421/0.0422 \\
+$T_{\mathrm{steam,out}}$ & 0.9561/0.0051/0.0062 & 0.9560/0.0060/0.0075 & 0.9660/0.0128/0.0128 & 0.9440/0.0164/0.0166 \\
+$x_{\mathrm{steam,out}}$ & 0.9576/0.0020/0.0028 & 0.9584/0.0047/0.0055 & 0.9570/0.0045/0.0045 & 0.9420/0.0156/0.0156 \\
+\hline
+\textbf{Pooled} & 0.9559/0.0062/0.0074 & 0.9561/0.0076/0.0093 & 0.9549/0.0136/0.0137 & 0.9423/0.0246/0.0249 \\
+\hline
+\end{tabular}
+
+\medskip\noindent\textbf{(c) Paired pooled recalibration effects}\par\vspace{2pt}
+\begin{tabular}{@{}lccc@{}}
+\hline
+Method & $\Delta$ coverage & $\Delta$ full width & $\Delta$ interval score  \\
+\hline
+MACE-H & +0.0080 [+0.0069, +0.0091] & -0.0010 [-0.0011, -0.0010] & -0.0018 [-0.0018, -0.0017] \\
+Abs-H & +0.0175 [+0.0157, +0.0194] & -0.0006 [-0.0006, -0.0006] & -0.0040 [-0.0043, -0.0037] \\
+MACE-T & +0.2749 [+0.2666, +0.2831] & +0.0016 [+0.0016, +0.0016] & +0.0014 [+0.0014, +0.0014] \\
+Abs-T & +0.0337 [+0.0301, +0.0375] & +0.0028 [+0.0028, +0.0028] & +0.0024 [+0.0024, +0.0025] \\
+\hline
+\end{tabular}
+\end{table*}
+
+Calibration transfer was assessed by applying the original stochastic conformal thresholds to the independently generated operation-informed test trajectories. Table~\ref{tab:mace_operational_recalibration}(a) shows that transferred MACE-Horizon intervals achieved pooled pointwise coverage of 0.9479, compared with 0.9386 for Absolute CP-Horizon. These averages, however, obscure considerable variation by output variable. Transferred MACE-Horizon coverage was approximately 0.93--0.94 for several thermal quantities, exceeded 0.98 for several delayed precursor outputs, and fell to 0.7652 for steam outlet quality. Absolute CP-Horizon also had low coverage for steam outlet quality (0.8075), despite using a larger normalized interval width for that output. Thus, near-nominal pooled coverage does not establish comparable reliability for every response quantity under distribution change.
+
+The consequences of calibration transfer were more pronounced for the per-output trajectory objective. MACE-Trajectory coverage decreased from 0.9434 on the matched stochastic evaluation population to 0.6800 on the operation-informed population when the original stochastic thresholds were retained. In Table~\ref{tab:mace_operational_recalibration}(a), complete-trajectory coverage was 0.2915 for fuel temperature, 0.3310 for moderator temperature, and 0.1020 for reactivity, while several delayed precursor outputs approached unity. The strong differences among outputs indicate that the ratio of accumulated forecast error to the ensemble-based scale changed unevenly across the new trajectory population. Transferred Absolute CP-Trajectory intervals had higher pooled coverage of 0.9087, although this was still below their matched stochastic result of 0.9435, and their normalized mean full width was 0.0219 versus 0.0121 for transferred MACE-Trajectory. The lower width of the transferred MACE construction cannot therefore be interpreted as improved interval efficiency at equivalent reliability: the coverage objectives were not comparably met in this setting. Importantly, these changes concern calibration of the intervals, not deterioration caused by a different trained ensemble.
+
+Independent recalibration using operation-informed trajectories substantially changed these results without altering the test forecasts. In Table~\ref{tab:mace_operational_recalibration}(b), MACE-Horizon pooled coverage increased from 0.9479 to 0.9559 while mean normalized full width decreased from 0.0073 to 0.0062 and mean interval score decreased from 0.0092 to 0.0074. The paired recalibration differences in Table~\ref{tab:mace_operational_recalibration}(c) were $+0.0080$ for coverage (95\% bootstrap interval $[+0.0069,+0.0091]$), $-0.0010$ for full width, and $-0.0018$ for interval score. The improvement in pooled Horizon coverage was accompanied by much more uniform per-output coverage, with the operationally calibrated MACE-Horizon values lying close to 0.956 across the reported outputs. These intervals are conditional on the frozen calibration sets and ensemble and describe uncertainty due to resampling the evaluation trajectories, rather than uncertainty from training new models or generating new calibration sets.
+
+For MACE-Trajectory, operation-informed recalibration increased pooled per-output complete-trajectory coverage from 0.6800 to 0.9549. The paired increase was 0.2749, with a 95\% bootstrap interval of $[0.2666,0.2831]$. This recovery of coverage required wider intervals: mean normalized full width increased from 0.0121 to 0.0136, and mean interval score increased from 0.0123 to 0.0137. The latter comparison does not indicate an improvement in the average pointwise interval score, despite the recovery of the intended trajectory-level coverage. It instead illustrates that recalibration changes the balance between interval width and missed coverage according to the event being targeted; the interval score assesses individual coordinate intervals rather than the simultaneous trajectory event. No conclusion about the trajectory-coverage objective should be drawn from interval score alone.
+
+The matched operation-informed comparisons retain an advantage for the ensemble-normalized methods. After recalibration, MACE-Horizon and Absolute CP-Horizon achieved closely matched pooled coverage of 0.9559 and 0.9561, with mean normalized widths of 0.0062 and 0.0076 and interval scores of 0.0074 and 0.0093, respectively. For the per-output trajectory objective, MACE-Trajectory achieved coverage of 0.9549 versus 0.9423 for Absolute CP-Trajectory, with mean widths of 0.0136 and 0.0246 and interval scores of 0.0137 and 0.0249. The operationally recalibrated trajectory intervals thus recovered near-nominal pooled coverage while retaining substantially lower average widths than their absolute-error counterparts. This result should not be interpreted as uniform dominance for every output: the reactivity trajectory bands, for example, were wider for recalibrated MACE than for recalibrated Absolute CP. More generally, calibration with independent trajectories from the intended evaluation population supports the corresponding pooled marginal coverage interpretation, while the transferred stochastic calibration has no equivalent split-conformal guarantee under the changed distribution.
+
+\subsection{Relationship between ensemble spread and forecast error}
+\label{sec:results:spread-error}
+
+The improvement in uncertainty efficiency can be interpreted by examining the association between ensemble disagreement and reference forecast error. Figure~\ref{fig:mace:spread-error}(a) groups the stochastic evaluation forecasts according to ensemble-spread magnitude and shows that mean absolute error increases with mean spread over the observed range. This positive relationship indicates that ensemble disagreement carries information about relative forecasting difficulty across the evaluated horizon--output coordinates. It does not establish that the ensemble spread itself constitutes a calibrated predictive standard deviation, nor that a single spread value identifies the error magnitude for an individual forecast. The conformal calibration step remains necessary to select an interval multiplier for the specified event.
+
+Figure~\ref{fig:mace:spread-error}(b) relates the same spread groups to their mean full interval widths. MACE-Horizon allocates relatively narrow intervals to the smallest-spread groups and progressively wider intervals to those with greater ensemble disagreement. Absolute CP-Horizon, by construction, uses one calibrated width for each output--horizon pair across all new trajectories, but its binned mean width is not constant because the plotted groups combine different outputs and horizons. The changing composition of those groups therefore contributes to the apparent spread dependence of the absolute-method curve. The more rapid increase of the MACE widths at the largest spreads is consistent with its adaptive scale, whereas its narrower intervals over much of the lower-spread range help explain the aggregate width and interval-score reductions in Figure~\ref{fig:mace:stochastic-uq}. These comparisons concern the population of forecast coordinates represented in the stochastic test set and do not imply monotonic or conditionally valid interval efficiency for every individual trajectory.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/fig10_spread_error_relationship.pdf}
+\caption{Empirical relation between ensemble disagreement, absolute forecast error, and interval allocation on the stochastic test set. (a) Mean absolute error within groups of forecast coordinates ordered by normalized ensemble spread. (b) Mean normalized full interval width of MACE-Horizon and Absolute CP-Horizon within the same spread groups. The absolute method retains fixed widths for each specified horizon--output pair; changes in its binned mean width arise from differences in the composition of the pooled groups. The plots describe aggregate associations rather than conditional coverage guarantees.}
+\label{fig:mace:spread-error}
+\end{figure*}
+
+Taken together, the results indicate that ensemble disagreement can provide a useful forecast-dependent scale for conformal intervals, but that its statistical reliability depends on how the normalized forecast errors are calibrated. Under matched stochastic and operation-informed calibration, MACE generally provided narrower intervals and lower interval scores than absolute-error conformal prediction for the corresponding coverage objectives. The transferred-calibration results demonstrate that these advantages cannot be assumed to preserve nominal coverage when the evaluation population changes. The assumptions behind these coverage statements and the scope of inference from a reduced simulator with prescribed control trajectories are addressed in the Discussion.
