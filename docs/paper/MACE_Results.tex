@@ -20,65 +20,60 @@ The output-specific errors reveal differences that are obscured by the pooled av
 \setlength{\tabcolsep}{4.5pt}
 \renewcommand{\arraystretch}{1.08}
 \captionsetup{skip=3pt}
-\caption{Normalized forecast accuracy: thermal nodes. Errors divided by original training ranges.}
-\label{tab:mace_forecast_accuracy:thermal}
-\begin{tabular}{@{}l*{5}{r}@{}}
+\caption{Normalized forecast accuracy across all 15 output variables. Errors are divided by the original training ranges. Pooled values span all 15 outputs.}
+\label{tab:mace_forecast_accuracy}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}l*{16}{r}@{}}
 \toprule
-Metric & $T_{N_2}$ & $T_m$ & $T_{hp}$ & $T_f$ & $T_{sg}$ \\
+Metric
+& $T_{N_2}$
+& $T_m$
+& $T_{hp}$
+& $T_f$
+& $T_{sg}$
+& $c_1$
+& $c_2$
+& $c_3$
+& $c_4$
+& $c_5$
+& $c_6$
+& $P$
+& $\rho_{\$}$
+& $T_{\mathrm{steam,out}}$
+& $x_{\mathrm{steam,out}}$
+& \textbf{Pooled} \\
 \midrule
-Stoch. MAE & 0.0008 & 0.0007 & 0.0008 & 0.0007 & 0.0009 \\
-Stoch. RMSE & 0.0017 & 0.0015 & 0.0016 & 0.0014 & 0.0017 \\
-Oper. MAE & 0.0008 & 0.0007 & 0.0007 & 0.0006 & 0.0008 \\
-Oper. RMSE & 0.0011 & 0.0010 & 0.0011 & 0.0010 & 0.0011 \\
-\bottomrule
-\end{tabular}
-\end{table}
 
-\begin{table}[!htbp]
-\centering
-\footnotesize
-\setlength{\tabcolsep}{4.5pt}
-\renewcommand{\arraystretch}{1.08}
-\captionsetup{skip=3pt}
-\caption{Normalized forecast accuracy: delayed precursors. Errors divided by original training ranges.}
-\label{tab:mace_forecast_accuracy:precursor}
-\begin{tabular}{@{}l*{6}{r}@{}}
-\toprule
-Metric & $c_1$ & $c_2$ & $c_3$ & $c_4$ & $c_5$ & $c_6$ \\
-\midrule
-Stoch. MAE & 0.0014 & 0.0021 & 0.0024 & 0.0024 & 0.0023 & 0.0023 \\
-Stoch. RMSE & 0.0027 & 0.0037 & 0.0044 & 0.0048 & 0.0051 & 0.0052 \\
-Oper. MAE & 0.0013 & 0.0020 & 0.0021 & 0.0020 & 0.0020 & 0.0020 \\
-Oper. RMSE & 0.0024 & 0.0033 & 0.0035 & 0.0034 & 0.0033 & 0.0033 \\
-\bottomrule
-\end{tabular}
-\end{table}
+\multicolumn{17}{@{}l}{\textit{Stochastic Trajectories}} \\
+MAE
+& 0.0008 & 0.0007 & 0.0008 & 0.0007 & 0.0009
+& 0.0014 & 0.0021 & 0.0024 & 0.0024 & 0.0023 & 0.0023
+& 0.0024 & 0.0024 & 0.0012 & 0.0003 & 0.0015 \\
+RMSE
+& 0.0017 & 0.0015 & 0.0016 & 0.0014 & 0.0017
+& 0.0027 & 0.0037 & 0.0044 & 0.0048 & 0.0051 & 0.0052
+& 0.0053 & 0.0049 & 0.0021 & 0.0027 & 0.0036 \\
 
-\begin{table}[!htbp]
-\centering
-\footnotesize
-\setlength{\tabcolsep}{4.5pt}
-\renewcommand{\arraystretch}{1.08}
-\captionsetup{skip=3pt}
-\caption{Normalized forecast accuracy: power, reactivity, and steam outputs. Errors divided by original training ranges. Pooled values span all 15 outputs.}
-\label{tab:mace_forecast_accuracy:system}
-\begin{tabular}{@{}l*{5}{r}@{}}
-\toprule
-Metric & $P$ & $\rho_{\$}$ & $T_{\mathrm{steam,out}}$ & $x_{\mathrm{steam,out}}$ & \textbf{Pooled} \\
-\midrule
-Stoch. MAE & 0.0024 & 0.0024 & 0.0012 & 0.0003 & 0.0015 \\
-Stoch. RMSE & 0.0053 & 0.0049 & 0.0021 & 0.0027 & 0.0036 \\
-Oper. MAE & 0.0020 & 0.0025 & 0.0010 & 0.0005 & 0.0014 \\
-Oper. RMSE & 0.0034 & 0.0037 & 0.0016 & 0.0015 & 0.0026 \\
+\addlinespace
+\multicolumn{17}{@{}l}{\textit{Operational Trajectories}} \\
+MAE
+& 0.0008 & 0.0007 & 0.0007 & 0.0006 & 0.0008
+& 0.0013 & 0.0020 & 0.0021 & 0.0020 & 0.0020 & 0.0020
+& 0.0020 & 0.0025 & 0.0010 & 0.0005 & 0.0014 \\
+RMSE
+& 0.0011 & 0.0010 & 0.0011 & 0.0010 & 0.0011
+& 0.0024 & 0.0033 & 0.0035 & 0.0034 & 0.0033 & 0.0033
+& 0.0034 & 0.0037 & 0.0016 & 0.0015 & 0.0026 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 Figure~\ref{fig:mace:stochastic-representative} illustrates a complete forecast for one stochastic test trajectory. The imposed control-drum motion first produces a coupled neutronic and thermal response; the temperature histories evolve more gradually than the prompt changes in reactor power and the delayed precursor quantities. The ensemble mean follows the simulator response through the principal decline and subsequent recovery of the neutronic variables, while reproducing the corresponding slower changes in the thermal nodes. The steam outlet temperature exhibits a plateau associated with the secondary-system response, and the steam outlet quality departs from unity over part of the transient. Although the forecast and reference curves are closely aligned over much of the horizon, visible deviations and interval growth differ among output variables. The selected case is illustrative rather than a performance-based selection, and the population-wide errors are therefore established by Tables~\ref{tab:mace_forecast_accuracy:thermal}--\ref{tab:mace_forecast_accuracy:system}, not by this figure alone. The interval boundaries are included in Figure~\ref{fig:mace:stochastic-representative} to show their temporal behavior, while their calibration and efficiency are assessed quantitatively below.
 
 \begin{figure*}[t]
 \centering
-\includegraphics[width=\textwidth]{figures/fig07_stochastic_representative_10.pdf}
+\includegraphics[width=0.85\textwidth]{figures/fig07_stochastic_representative_10.pdf}
 \caption{Representative stochastic test trajectory over the 200~s forecast horizon. The prescribed control angle is shown with the 15 simulated output variables. Simulator responses, recursive ensemble-mean forecasts, and calibrated MACE-Horizon, MACE-Trajectory, Absolute CP-Horizon, and Absolute CP-Trajectory interval boundaries are compared using the same forecast center. Reactor power is displayed in MW in place of normalized neutron population. The example illustrates the time-dependent interval allocation; aggregate coverage and efficiency are evaluated over the independent test population.}
 \label{fig:mace:stochastic-representative}
 \end{figure*}
@@ -102,91 +97,91 @@ Interval score provides a complementary evaluation because a reduction in width 
 \setlength{\tabcolsep}{4.5pt}
 \renewcommand{\arraystretch}{1.08}
 \captionsetup{skip=3pt}
-\caption{Stochastic calibration/test: thermal nodes. Coverage, normalized full width, and interval score (95\% nominal).}
-\label{tab:mace_stochastic_uq:thermal}
-\begin{tabular}{@{}ll*{5}{r}@{}}
+\caption{Stochastic calibration/test uncertainty quantification results across all 15 output variables. Coverage, normalized full width, and interval score are reported at 95\% nominal coverage. Pooled values span all 15 outputs.}
+\label{tab:mace_stochastic_uq}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}ll*{16}{r}@{}}
 \toprule
-Method & Metric & $T_{N_2}$ & $T_m$ & $T_{hp}$ & $T_f$ & $T_{sg}$ \\
+Method & Metric
+& $T_{N_2}$
+& $T_m$
+& $T_{hp}$
+& $T_f$
+& $T_{sg}$
+& $c_1$
+& $c_2$
+& $c_3$
+& $c_4$
+& $c_5$
+& $c_6$
+& $P$
+& $\rho_{\$}$
+& $T_{\mathrm{steam,out}}$
+& $x_{\mathrm{steam,out}}$
+& \textbf{Pooled} \\
 \midrule
-\multirow{3}{*}{MACE-H} & Coverage & 0.9489 & 0.9490 & 0.9491 & 0.9487 & 0.9492 \\
- & Full width & 0.0039 & 0.0035 & 0.0037 & 0.0031 & 0.0041 \\
- & Interval score & 0.0047 & 0.0043 & 0.0045 & 0.0039 & 0.0049 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-H} & Coverage & 0.9464 & 0.9465 & 0.9467 & 0.9462 & 0.9463 \\
- & Full width & 0.0041 & 0.0038 & 0.0039 & 0.0034 & 0.0043 \\
- & Interval score & 0.0076 & 0.0070 & 0.0073 & 0.0065 & 0.0079 \\
-\addlinespace[2pt]
-\multirow{3}{*}{MACE-T} & Coverage & 0.9395 & 0.9420 & 0.9440 & 0.9415 & 0.9400 \\
- & Full width & 0.0061 & 0.0056 & 0.0059 & 0.0050 & 0.0064 \\
- & Interval score & 0.0063 & 0.0057 & 0.0060 & 0.0051 & 0.0066 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-T} & Coverage & 0.9435 & 0.9440 & 0.9420 & 0.9445 & 0.9430 \\
- & Full width & 0.0100 & 0.0094 & 0.0097 & 0.0089 & 0.0104 \\
- & Interval score & 0.0119 & 0.0111 & 0.0116 & 0.0105 & 0.0123 \\
-\bottomrule
-\end{tabular}
-\end{table}
 
-\begin{table}[!htbp]
-\centering
-\footnotesize
-\setlength{\tabcolsep}{4.5pt}
-\renewcommand{\arraystretch}{1.08}
-\captionsetup{skip=3pt}
-\caption{Stochastic calibration/test: delayed precursors. Coverage, normalized full width, and interval score (95\% nominal).}
-\label{tab:mace_stochastic_uq:precursor}
-\begin{tabular}{@{}ll*{6}{r}@{}}
-\toprule
-Method & Metric & $c_1$ & $c_2$ & $c_3$ & $c_4$ & $c_5$ & $c_6$ \\
-\midrule
-\multirow{3}{*}{MACE-H} & Coverage & 0.9470 & 0.9478 & 0.9485 & 0.9487 & 0.9488 & 0.9487 \\
- & Full width & 0.0072 & 0.0105 & 0.0117 & 0.0115 & 0.0115 & 0.0115 \\
- & Interval score & 0.0100 & 0.0144 & 0.0152 & 0.0148 & 0.0147 & 0.0147 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-H} & Coverage & 0.9468 & 0.9470 & 0.9479 & 0.9479 & 0.9477 & 0.9477 \\
- & Full width & 0.0074 & 0.0111 & 0.0127 & 0.0126 & 0.0125 & 0.0125 \\
- & Interval score & 0.0122 & 0.0177 & 0.0213 & 0.0225 & 0.0232 & 0.0236 \\
-\addlinespace[2pt]
-\multirow{3}{*}{MACE-T} & Coverage & 0.9490 & 0.9390 & 0.9455 & 0.9395 & 0.9410 & 0.9440 \\
- & Full width & 0.0114 & 0.0171 & 0.0190 & 0.0184 & 0.0185 & 0.0187 \\
- & Interval score & 0.0121 & 0.0180 & 0.0194 & 0.0187 & 0.0188 & 0.0190 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-T} & Coverage & 0.9430 & 0.9450 & 0.9470 & 0.9455 & 0.9450 & 0.9435 \\
- & Full width & 0.0171 & 0.0267 & 0.0342 & 0.0348 & 0.0350 & 0.0350 \\
- & Interval score & 0.0194 & 0.0292 & 0.0373 & 0.0391 & 0.0399 & 0.0402 \\
-\bottomrule
-\end{tabular}
-\end{table}
+\multirow{3}{*}{MACE-H}
+& Coverage
+& 0.9489 & 0.9490 & 0.9491 & 0.9487 & 0.9492
+& 0.9470 & 0.9478 & 0.9485 & 0.9487 & 0.9488 & 0.9487
+& 0.9487 & 0.9494 & 0.9488 & 0.9496 & 0.9487 \\
+& Full width
+& 0.0039 & 0.0035 & 0.0037 & 0.0031 & 0.0041
+& 0.0072 & 0.0105 & 0.0117 & 0.0115 & 0.0115 & 0.0115
+& 0.0116 & 0.0117 & 0.0053 & 0.0010 & 0.0074 \\
+& Interval score
+& 0.0047 & 0.0043 & 0.0045 & 0.0039 & 0.0049
+& 0.0100 & 0.0144 & 0.0152 & 0.0148 & 0.0147 & 0.0147
+& 0.0148 & 0.0137 & 0.0064 & 0.0051 & 0.0097 \\
 
-\begin{table}[!htbp]
-\centering
-\footnotesize
-\setlength{\tabcolsep}{4.5pt}
-\renewcommand{\arraystretch}{1.08}
-\captionsetup{skip=3pt}
-\caption{Stochastic calibration/test: power, reactivity, and steam outputs. Coverage, normalized full width, and interval score (95\% nominal). Pooled values span all 15 outputs.}
-\label{tab:mace_stochastic_uq:system}
-\begin{tabular}{@{}ll*{5}{r}@{}}
-\toprule
-Method & Metric & $P$ & $\rho_{\$}$ & $T_{\mathrm{steam,out}}$ & $x_{\mathrm{steam,out}}$ & \textbf{Pooled} \\
 \midrule
-\multirow{3}{*}{MACE-H} & Coverage & 0.9487 & 0.9494 & 0.9488 & 0.9496 & 0.9487 \\
- & Full width & 0.0116 & 0.0117 & 0.0053 & 0.0010 & 0.0074 \\
- & Interval score & 0.0148 & 0.0137 & 0.0064 & 0.0051 & 0.0097 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-H} & Coverage & 0.9475 & 0.9464 & 0.9463 & 0.9506 & 0.9472 \\
- & Full width & 0.0126 & 0.0119 & 0.0064 & 0.0033 & 0.0082 \\
- & Interval score & 0.0239 & 0.0226 & 0.0102 & 0.0099 & 0.0149 \\
-\addlinespace[2pt]
-\multirow{3}{*}{MACE-T} & Coverage & 0.9430 & 0.9455 & 0.9515 & 0.9460 & 0.9434 \\
- & Full width & 0.0189 & 0.0199 & 0.0086 & 0.0043 & 0.0123 \\
- & Interval score & 0.0192 & 0.0200 & 0.0087 & 0.0046 & 0.0125 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-T} & Coverage & 0.9425 & 0.9435 & 0.9385 & 0.9425 & 0.9435 \\
- & Full width & 0.0351 & 0.0302 & 0.0141 & 0.0175 & 0.0219 \\
- & Interval score & 0.0405 & 0.0360 & 0.0158 & 0.0213 & 0.0251 \\
+\multirow{3}{*}{Abs-H}
+& Coverage
+& 0.9464 & 0.9465 & 0.9467 & 0.9462 & 0.9463
+& 0.9468 & 0.9470 & 0.9479 & 0.9479 & 0.9477 & 0.9477
+& 0.9475 & 0.9464 & 0.9463 & 0.9506 & 0.9472 \\
+& Full width
+& 0.0041 & 0.0038 & 0.0039 & 0.0034 & 0.0043
+& 0.0074 & 0.0111 & 0.0127 & 0.0126 & 0.0125 & 0.0125
+& 0.0126 & 0.0119 & 0.0064 & 0.0033 & 0.0082 \\
+& Interval score
+& 0.0076 & 0.0070 & 0.0073 & 0.0065 & 0.0079
+& 0.0122 & 0.0177 & 0.0213 & 0.0225 & 0.0232 & 0.0236
+& 0.0239 & 0.0226 & 0.0102 & 0.0099 & 0.0149 \\
+
+\midrule
+\multirow{3}{*}{MACE-T}
+& Coverage
+& 0.9395 & 0.9420 & 0.9440 & 0.9415 & 0.9400
+& 0.9490 & 0.9390 & 0.9455 & 0.9395 & 0.9410 & 0.9440
+& 0.9430 & 0.9455 & 0.9515 & 0.9460 & 0.9434 \\
+& Full width
+& 0.0061 & 0.0056 & 0.0059 & 0.0050 & 0.0064
+& 0.0114 & 0.0171 & 0.0190 & 0.0184 & 0.0185 & 0.0187
+& 0.0189 & 0.0199 & 0.0086 & 0.0043 & 0.0123 \\
+& Interval score
+& 0.0063 & 0.0057 & 0.0060 & 0.0051 & 0.0066
+& 0.0121 & 0.0180 & 0.0194 & 0.0187 & 0.0188 & 0.0190
+& 0.0192 & 0.0200 & 0.0087 & 0.0046 & 0.0125 \\
+
+\midrule
+\multirow{3}{*}{Abs-T}
+& Coverage
+& 0.9435 & 0.9440 & 0.9420 & 0.9445 & 0.9430
+& 0.9430 & 0.9450 & 0.9470 & 0.9455 & 0.9450 & 0.9435
+& 0.9425 & 0.9435 & 0.9385 & 0.9425 & 0.9435 \\
+& Full width
+& 0.0100 & 0.0094 & 0.0097 & 0.0089 & 0.0104
+& 0.0171 & 0.0267 & 0.0342 & 0.0348 & 0.0350 & 0.0350
+& 0.0351 & 0.0302 & 0.0141 & 0.0175 & 0.0219 \\
+& Interval score
+& 0.0119 & 0.0111 & 0.0116 & 0.0105 & 0.0123
+& 0.0194 & 0.0292 & 0.0373 & 0.0391 & 0.0399 & 0.0402
+& 0.0405 & 0.0360 & 0.0158 & 0.0213 & 0.0251 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 Joint complete-multivariate trajectory calibration imposes a separate, more restrictive requirement: all 15 outputs must be covered simultaneously throughout the 501-point forecast. The concise comparison in Table~\ref{tab:mace_joint_uq} reports empirical joint coverage of 0.9525 for MACE and 0.9445 for Absolute CP, with mean normalized full widths of 0.0169 and 0.0398, respectively. The associated interval scores were 0.0170 and 0.0420. This result is consistent with the efficiency advantage observed for the per-output constructions but applies to a different simultaneous event; it is not represented in Figure~\ref{fig:mace:stochastic-uq}.
@@ -211,7 +206,7 @@ Abs-Joint & 0.9445 & 0.0398 & 0.0420 \\
 
 \begin{figure*}[t]
 \centering
-\includegraphics[width=\textwidth]{figures/fig08_stochastic_uq_performance.pdf}
+\includegraphics[width=0.85\textwidth]{figures/fig08_stochastic_uq_performance.pdf}
 \caption{Conformal uncertainty performance on the original stochastic evaluation distribution. (a) Mean pointwise coverage as a function of forecast horizon for Horizon calibration. (b) Complete-trajectory coverage by output variable for per-output Trajectory calibration. (c) Mean normalized full interval width and (d) mean normalized interval score for the four methods. The nominal coverage level is 0.95. The Horizon and Trajectory constructions target different coverage events; full multivariate joint-trajectory coverage is reported separately in Table~\ref{tab:mace_joint_uq}.}
 \label{fig:mace:stochastic-uq}
 \end{figure*}
@@ -225,7 +220,7 @@ The operation-informed trajectories introduce four prescribed forms of control m
 
 \begin{figure*}[t]
 \centering
-\includegraphics[width=\textwidth]{figures/fig09_operational_representatives_03.pdf}
+\includegraphics[width=0.8\textwidth]{figures/fig09_operational_representatives_03.pdf}
 \caption{Representative forecasts for the four operation-informed control maneuver types defined in Figure~\ref{fig:mace:controls}. The prescribed drum angles and selected neutronic, thermal, and secondary-system responses are compared with reference simulator trajectories. Solid and dashed curves denote the simulator and recursive ensemble mean, respectively; the shaded bands show MACE-Horizon intervals calibrated using independent operation-informed trajectories. The selected examples illustrate the coupled response to different temporal controls and are not maneuver-specific coverage estimates.}
 \label{fig:mace:operational-representatives}
 \end{figure*}
@@ -242,91 +237,91 @@ The consequences of calibration transfer were more pronounced for the per-output
 \setlength{\tabcolsep}{4.5pt}
 \renewcommand{\arraystretch}{1.08}
 \captionsetup{skip=3pt}
-\caption{Stochastic calibration, operational test: thermal nodes. Coverage, normalized full width, and interval score (95\% nominal).}
-\label{tab:mace_operational_transfer:thermal}
-\begin{tabular}{@{}ll*{5}{r}@{}}
+\caption{Stochastic calibration and operational test uncertainty quantification results across all 15 output variables. Coverage, normalized full width, and interval score are reported at 95\% nominal coverage. Pooled values span all 15 outputs.}
+\label{tab:mace_operational_transfer}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}ll*{16}{r}@{}}
 \toprule
-Method & Metric & $T_{N_2}$ & $T_m$ & $T_{hp}$ & $T_f$ & $T_{sg}$ \\
+Method & Metric
+& $T_{N_2}$
+& $T_m$
+& $T_{hp}$
+& $T_f$
+& $T_{sg}$
+& $c_1$
+& $c_2$
+& $c_3$
+& $c_4$
+& $c_5$
+& $c_6$
+& $P$
+& $\rho_{\$}$
+& $T_{\mathrm{steam,out}}$
+& $x_{\mathrm{steam,out}}$
+& \textbf{Pooled} \\
 \midrule
-\multirow{3}{*}{MACE-H} & Coverage & 0.9396 & 0.9336 & 0.9365 & 0.9285 & 0.9420 \\
- & Full width & 0.0036 & 0.0033 & 0.0034 & 0.0030 & 0.0038 \\
- & Interval score & 0.0049 & 0.0047 & 0.0048 & 0.0045 & 0.0050 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-H} & Coverage & 0.9449 & 0.9379 & 0.9417 & 0.9292 & 0.9468 \\
- & Full width & 0.0041 & 0.0038 & 0.0039 & 0.0034 & 0.0043 \\
- & Interval score & 0.0055 & 0.0053 & 0.0053 & 0.0051 & 0.0056 \\
-\addlinespace[2pt]
-\multirow{3}{*}{MACE-T} & Coverage & 0.3760 & 0.3310 & 0.3490 & 0.2915 & 0.4230 \\
- & Full width & 0.0058 & 0.0054 & 0.0056 & 0.0049 & 0.0061 \\
- & Interval score & 0.0059 & 0.0055 & 0.0057 & 0.0051 & 0.0062 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-T} & Coverage & 0.9430 & 0.9385 & 0.9400 & 0.9340 & 0.9450 \\
- & Full width & 0.0100 & 0.0094 & 0.0097 & 0.0089 & 0.0104 \\
- & Interval score & 0.0101 & 0.0095 & 0.0098 & 0.0090 & 0.0104 \\
-\bottomrule
-\end{tabular}
-\end{table}
 
-\begin{table}[!htbp]
-\centering
-\footnotesize
-\setlength{\tabcolsep}{4.5pt}
-\renewcommand{\arraystretch}{1.08}
-\captionsetup{skip=3pt}
-\caption{Stochastic calibration, operational test: delayed precursors. Coverage, normalized full width, and interval score (95\% nominal).}
-\label{tab:mace_operational_transfer:precursor}
-\begin{tabular}{@{}ll*{6}{r}@{}}
-\toprule
-Method & Metric & $c_1$ & $c_2$ & $c_3$ & $c_4$ & $c_5$ & $c_6$ \\
-\midrule
-\multirow{3}{*}{MACE-H} & Coverage & 0.9773 & 0.9967 & 0.9930 & 0.9901 & 0.9883 & 0.9862 \\
- & Full width & 0.0076 & 0.0111 & 0.0118 & 0.0113 & 0.0111 & 0.0110 \\
- & Interval score & 0.0085 & 0.0112 & 0.0119 & 0.0114 & 0.0113 & 0.0114 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-H} & Coverage & 0.9445 & 0.9593 & 0.9635 & 0.9645 & 0.9635 & 0.9624 \\
- & Full width & 0.0074 & 0.0111 & 0.0127 & 0.0126 & 0.0125 & 0.0125 \\
- & Interval score & 0.0131 & 0.0179 & 0.0203 & 0.0199 & 0.0199 & 0.0201 \\
-\addlinespace[2pt]
-\multirow{3}{*}{MACE-T} & Coverage & 0.9705 & 1.0000 & 1.0000 & 1.0000 & 1.0000 & 0.9995 \\
- & Full width & 0.0121 & 0.0180 & 0.0192 & 0.0180 & 0.0179 & 0.0180 \\
- & Interval score & 0.0121 & 0.0180 & 0.0192 & 0.0180 & 0.0179 & 0.0180 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-T} & Coverage & 0.8575 & 0.8875 & 0.9170 & 0.9235 & 0.9240 & 0.9240 \\
- & Full width & 0.0171 & 0.0267 & 0.0342 & 0.0348 & 0.0350 & 0.0350 \\
- & Interval score & 0.0191 & 0.0282 & 0.0351 & 0.0355 & 0.0357 & 0.0357 \\
-\bottomrule
-\end{tabular}
-\end{table}
+\multirow{3}{*}{MACE-H}
+& Coverage
+& 0.9396 & 0.9336 & 0.9365 & 0.9285 & 0.9420
+& 0.9773 & 0.9967 & 0.9930 & 0.9901 & 0.9883 & 0.9862
+& 0.9835 & 0.9170 & 0.9407 & 0.7652 & 0.9479 \\
+& Full width
+& 0.0036 & 0.0033 & 0.0034 & 0.0030 & 0.0038
+& 0.0076 & 0.0111 & 0.0118 & 0.0113 & 0.0111 & 0.0110
+& 0.0111 & 0.0115 & 0.0049 & 0.0009 & 0.0073 \\
+& Interval score
+& 0.0049 & 0.0047 & 0.0048 & 0.0045 & 0.0050
+& 0.0085 & 0.0112 & 0.0119 & 0.0114 & 0.0113 & 0.0114
+& 0.0116 & 0.0203 & 0.0068 & 0.0100 & 0.0092 \\
 
-\begin{table}[!htbp]
-\centering
-\footnotesize
-\setlength{\tabcolsep}{4.5pt}
-\renewcommand{\arraystretch}{1.08}
-\captionsetup{skip=3pt}
-\caption{Stochastic calibration, operational test: power, reactivity, and steam outputs. Coverage, normalized full width, and interval score (95\% nominal). Pooled values span all 15 outputs.}
-\label{tab:mace_operational_transfer:system}
-\begin{tabular}{@{}ll*{5}{r}@{}}
-\toprule
-Method & Metric & $P$ & $\rho_{\$}$ & $T_{\mathrm{steam,out}}$ & $x_{\mathrm{steam,out}}$ & \textbf{Pooled} \\
 \midrule
-\multirow{3}{*}{MACE-H} & Coverage & 0.9835 & 0.9170 & 0.9407 & 0.7652 & 0.9479 \\
- & Full width & 0.0111 & 0.0115 & 0.0049 & 0.0009 & 0.0073 \\
- & Interval score & 0.0116 & 0.0203 & 0.0068 & 0.0100 & 0.0092 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-H} & Coverage & 0.9612 & 0.9056 & 0.9459 & 0.8075 & 0.9386 \\
- & Full width & 0.0126 & 0.0119 & 0.0064 & 0.0033 & 0.0082 \\
- & Interval score & 0.0203 & 0.0227 & 0.0088 & 0.0096 & 0.0133 \\
-\addlinespace[2pt]
-\multirow{3}{*}{MACE-T} & Coverage & 0.9870 & 0.1020 & 0.4370 & 0.9335 & 0.6800 \\
- & Full width & 0.0182 & 0.0196 & 0.0082 & 0.0041 & 0.0121 \\
- & Interval score & 0.0182 & 0.0218 & 0.0083 & 0.0042 & 0.0123 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-T} & Coverage & 0.9230 & 0.7030 & 0.8990 & 0.9710 & 0.9087 \\
- & Full width & 0.0351 & 0.0302 & 0.0141 & 0.0175 & 0.0219 \\
- & Interval score & 0.0358 & 0.0307 & 0.0144 & 0.0175 & 0.0224 \\
+\multirow{3}{*}{Abs-H}
+& Coverage
+& 0.9449 & 0.9379 & 0.9417 & 0.9292 & 0.9468
+& 0.9445 & 0.9593 & 0.9635 & 0.9645 & 0.9635 & 0.9624
+& 0.9612 & 0.9056 & 0.9459 & 0.8075 & 0.9386 \\
+& Full width
+& 0.0041 & 0.0038 & 0.0039 & 0.0034 & 0.0043
+& 0.0074 & 0.0111 & 0.0127 & 0.0126 & 0.0125 & 0.0125
+& 0.0126 & 0.0119 & 0.0064 & 0.0033 & 0.0082 \\
+& Interval score
+& 0.0055 & 0.0053 & 0.0053 & 0.0051 & 0.0056
+& 0.0131 & 0.0179 & 0.0203 & 0.0199 & 0.0199 & 0.0201
+& 0.0203 & 0.0227 & 0.0088 & 0.0096 & 0.0133 \\
+
+\midrule
+\multirow{3}{*}{MACE-T}
+& Coverage
+& 0.3760 & 0.3310 & 0.3490 & 0.2915 & 0.4230
+& 0.9705 & 1.0000 & 1.0000 & 1.0000 & 1.0000 & 0.9995
+& 0.9870 & 0.1020 & 0.4370 & 0.9335 & 0.6800 \\
+& Full width
+& 0.0058 & 0.0054 & 0.0056 & 0.0049 & 0.0061
+& 0.0121 & 0.0180 & 0.0192 & 0.0180 & 0.0179 & 0.0180
+& 0.0182 & 0.0196 & 0.0082 & 0.0041 & 0.0121 \\
+& Interval score
+& 0.0059 & 0.0055 & 0.0057 & 0.0051 & 0.0062
+& 0.0121 & 0.0180 & 0.0192 & 0.0180 & 0.0179 & 0.0180
+& 0.0182 & 0.0218 & 0.0083 & 0.0042 & 0.0123 \\
+
+\midrule
+\multirow{3}{*}{Abs-T}
+& Coverage
+& 0.9430 & 0.9385 & 0.9400 & 0.9340 & 0.9450
+& 0.8575 & 0.8875 & 0.9170 & 0.9235 & 0.9240 & 0.9240
+& 0.9230 & 0.7030 & 0.8990 & 0.9710 & 0.9087 \\
+& Full width
+& 0.0100 & 0.0094 & 0.0097 & 0.0089 & 0.0104
+& 0.0171 & 0.0267 & 0.0342 & 0.0348 & 0.0350 & 0.0350
+& 0.0351 & 0.0302 & 0.0141 & 0.0175 & 0.0219 \\
+& Interval score
+& 0.0101 & 0.0095 & 0.0098 & 0.0090 & 0.0104
+& 0.0191 & 0.0282 & 0.0351 & 0.0355 & 0.0357 & 0.0357
+& 0.0358 & 0.0307 & 0.0144 & 0.0175 & 0.0224 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 Independent recalibration using operation-informed trajectories substantially changed these results without altering the test forecasts. In Tables~\ref{tab:mace_operational_recalibration:thermal}--\ref{tab:mace_operational_recalibration:system}, MACE-Horizon pooled coverage increased from 0.9479 to 0.9559 while mean normalized full width decreased from 0.0073 to 0.0062 and mean interval score decreased from 0.0092 to 0.0074. The paired recalibration differences in Table~\ref{tab:mace_operational_paired} were $+0.0080$ for coverage (95\% bootstrap interval $[+0.0069,+0.0091]$), $-0.0010$ for full width, and $-0.0018$ for interval score. The improvement in pooled Horizon coverage was accompanied by much more uniform per-output coverage, with the operationally calibrated MACE-Horizon values lying close to 0.956 across the reported outputs. These intervals are conditional on the frozen calibration sets and ensemble and describe uncertainty due to resampling the evaluation trajectories, rather than uncertainty from training new models or generating new calibration sets.
@@ -339,91 +334,91 @@ For MACE-Trajectory, operation-informed recalibration increased pooled per-outpu
 \setlength{\tabcolsep}{4.5pt}
 \renewcommand{\arraystretch}{1.08}
 \captionsetup{skip=3pt}
-\caption{Operation-informed calibration/test: thermal nodes. Coverage, normalized full width, and interval score (95\% nominal).}
-\label{tab:mace_operational_recalibration:thermal}
-\begin{tabular}{@{}ll*{5}{r}@{}}
+\caption{Operation-informed calibration/test uncertainty quantification results across all 15 output variables. Coverage, normalized full width, and interval score are reported at 95\% nominal coverage. Pooled values span all 15 outputs.}
+\label{tab:mace_operational_recalibration}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}ll*{16}{r}@{}}
 \toprule
-Method & Metric & $T_{N_2}$ & $T_m$ & $T_{hp}$ & $T_f$ & $T_{sg}$ \\
+Method & Metric
+& $T_{N_2}$
+& $T_m$
+& $T_{hp}$
+& $T_f$
+& $T_{sg}$
+& $c_1$
+& $c_2$
+& $c_3$
+& $c_4$
+& $c_5$
+& $c_6$
+& $P$
+& $\rho_{\$}$
+& $T_{\mathrm{steam,out}}$
+& $x_{\mathrm{steam,out}}$
+& \textbf{Pooled} \\
 \midrule
-\multirow{3}{*}{MACE-H} & Coverage & 0.9559 & 0.9560 & 0.9558 & 0.9559 & 0.9559 \\
- & Full width & 0.0038 & 0.0035 & 0.0037 & 0.0033 & 0.0039 \\
- & Interval score & 0.0045 & 0.0043 & 0.0044 & 0.0040 & 0.0046 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-H} & Coverage & 0.9558 & 0.9563 & 0.9560 & 0.9565 & 0.9554 \\
- & Full width & 0.0039 & 0.0037 & 0.0038 & 0.0035 & 0.0040 \\
- & Interval score & 0.0048 & 0.0046 & 0.0047 & 0.0044 & 0.0049 \\
-\addlinespace[2pt]
-\multirow{3}{*}{MACE-T} & Coverage & 0.9670 & 0.9655 & 0.9675 & 0.9605 & 0.9640 \\
- & Full width & 0.0089 & 0.0085 & 0.0088 & 0.0080 & 0.0090 \\
- & Interval score & 0.0089 & 0.0085 & 0.0088 & 0.0080 & 0.0090 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-T} & Coverage & 0.9430 & 0.9455 & 0.9440 & 0.9465 & 0.9435 \\
- & Full width & 0.0100 & 0.0096 & 0.0098 & 0.0091 & 0.0103 \\
- & Interval score & 0.0101 & 0.0097 & 0.0099 & 0.0092 & 0.0103 \\
-\bottomrule
-\end{tabular}
-\end{table}
 
-\begin{table}[!htbp]
-\centering
-\footnotesize
-\setlength{\tabcolsep}{4.5pt}
-\renewcommand{\arraystretch}{1.08}
-\captionsetup{skip=3pt}
-\caption{Operation-informed calibration/test: delayed precursors. Coverage, normalized full width, and interval score (95\% nominal).}
-\label{tab:mace_operational_recalibration:precursor}
-\begin{tabular}{@{}ll*{6}{r}@{}}
-\toprule
-Method & Metric & $c_1$ & $c_2$ & $c_3$ & $c_4$ & $c_5$ & $c_6$ \\
-\midrule
-\multirow{3}{*}{MACE-H} & Coverage & 0.9546 & 0.9560 & 0.9560 & 0.9561 & 0.9562 & 0.9561 \\
- & Full width & 0.0052 & 0.0074 & 0.0084 & 0.0081 & 0.0082 & 0.0083 \\
- & Interval score & 0.0064 & 0.0088 & 0.0096 & 0.0093 & 0.0094 & 0.0096 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-H} & Coverage & 0.9547 & 0.9573 & 0.9565 & 0.9555 & 0.9557 & 0.9555 \\
- & Full width & 0.0069 & 0.0102 & 0.0108 & 0.0104 & 0.0105 & 0.0106 \\
- & Interval score & 0.0082 & 0.0120 & 0.0128 & 0.0124 & 0.0126 & 0.0128 \\
-\addlinespace[2pt]
-\multirow{3}{*}{MACE-T} & Coverage & 0.9510 & 0.9400 & 0.9435 & 0.9405 & 0.9450 & 0.9450 \\
- & Full width & 0.0115 & 0.0115 & 0.0132 & 0.0132 & 0.0139 & 0.0151 \\
- & Interval score & 0.0115 & 0.0116 & 0.0133 & 0.0132 & 0.0140 & 0.0151 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-T} & Coverage & 0.9445 & 0.9450 & 0.9405 & 0.9395 & 0.9375 & 0.9395 \\
- & Full width & 0.0233 & 0.0333 & 0.0378 & 0.0375 & 0.0378 & 0.0381 \\
- & Interval score & 0.0236 & 0.0337 & 0.0384 & 0.0380 & 0.0382 & 0.0385 \\
-\bottomrule
-\end{tabular}
-\end{table}
+\multirow{3}{*}{MACE-H}
+& Coverage
+& 0.9559 & 0.9560 & 0.9558 & 0.9559 & 0.9559
+& 0.9546 & 0.9560 & 0.9560 & 0.9561 & 0.9562 & 0.9561
+& 0.9558 & 0.9551 & 0.9561 & 0.9576 & 0.9559 \\
+& Full width
+& 0.0038 & 0.0035 & 0.0037 & 0.0033 & 0.0039
+& 0.0052 & 0.0074 & 0.0084 & 0.0081 & 0.0082 & 0.0083
+& 0.0085 & 0.0141 & 0.0051 & 0.0020 & 0.0062 \\
+& Interval score
+& 0.0045 & 0.0043 & 0.0044 & 0.0040 & 0.0046
+& 0.0064 & 0.0088 & 0.0096 & 0.0093 & 0.0094 & 0.0096
+& 0.0099 & 0.0179 & 0.0062 & 0.0028 & 0.0074 \\
 
-\begin{table}[!htbp]
-\centering
-\footnotesize
-\setlength{\tabcolsep}{4.5pt}
-\renewcommand{\arraystretch}{1.08}
-\captionsetup{skip=3pt}
-\caption{Operation-informed calibration/test: power, reactivity, and steam outputs. Coverage, normalized full width, and interval score (95\% nominal). Pooled values span all 15 outputs.}
-\label{tab:mace_operational_recalibration:system}
-\begin{tabular}{@{}ll*{5}{r}@{}}
-\toprule
-Method & Metric & $P$ & $\rho_{\$}$ & $T_{\mathrm{steam,out}}$ & $x_{\mathrm{steam,out}}$ & \textbf{Pooled} \\
 \midrule
-\multirow{3}{*}{MACE-H} & Coverage & 0.9558 & 0.9551 & 0.9561 & 0.9576 & 0.9559 \\
- & Full width & 0.0085 & 0.0141 & 0.0051 & 0.0020 & 0.0062 \\
- & Interval score & 0.0099 & 0.0179 & 0.0062 & 0.0028 & 0.0074 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-H} & Coverage & 0.9554 & 0.9562 & 0.9560 & 0.9584 & 0.9561 \\
- & Full width & 0.0107 & 0.0143 & 0.0060 & 0.0047 & 0.0076 \\
- & Interval score & 0.0131 & 0.0188 & 0.0075 & 0.0055 & 0.0093 \\
-\addlinespace[2pt]
-\multirow{3}{*}{MACE-T} & Coverage & 0.9500 & 0.9610 & 0.9660 & 0.9570 & 0.9549 \\
- & Full width & 0.0169 & 0.0489 & 0.0128 & 0.0045 & 0.0136 \\
- & Interval score & 0.0169 & 0.0489 & 0.0128 & 0.0045 & 0.0137 \\
-\addlinespace[2pt]
-\multirow{3}{*}{Abs-T} & Coverage & 0.9400 & 0.9400 & 0.9440 & 0.9420 & 0.9423 \\
- & Full width & 0.0384 & 0.0421 & 0.0164 & 0.0156 & 0.0246 \\
- & Interval score & 0.0388 & 0.0422 & 0.0166 & 0.0156 & 0.0249 \\
+\multirow{3}{*}{Abs-H}
+& Coverage
+& 0.9558 & 0.9563 & 0.9560 & 0.9565 & 0.9554
+& 0.9547 & 0.9573 & 0.9565 & 0.9555 & 0.9557 & 0.9555
+& 0.9554 & 0.9562 & 0.9560 & 0.9584 & 0.9561 \\
+& Full width
+& 0.0039 & 0.0037 & 0.0038 & 0.0035 & 0.0040
+& 0.0069 & 0.0102 & 0.0108 & 0.0104 & 0.0105 & 0.0106
+& 0.0107 & 0.0143 & 0.0060 & 0.0047 & 0.0076 \\
+& Interval score
+& 0.0048 & 0.0046 & 0.0047 & 0.0044 & 0.0049
+& 0.0082 & 0.0120 & 0.0128 & 0.0124 & 0.0126 & 0.0128
+& 0.0131 & 0.0188 & 0.0075 & 0.0055 & 0.0093 \\
+
+\midrule
+\multirow{3}{*}{MACE-T}
+& Coverage
+& 0.9670 & 0.9655 & 0.9675 & 0.9605 & 0.9640
+& 0.9510 & 0.9400 & 0.9435 & 0.9405 & 0.9450 & 0.9450
+& 0.9500 & 0.9610 & 0.9660 & 0.9570 & 0.9549 \\
+& Full width
+& 0.0089 & 0.0085 & 0.0088 & 0.0080 & 0.0090
+& 0.0115 & 0.0115 & 0.0132 & 0.0132 & 0.0139 & 0.0151
+& 0.0169 & 0.0489 & 0.0128 & 0.0045 & 0.0136 \\
+& Interval score
+& 0.0089 & 0.0085 & 0.0088 & 0.0080 & 0.0090
+& 0.0115 & 0.0116 & 0.0133 & 0.0132 & 0.0140 & 0.0151
+& 0.0169 & 0.0489 & 0.0128 & 0.0045 & 0.0137 \\
+
+\midrule
+\multirow{3}{*}{Abs-T}
+& Coverage
+& 0.9430 & 0.9455 & 0.9440 & 0.9465 & 0.9435
+& 0.9445 & 0.9450 & 0.9405 & 0.9395 & 0.9375 & 0.9395
+& 0.9400 & 0.9400 & 0.9440 & 0.9420 & 0.9423 \\
+& Full width
+& 0.0100 & 0.0096 & 0.0098 & 0.0091 & 0.0103
+& 0.0233 & 0.0333 & 0.0378 & 0.0375 & 0.0378 & 0.0381
+& 0.0384 & 0.0421 & 0.0164 & 0.0156 & 0.0246 \\
+& Interval score
+& 0.0101 & 0.0097 & 0.0099 & 0.0092 & 0.0103
+& 0.0236 & 0.0337 & 0.0384 & 0.0380 & 0.0382 & 0.0385
+& 0.0388 & 0.0422 & 0.0166 & 0.0156 & 0.0249 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \end{table}
 
 The matched operation-informed comparisons retain an advantage for the ensemble-normalized methods. After recalibration, MACE-Horizon and Absolute CP-Horizon achieved closely matched pooled coverage of 0.9559 and 0.9561, with mean normalized widths of 0.0062 and 0.0076 and interval scores of 0.0074 and 0.0093, respectively. For the per-output trajectory objective, MACE-Trajectory achieved coverage of 0.9549 versus 0.9423 for Absolute CP-Trajectory, with mean widths of 0.0136 and 0.0246 and interval scores of 0.0137 and 0.0249. The operationally recalibrated trajectory intervals thus recovered near-nominal pooled coverage while retaining substantially lower average widths than their absolute-error counterparts. This result should not be interpreted as uniform dominance for every output: the reactivity trajectory bands, for example, were wider for recalibrated MACE than for recalibrated Absolute CP. More generally, calibration with independent trajectories from the intended evaluation population supports the corresponding pooled marginal coverage interpretation, while the transferred stochastic calibration has no equivalent split-conformal guarantee under the changed distribution.
@@ -457,7 +452,7 @@ Figure~\ref{fig:mace:spread-error}(b) relates the same spread groups to their me
 
 \begin{figure*}[t]
 \centering
-\includegraphics[width=0.92\textwidth]{figures/fig10_spread_error_relationship.pdf}
+\includegraphics[width=0.8\textwidth]{figures/fig10_spread_error_relationship.pdf}
 \caption{Empirical relation between ensemble disagreement, absolute forecast error, and interval allocation on the stochastic test set. (a) Mean absolute error within groups of forecast coordinates ordered by normalized ensemble spread. (b) Mean normalized full interval width of MACE-Horizon and Absolute CP-Horizon within the same spread groups. The absolute method retains fixed widths for each specified horizon--output pair; changes in its binned mean width arise from differences in the composition of the pooled groups. The plots describe aggregate associations rather than conditional coverage guarantees.}
 \label{fig:mace:spread-error}
 \end{figure*}
