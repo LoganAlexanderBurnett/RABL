@@ -346,7 +346,7 @@ def stochastic_representative(config, out, path, options):
                 for ax, key, label in zip(axes.flat, display, labels):
                     ax.set_title(label, fontsize=8, pad=3)
                     if key == "drumAngleDeg":
-                        ax.plot(TIME, control, color="black", lw=1.0)
+                        ax.plot(TIME, control, color="black", lw=.55)
                     else:
                         j, factor = _physical_index(key, names)
                         for (method, mode), c in zip(METHODS, colors):
@@ -354,12 +354,12 @@ def stochastic_representative(config, out, path, options):
                             ax.fill_between(TIME, lo[:, j]*factor, hi[:, j]*factor,
                                             color=c, alpha=.055, linewidth=0)
                             ax.plot(TIME, lo[:, j]*factor, color=c, alpha=.75, linewidth=.36)
-                            ax.plot(TIME, hi[:, j]*factor, color=c, alpha=.75, linewidth=.55)
-                        ax.plot(TIME, truth[:, j]*factor, color="black", lw=1.05, zorder=5)
+                            ax.plot(TIME, hi[:, j]*factor, color=c, alpha=.75, linewidth=.36)
+                        ax.plot(TIME, truth[:, j]*factor, color="black", lw=.55, zorder=5)
                         physical_mean = (mean[:, j].astype(float)*stats["y"]["span"][j]
                                          + stats["y"]["min"][j])
                         ax.plot(TIME, physical_mean*factor, color="#555555",
-                                lw=.62, ls="--", zorder=6)
+                                lw=.55, ls="--", zorder=6)
                     ax.set_xlim(0, 200)
                     ax.set_xticks([0, 100, 200])
                     ax.tick_params(labelsize=6)
@@ -477,7 +477,7 @@ def stochastic_uq_performance(config, out, path, options):
         }
         if any(n not in symbols for n in d["names"]):
             raise ValueError("Missing output-variable symbol in coverage panel")
-        ax.set(title="(b) Per-output trajectory coverage", xlabel="Output variable",
+        ax.set(title="(b) Per-output trajectory coverage", xlabel="",
                ylabel="Whole-trajectory coverage", ylim=(.9,1.0), xticks=x)
         ax.set_xticklabels([symbols[n] for n in d["names"]], rotation=55,
                            ha="right", rotation_mode="anchor", fontsize=8.5)
@@ -595,7 +595,7 @@ def operational_representatives(config, out, path, options):
                         else:
                             j, scale = _physical_index(key, names)
                             ax.fill_between(TIME, lo[:, j]*scale, hi[:, j]*scale,
-                                            color=color, alpha=.10, lw=0)
+                                            color=color, alpha=.22, lw=0)
                             ax.plot(TIME, truth[:, j]*scale, color=color, lw=1.3)
                             # Stroke follows each dash, giving a fine black
                             # outline without replacing the group color.
@@ -629,7 +629,7 @@ def operational_representatives(config, out, path, options):
                     Patch(facecolor="gray", alpha=.15,
                           label="Operational MACE-Horizon"),
                 ]
-                fig.subplots_adjust(top=.76, bottom=.10, left=.075, right=.985,
+                fig.subplots_adjust(top=.815, bottom=.10, left=.075, right=.985,
                                     wspace=.42, hspace=.46)
                 fig.legend(handles=legend, loc="upper center", ncol=2,
                            frameon=False, bbox_to_anchor=(.5,.995), fontsize=6.5)
@@ -679,6 +679,20 @@ def operational_representatives(config, out, path, options):
                     "are saved in metadata and numbered caption files.")
     }
 
+def profile_mean_absolute_error(truth, forecast):
+    """Equal-weight, per-trajectory MAE across all output/time coordinates.
+
+    Both arrays are in the saved dimensionless output-scaled coordinates;
+    no source files or model predictions are changed.
+    """
+    truth = np.asarray(truth, dtype=np.float64)
+    forecast = np.asarray(forecast, dtype=np.float64)
+    if (truth.shape != (501, 15) or forecast.shape != truth.shape
+            or not np.isfinite(truth).all() or not np.isfinite(forecast).all()):
+        raise ValueError("Invalid 501x15 saved scaled forecast arrays for MAE histogram")
+    return float(np.mean(np.abs(truth-forecast), dtype=np.float64))
+
+
 def spread_error_relationship(config, out, path, options):
     """Figure 10: bin by saved stochastic ensemble spread, never fit on test errors."""
     d = _stochastic(config, path)
@@ -700,6 +714,7 @@ def spread_error_relationship(config, out, path, options):
     count = np.zeros(n, dtype=np.int64)
     ss = np.zeros(n); error = np.zeros(n)
     width_m = np.zeros(n); width_a = np.zeros(n)
+    profile_maes = []
     with h5py.File(d["files"]["quant"], "r") as qf:
         q_m = qf["floor_0.001/horizon"][()]
         q_a = qf["absolute/horizon"][()]
@@ -709,6 +724,7 @@ def spread_error_relationship(config, out, path, options):
             spread = g["ensemble_std_scaled"][()]
             mean = g["ensemble_mean_scaled"][()]
             truth = g["y_true_scaled"][()]
+            profile_maes.append((pid, profile_mean_absolute_error(truth, mean)))
             bins = np.searchsorted(edges, spread.ravel(), side="right")-1
             bins = np.clip(bins, 0, n-1)
             count += np.bincount(bins, minlength=n)
@@ -738,6 +754,42 @@ def spread_error_relationship(config, out, path, options):
         axs[1].legend(frameon=False)
         for ax in axs: ax.grid(alpha=.2)
         files = _save(fig,out,"fig10_spread_error_relationship",options)
+    # Backup publication variant: adds a profile-level scaled-MAE histogram
+    # to the LEFT of the exact same two comparison plots. The original two-
+    # panel figure remains a separate, identically constructed output.
+    values = np.asarray([mae for _, mae in profile_maes], dtype=np.float64)
+    if len(profile_maes) != len(ids) or not np.all(np.isfinite(values)):
+        raise ValueError("Invalid saved per-trajectory MAE inventory")
+    with plt.rc_context(_style()):
+        fig, axs = plt.subplots(
+            1, 3, figsize=(190/25.4, 76/25.4), layout="constrained")
+        axs[0].hist(values, bins=30, color="#757575",
+                    edgecolor="white", linewidth=.35)
+        axs[0].set(title="(a) Forecast-error distribution",
+                   xlabel="Trajectory MAE (scaled)", ylabel="Test trajectories")
+        axs[1].plot(x, observed, "o-", color="#424242", lw=1.25, ms=4)
+        axs[1].set(title="(b) Spread versus forecast error",
+                   xlabel="Mean ensemble spread (scaled)",
+                   ylabel="Mean absolute error (scaled)")
+        axs[2].plot(x, mace_w, "s-", label="MACE-Horizon",
+                    color=PALETTE[2], lw=1.25, ms=4)
+        axs[2].plot(x, abs_w, "o--", label="Absolute CP-Horizon",
+                    color=PALETTE[0], lw=1.1, ms=4)
+        axs[2].set(title="(c) Allocated interval width",
+                   xlabel="Mean ensemble spread (scaled)",
+                   ylabel="Mean full interval width (scaled)")
+        axs[2].legend(frameon=False, fontsize=6)
+        for ax in axs:
+            ax.grid(alpha=.2)
+        extended_files = _save(
+            fig, out, "fig10_spread_error_relationship_three_panel", options)
+    files.extend(extended_files)
+    mae_csv = out/"fig10_trajectory_scaled_mae.csv"
+    with mae_csv.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(("profile_id", "mean_absolute_error_scaled"))
+        writer.writerows(profile_maes)
+    files.append(mae_csv.name)
     # Save the numerical points for independent review.
     out_file = out/"spread_error_bins.csv"
     with out_file.open("w",newline="",encoding="utf-8") as fd:
@@ -748,6 +800,13 @@ def spread_error_relationship(config, out, path, options):
             writer.writerow((i,int(count[i]),x[i],observed[i],mace_w[i],abs_w[i]))
     files.append(out_file.name)
     return {"files":files,"inputs":d["inputs"],
+            "histogram_sample_count":len(values),
+            "histogram_statistic":"Equal-weight MAE over each test trajectory's 501x15 scaled output coordinates",
+            "histogram_mean_mae":float(np.mean(values)),
+            "histogram_median_mae":float(np.median(values)),
+            "histogram_data_csv":mae_csv.name,
+            "original_figure":"fig10_spread_error_relationship",
+            "backup_figure":"fig10_spread_error_relationship_three_panel",
             "bin_counts":count.tolist(),"binning":"Ten sampled-spread quantile bins; deterministic test-ID/time subsample, all observations aggregated",
             "caption":"Binned association between spread across ten independently trained autoregressive "
                       "LSTM forecasts and absolute prediction errors on the stochastic test set. "
@@ -755,4 +814,6 @@ def spread_error_relationship(config, out, path, options):
                       "Normalized absolute error and mean full interval widths are pooled over "
                       "profiles, horizons, and output variables. Horizon-calibrated MACE "
                       "and absolute CP widths are compared within common spread bins; "
-                      "no conditional-coverage guarantee is implied."}
+                      "no conditional-coverage guarantee is implied. A separately saved three-panel "
+                      "backup adds the per-trajectory distribution of scaled MAE on the left; "
+                      "the original two-panel figure is retained unchanged."}

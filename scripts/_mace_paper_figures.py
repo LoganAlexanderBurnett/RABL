@@ -333,7 +333,7 @@ def operational_controls(config, out, path, options):
               'Maneuver and return', 'Bidirectional maneuvers')
     traces, trajectories = [], []
     with plt.rc_context(STYLE):
-        fig, axes = plt.subplots(2, 2, figsize=(178*MM, 110*MM), sharex=True, sharey=True, layout='constrained')
+        fig, axes = plt.subplots(2, 2, figsize=(178*MM, 110*MM), sharex=True, sharey=False, layout='constrained')
         for ax, family, label, letter in zip(axes.flat, 'BCDF', labels, 'abcd'):
             for number, (p, color, ls) in enumerate(zip(
                     [p for p in selected if p['family'] == family],
@@ -348,7 +348,12 @@ def operational_controls(config, out, path, options):
                                          minimum_angle_degrees=float(angle.min()),
                                          maximum_angle_degrees=float(angle.max())))
             ax.axhline(45, color='.6', ls='--', lw=.5)
-            ax.set(xlim=(0, 200), ylim=(44, 49), xticks=[0, 50, 100, 150, 200], yticks=[44, 45, 46, 47, 48, 49])
+            ax.set(xlim=(0, 200), xticks=[0, 50, 100, 150, 200])
+            # Each panel uses its own observed control-angle excursion, including
+            # the common 45-degree baseline, rather than a fixed 44–49 degree span.
+            from matplotlib.ticker import MaxNLocator
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
+            ax.margins(y=.08)
             panel(ax, letter, label)
             if family == 'C':
                 ax.legend(frameon=False, ncol=1, loc='upper left',

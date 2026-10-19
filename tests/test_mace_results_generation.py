@@ -15,13 +15,21 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from _mace_results_figures import (choose_profiles, unsaturated_fraction,
-    stochastic_representative, operational_representatives, verify_representative_widths)
+    stochastic_representative, operational_representatives, verify_representative_widths,
+    profile_mean_absolute_error, spread_error_relationship)
 from generate_mace_results_tables import _latex_table, make_tables
 from generate_mace_paper_figures import selected_figures
 from _mace_plot_units import POWER_MW_PER_N, plot_index_and_scale
 
 
 class ResultsSelectionTests(unittest.TestCase):
+    def test_mean_absolute_error_one_value_per_test_trajectory(self):
+        truth = np.zeros((501, 15), dtype=np.float32)
+        forecast = np.full((501, 15), .024, dtype=np.float32)
+        self.assertAlmostEqual(profile_mean_absolute_error(truth, forecast), .024)
+        with self.assertRaisesRegex(ValueError, "501x15"):
+            profile_mean_absolute_error(np.zeros((501, 14)), forecast)
+
     def test_power_is_display_only_6mw_per_n(self):
         names = ["Tf", "n", "x_steam_out"]
         self.assertEqual(POWER_MW_PER_N, 6.0)
@@ -115,7 +123,18 @@ class ResultsSelectionTests(unittest.TestCase):
             d = {"names": names, "ids": ids, "stats": {"y": {"min": np.zeros(15),
                  "span": np.ones(15)}}, "files": {"test": forecasts, "quant": quantiles},
                  "inputs": [], "representative_count": 2, "representative_seed": 23}
-            with mock.patch("_mace_results_figures._stochastic", return_value=d):
+            import _mace_paper_figures as paper
+            figures = []
+            def inspect_plot(fig, out, stem, opts):
+                figures.append(fig)
+                reference = fig.axes[1].lines
+                self.assertLessEqual(reference[-2].get_linewidth(), .55)
+                self.assertLessEqual(reference[-1].get_linewidth(), .55)
+                self.assertAlmostEqual(reference[0].get_linewidth(), .36)
+                self.assertAlmostEqual(reference[1].get_linewidth(), .36)
+                return paper.save_figure(fig, out, stem, opts)
+            with mock.patch("_mace_results_figures._stochastic", return_value=d), \
+                 mock.patch("_mace_results_figures._save", side_effect=inspect_plot):
                 result = stochastic_representative({}, root, lambda p: p,
                                                     {"formats": ["png"], "dpi": 72})
             self.assertEqual(result["generated_count"], 2)
@@ -183,6 +202,48 @@ class ResultsSelectionTests(unittest.TestCase):
                 self.assertEqual(set(record["profiles"]),set("BCDF"))
                 self.assertEqual(record["profiles"]["F"]["unsaturated_fraction"], 0.)
                 self.assertFalse(record["selection_require_unsaturated_by_family"]["F"])
+
+
+    def test_spread_error_has_original_and_three_panel_backup(self):
+        with tempfile.TemporaryDirectory() as t:
+            out = Path(t)
+            names = [f"y{i}" for i in range(15)]
+            ids = [f"profile_{i:02d}" for i in range(12)]
+            archive, calibration = out/"test.h5", out/"quant.h5"
+            with h5py.File(archive, "w") as f:
+                for i, pid in enumerate(ids):
+                    g = f.create_group(pid)
+                    mean = np.full((501,15), .05+.001*i, dtype=np.float32)
+                    truth = np.full((501,15), .06+.002*i, dtype=np.float32)
+                    spread = (.001+.0005*i + .0001*np.arange(501)[:,None]
+                              + .00007*np.arange(15)[None,:]).astype(np.float32)
+                    g["ensemble_mean_scaled"] = mean
+                    g["y_true_scaled"] = truth
+                    g["ensemble_std_scaled"] = spread
+            with h5py.File(calibration, "w") as f:
+                f["floor_0.001/horizon"] = np.full((501,15), 1.)
+                f["absolute/horizon"] = np.full((501,15), .025)
+            d = {"ids":ids, "files":{"test":archive,"quant":calibration}, "inputs":[]}
+            import _mace_paper_figures as paper
+            sizes = []
+            def verify_and_save(fig, outdir, stem, settings):
+                sizes.append((stem, len(fig.axes)))
+                return paper.save_figure(fig, outdir, stem, settings)
+            with mock.patch("_mace_results_figures._stochastic", return_value=d), \
+                 mock.patch("_mace_results_figures._save", side_effect=verify_and_save):
+                result = spread_error_relationship(
+                    {}, out, lambda p:p, {"formats":["png"], "dpi":72})
+            self.assertEqual(sizes, [
+                ("fig10_spread_error_relationship", 2),
+                ("fig10_spread_error_relationship_three_panel", 3)])
+            self.assertEqual(result["histogram_sample_count"], len(ids))
+            self.assertEqual(len(list(out.glob("fig10_*.png"))), 2)
+            self.assertTrue((out/"fig10_trajectory_scaled_mae.csv").exists())
+            values = np.loadtxt(out/"fig10_trajectory_scaled_mae.csv",
+                                delimiter=",", skiprows=1, usecols=1)
+            self.assertEqual(len(values), len(ids))
+            self.assertTrue(np.isfinite(values).all())
+            self.assertTrue((out/"spread_error_bins.csv").exists())
 
 
 class SyntheticResultsTablesTests(unittest.TestCase):

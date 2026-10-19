@@ -85,6 +85,9 @@ class PaperFigureTests(unittest.TestCase):
                         [x.get_text() for x in legend.get_texts()],
                         ['Trajectory 1'])
                     self.assertEqual(legend._ncols, 1)
+                    # Distinct maneuver classes must use independent y-axis spans.
+                    limits = {tuple(np.round(ax.get_ylim(), 4)) for ax in fig.axes}
+                    self.assertGreater(len(limits), 1)
                 return original_save(fig, directory, stem, options)
             with mock.patch.object(paper, 'save_figure', side_effect=spy_save):
                 status=run(file, figures=['operational_controls'], repo_root=root)

@@ -289,3 +289,43 @@ Figure 8's coverage is dimensionless so its `n` column is only relabeled
 as `P`, with no transformation to coverage or loss statistics.
 Saved forecasts, CP quantiles, and normalized calibration/evaluation metrics
 stay in their original coordinates.
+
+### Plotting refinements and optional Figure 10 backup
+
+The scientific archives and nominal calibration objectives are unchanged.
+
+- **Figure 6 controls:** Every maneuver panel automatically scales its own
+  y-axis to the actual saved control-angle traces plus the 45-degree
+  reference line, using a small data-relative margin. No shared y-axis,
+  universal 44–49 degree limit, or fixed y-tick array is imposed.
+- **Figure 7 representatives:** All four CP envelopes have equal thin
+  boundary strokes; the simulator reference, control-angle trace, and
+  dashed gray ensemble-mean trace use thin lines as well. The existing
+  interval-width audit remains active and unchanged.
+- **Figure 8 coverage:** Panel (b) retains the symbolic, rotated output
+  names as tick labels but no longer adds an 'Output variable' axis label.
+- **Figure 9 operational forecasts:** The four maneuver-color MACE-Horizon
+  fills are more opaque (alpha 0.22, previously 0.10); the top row moves
+  closer to the figure legend with space retained above the plots.
+- **Figure 10 spread/error:** The original two-panel publication figure
+  remains **unchanged** as `fig10_spread_error_relationship.pdf` (and PNG).
+  Every invocation now also produces
+  `fig10_spread_error_relationship_three_panel.pdf` (and PNG). Its
+  **left-hand histogram** counts whole stochastic test trajectories
+  according to their per-trajectory mean absolute error in the frozen
+  output-scaled coordinates. For each of the 2,000 saved evaluation
+  trajectories, MAE averages absolute errors equally over all 501 forecast
+  times and all 15 targets (one observation per trajectory). The other
+  panels exactly reproduce the original spread/error and interval-width
+  comparisons, renamed (b) and (c) in the optional version. A matching
+  `fig10_trajectory_scaled_mae.csv` saves the trajectory IDs and 2,000
+  per-trajectory MAE values for review. Histogram bin count is 30; this
+  does not alter the spread-quantile binning or any CP result.
+
+Use the normal Results command to regenerate both variants:
+
+    python scripts/generate_mace_paper_figures.py --figures results --representative-count 10 --overwrite
+
+Or regenerate Figure 10 alone:
+
+    python scripts/generate_mace_paper_figures.py --figures spread_error_relationship --overwrite
