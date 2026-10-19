@@ -211,11 +211,10 @@ def make_tables(config, path=_path):
             for metric in UQ_METRICS
         }
 
-    # Save exact per-output metrics and the paired bootstrap intervals in a
+    # Save exact per-output metrics and available bootstrap intervals in a
     # machine-readable companion, without making the already wide cells illegible.
     for name in names:
         for kind, mode, _ in METHODS:
-            row = _stochastic_row(targets, method=kind, mode=mode, target=name)
             values = stochastic_values(kind, mode, name)
             for metric, value in values.items():
                 details.append(dict(dataset="stochastic", calibration="stochastic",
@@ -307,6 +306,48 @@ def make_tables(config, path=_path):
                          _triplet(op_values(src, kind, mode, name)),
                      aggregate=lambda kind,mode,src=source:
                          _triplet(op_values(src, kind, mode, "aggregate")))
+    # Paired bootstrap uses the SAME operational evaluation trajectory indices
+    # under both calibration sources; no bootstrap is re-run for publication.
+    paired_metrics = (
+        ("objective_coverage_difference", "coverage"),
+        ("mean_full_width_difference", "mean full width"),
+        ("mean_interval_score_difference", "mean interval score"))
+    paired_summary = {}
+    for kind, mode, short_name in METHODS:
+        archive_mode = "horizon" if mode == "horizon" else "target_trajectory"
+        paired_summary[short_name] = {}
+        for scope in ["aggregate"] + names:
+            values = []
+            for metric, label in paired_metrics:
+                row = _unique(comparisons,
+                    comparison=kind+":operational_minus_original",
+                    mode=archive_mode, phase="all", family="pooled",
+                    scope=scope, metric=metric)
+                scale = (1.0 if scope == "aggregate" or metric == "objective_coverage_difference"
+                         else span_by_name[scope])
+                point = float(row["estimate"])/scale
+                lo = float(row["ci_lower"])/scale
+                hi = float(row["ci_upper"])/scale
+                for bound, value in (("estimate",point),("ci_lower",lo),("ci_upper",hi)):
+                    details.append(dict(dataset="operational",
+                        calibration="operation-informed_minus_stochastic",
+                        output=scope, method=kind, mode=mode, metric=metric,
+                        units="fraction" if metric == "objective_coverage_difference" else "scaled",
+                        bound=bound, value=_fmt(value, digits=8)))
+                if scope == "aggregate":
+                    paired_summary[short_name][metric] = point
+                    values.append(f"{point:+.4f} [{lo:+.4f}, {hi:+.4f}]")
+            if scope == "aggregate":
+                paired_summary[short_name]["formatted"] = values
+    operation_lines.extend([
+        r"\medskip\noindent\textbf{(c) Paired pooled recalibration effects}\par\vspace{2pt}",
+        r"\begin{tabular}{@{}lccc@{}}", r"\hline",
+        r"Method & $\Delta$ coverage & $\Delta$ full width & $\Delta$ interval score " + ROW_END,
+        r"\hline"])
+    for _, _, label in METHODS:
+        operation_lines.append(
+            label + " & " + " & ".join(paired_summary[label]["formatted"]) + ROW_END)
+    operation_lines.extend([r"\hline", r"\end{tabular}"])
     table6 = _output_table(
         operation_lines,
         "Conformal uncertainty for the same 2,000 operation-informed test trajectories "
@@ -320,11 +361,13 @@ def make_tables(config, path=_path):
         "thresholds differ. Entries are point estimates; descriptive 95\\% "
         "whole-trajectory bootstrap intervals for every operational method, "
         "variable and metric are retained in the companion detail CSV. "
+        "The pooled paired effects in panel (c) are operation-informed minus "
+        "stochastic calibration, with 95\\% paired bootstrap intervals; "
+        "the companion CSV also retains paired effects for each output. "
         "Nominal coverage is 95\\%.",
         "tab:mace_operational_recalibration")
 
     detail_fields=("dataset","calibration","output","method","mode","metric","units","bound","value")
-    text_rows=[",".join(detail_fields)]
     # csv.writer is used for proper quoting, including scientific variable labels.
     import io
     stream=io.StringIO()
@@ -346,6 +389,7 @@ def make_tables(config, path=_path):
         "uq_operational_calibration_sources":["original","operational"],
         "per_output_count":len(names),
         "detail_rows":len(details),
+        "paired_operational_recalibration":{k:{metric: value for metric,value in v.items() if metric != "formatted"} for k,v in paired_summary.items()},
     }
 
 

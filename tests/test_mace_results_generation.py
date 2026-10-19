@@ -385,12 +385,22 @@ class SyntheticResultsTablesTests(unittest.TestCase):
                                     estimate=val,ci_lower=val-.01*factor,
                                     ci_upper=val+.01*factor))
             save_csv(op/"uq_method_metrics.csv",op_rows)
-            save_csv(op/"paired_comparisons.csv", [
-                dict(common,mode="horizon",scope="aggregate",
-                     comparison="mace:operational_minus_original",
-                     metric="objective_coverage_difference",
-                     estimate=.02,ci_lower=.01,ci_upper=.03)
-            ])
+            comparison_rows=[]
+            for operational_mode in ("horizon", "target_trajectory"):
+                for kind in ("mace","absolute"):
+                    for scope in ["aggregate"] + names:
+                        j=names.index(scope) if scope != "aggregate" else None
+                        scale=1.0 if j is None else span[j]
+                        for metric,value in (
+                            ("objective_coverage_difference", .02),
+                            ("mean_full_width_difference", -.015*scale),
+                            ("mean_interval_score_difference", -.020*scale)):
+                            margin=.001*scale
+                            comparison_rows.append(dict(common,mode=operational_mode,
+                                scope=scope,comparison=kind+":operational_minus_original",
+                                metric=metric,estimate=value,
+                                ci_lower=value-margin,ci_upper=value+margin))
+            save_csv(op/"paired_comparisons.csv",comparison_rows)
             save_csv(stochastic/"target_metrics.csv",target_rows)
             save_csv(stochastic/"aggregate_metrics.csv",aggregate_rows)
             joint_rows = [
@@ -428,7 +438,9 @@ class SyntheticResultsTablesTests(unittest.TestCase):
             self.assertIn("0.9400/0.1000/0.2000",table6)
             self.assertIn("0.9600/0.1000/0.2000",table6)
             self.assertEqual(table5.count(r"\begin{tabular}"), 3)
-            self.assertEqual(table6.count(r"\begin{tabular}"), 2)
+            self.assertEqual(table6.count(r"\begin{tabular}"), 3)
+            self.assertIn("Paired pooled recalibration effects",table6)
+            self.assertIn("+0.0200",table6)
             self.assertNotIn("phase breakdown",table6)
             detail=list(csv.DictReader(contents["table_metrics_detail.csv"].splitlines()))
             per_target=[r for r in detail
@@ -442,6 +454,13 @@ class SyntheticResultsTablesTests(unittest.TestCase):
             self.assertAlmostEqual(float(next(x["value"] for x in per_target
                               if x["bound"]=="estimate")),.1)
             self.assertEqual(summary["per_output_count"],15)
+            self.assertIn("MACE-H",summary["paired_operational_recalibration"])
+            paired=[row for row in detail if row["calibration"]=="operation-informed_minus_stochastic"
+                   and row["output"]=="T_steam_out" and row["method"]=="mace"
+                   and row["mode"]=="horizon" and row["metric"]=="mean_full_width_difference"]
+            self.assertEqual(len(paired),3)
+            self.assertAlmostEqual(float(next(row["value"] for row in paired
+                        if row["bound"]=="estimate")),-.015)
             self.assertAlmostEqual(summary["stochastic_mae"],.15)
             self.assertAlmostEqual(summary["stochastic_rmse"],
                                    np.sqrt((.1**2+.2**2)/2))
