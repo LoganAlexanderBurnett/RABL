@@ -30,7 +30,7 @@ PALETTE = ("#0072B2", "#D55E00", "#009E73", "#CC79A7")
 METHODS = (("mace", "horizon"), ("mace", "trajectory"),
            ("absolute", "horizon"), ("absolute", "trajectory"))
 METHOD_LABELS = ("MACE-Horizon", "MACE-Trajectory",
-                 "Absolute CP-Horizon", "Absolute CP-Trajectory")
+                 "Abs-Horizon", "Abs-Trajectory")
 
 
 def _json(path):
@@ -382,7 +382,7 @@ def stochastic_representative(config, out, path, options):
                 f"The simulator reference has outlet steam quality strictly below unity "
                 f"for {fraction:.1%} of saved forecast points. Simulator truth (solid black), "
                 f"ensemble mean (dashed gray), and nominal 95% MACE-Horizon, "
-                f"MACE-Trajectory, Absolute CP-Horizon and Absolute CP-Trajectory "
+                f"MACE-Trajectory, Abs-Horizon and Abs-Trajectory "
                 f"bounds use a common stochastic calibration set. The prescribed "
                 f"drum angle is shown in the first panel; P = 6n MW. "
                 f"Uncertainty bounds are not clipped to physical limits.")
@@ -456,14 +456,14 @@ def stochastic_uq_performance(config, out, path, options):
         ax = axes[0,0]
         for meth, c in (("absolute", PALETTE[0]), ("mace", PALETTE[2])):
             ax.plot(TIME, curve[meth], color=c, lw=1.3,
-                    label="Absolute CP-Horizon" if meth == "absolute" else "MACE-Horizon")
+                    label="Abs-Horizon" if meth == "absolute" else "MACE-Horizon")
         ax.axhline(.95, color="gray", ls=":", lw=.9)
         ax.set(title="(a) Horizon coverage", xlabel="Forecast time (s)", ylabel="Mean pointwise coverage", ylim=(.93,1.0))
         ax.legend(frameon=False, fontsize=8.5)
         ax = axes[0,1]
         x = np.arange(15)
         ax.plot(x, trajectory["absolute"], "o", color=PALETTE[0], ms=3,
-                label="Absolute CP-Trajectory")
+                label="Abs-Trajectory")
         ax.plot(x, trajectory["mace"], "s", color=PALETTE[2], ms=3,
                 label="MACE-Trajectory")
         ax.axhline(.95, color="gray", ls=":", lw=.9)
@@ -484,8 +484,8 @@ def stochastic_uq_performance(config, out, path, options):
         ax.legend(frameon=False, fontsize=8.5)
         labels = ["Abs-H", "MACE-H", "Abs-T", "MACE-T"]
         for ax, key, title, ylabel in (
-                (axes[1,0], "mean_scaled_full_width", "(c) Mean full interval width", "Normalized width"),
-                (axes[1,1], "mean_scaled_interval_score", "(d) Mean interval score", "Normalized interval score")):
+                (axes[1,0], "mean_scaled_full_width", "(c) Mean scaled width", "Scaled width"),
+                (axes[1,1], "mean_scaled_interval_score", "(d) Mean interval score", "Scaled interval score")):
             values = [agg(m,t,key) for m,t in order]
             bars = ax.bar(np.arange(4), values,
                           color=[PALETTE[0],PALETTE[2],PALETTE[0],PALETTE[2]], alpha=.84)
@@ -501,7 +501,7 @@ def stochastic_uq_performance(config, out, path, options):
             "caption": "Corrected stochastic evaluation at nominal 95% coverage. "
                        "(a) Mean per-coordinate Horizon coverage over output variables at each time; "
                        "(b) independent per-output full-trajectory coverage across the 15 outputs; "
-                       "(c) mean normalized full interval width; and (d) mean normalized interval score. "
+                       "(c) mean scaled width; and (d) mean scaled interval score. "
                        "Absolute and ensemble-adaptive methods are compared only at matching coverage objectives. "
                        "The horizontal gray line denotes nominal coverage, not a claim of simultaneous coverage."}
 
@@ -748,9 +748,9 @@ def spread_error_relationship(config, out, path, options):
         axs[0].set(title="(a) Spread versus forecast error",
                    xlabel="Mean ensemble spread (scaled)", ylabel="Mean absolute error (scaled)")
         axs[1].plot(x, mace_w, "s-", label="MACE-Horizon", color=PALETTE[2], lw=1.25, ms=4)
-        axs[1].plot(x, abs_w, "o--", label="Absolute CP-Horizon", color=PALETTE[0], lw=1.1, ms=4)
-        axs[1].set(title="(b) Allocated interval width",
-                   xlabel="Mean ensemble spread (scaled)", ylabel="Mean full interval width (scaled)")
+        axs[1].plot(x, abs_w, "o--", label="Abs-Horizon", color=PALETTE[0], lw=1.1, ms=4)
+        axs[1].set(title="(b) Allocated band width",
+                   xlabel="Mean ensemble spread (scaled)", ylabel="Mean scaled width")
         axs[1].legend(frameon=False)
         for ax in axs: ax.grid(alpha=.2)
         files = _save(fig,out,"fig10_spread_error_relationship",options)
@@ -773,11 +773,11 @@ def spread_error_relationship(config, out, path, options):
                    ylabel="Mean absolute error (scaled)")
         axs[2].plot(x, mace_w, "s-", label="MACE-Horizon",
                     color=PALETTE[2], lw=1.25, ms=4)
-        axs[2].plot(x, abs_w, "o--", label="Absolute CP-Horizon",
+        axs[2].plot(x, abs_w, "o--", label="Abs-Horizon",
                     color=PALETTE[0], lw=1.1, ms=4)
-        axs[2].set(title="(c) Allocated interval width",
+        axs[2].set(title="(c) Allocated band width",
                    xlabel="Mean ensemble spread (scaled)",
-                   ylabel="Mean full interval width (scaled)")
+                   ylabel="Mean scaled width")
         axs[2].legend(frameon=False, fontsize=6)
         for ax in axs:
             ax.grid(alpha=.2)
@@ -811,7 +811,7 @@ def spread_error_relationship(config, out, path, options):
             "caption":"Binned association between spread across ten independently trained autoregressive "
                       "LSTM forecasts and absolute prediction errors on the stochastic test set. "
                       "Bins are defined only from ensemble spread, not from residuals. "
-                      "Normalized absolute error and mean full interval widths are pooled over "
+                      "Scaled absolute error and mean scaled widths are pooled over "
                       "profiles, horizons, and output variables. Horizon-calibrated MACE "
                       "and absolute CP widths are compared within common spread bins; "
                       "no conditional-coverage guarantee is implied. A separately saved three-panel "
